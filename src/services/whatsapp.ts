@@ -297,26 +297,61 @@ export async function getActiveGroups(): Promise<{ id: string; name: string }[]>
   // Crear la promesa de fetch único (single-flight)
   activeFetchPromise = (async () => {
     try {
-      console.log('[WHATSAPP] Solicitando chats a whatsapp-web.js (Límite: 60s)...');
-      // Subimos el timeout a 60 segundos porque la primera sincronización en cuentas con muchos chats puede tardar
-      const chats = await promiseWithTimeout(
-        clientInstance.getChats(),
-        60000,
-        'Tiempo de espera agotado al recuperar los chats de WhatsApp Web.'
-      );
+      let groups: { id: string; name: string }[] | null = null;
 
-      console.log(`[WHATSAPP] Chats obtenidos con éxito: ${chats.length} totales.`);
-      const groups = chats
-        .filter(chat => chat.isGroup)
-        .map(chat => ({
-          id: chat.id._serialized,
-          name: chat.name || 'Grupo sin nombre'
-        }));
+      // Intentar evaluación rápida y súper ligera directo en la página de Puppeteer
+      try {
+        console.log('[WHATSAPP] Intentando evaluación rápida de chats via Store.Chat...');
+        // @ts-ignore
+        const page = clientInstance.pupPage;
+        if (page) {
+          groups = await promiseWithTimeout(
+            page.evaluate(() => {
+              // @ts-ignore
+              if (window.Store && window.Store.Chat && window.Store.Chat.models) {
+                // @ts-ignore
+                return window.Store.Chat.models
+                  .filter((chat: any) => chat.isGroup)
+                  .map((chat: any) => ({
+                    id: chat.id._serialized || chat.id,
+                    name: chat.name || chat.formattedTitle || 'Grupo sin nombre'
+                  }));
+              }
+              return null;
+            }),
+            12000,
+            'Tiempo agotado al evaluar Store.Chat'
+          );
+        }
+      } catch (evalError: any) {
+        console.warn('[WHATSAPP] Falló evaluación directa de Store.Chat:', evalError.message);
+      }
+
+      // Si la evaluación ultra-rápida funcionó, la usamos de inmediato
+      if (groups && groups.length > 0) {
+        console.log(`[WHATSAPP] Grupos obtenidos exitosamente vía Store.Chat: ${groups.length}`);
+      } else {
+        // Fallback clásico: si no estaba disponible Store, usamos el getChats completo
+        console.log('[WHATSAPP] Store.Chat no disponible o vacío. Usando clientInstance.getChats() estándar...');
+        const chats = await promiseWithTimeout(
+          clientInstance.getChats(),
+          45000,
+          'Tiempo de espera agotado al recuperar los chats de WhatsApp Web.'
+        );
+
+        console.log(`[WHATSAPP] Chats obtenidos con éxito: ${chats.length} totales.`);
+        groups = chats
+          .filter(chat => chat.isGroup)
+          .map(chat => ({
+            id: chat.id._serialized,
+            name: chat.name || 'Grupo sin nombre'
+          }));
+      }
 
       // Actualizar caché
-      cachedGroups = groups;
+      cachedGroups = groups || [];
       lastFetchedGroupsTime = Date.now();
-      return groups;
+      return cachedGroups;
     } catch (error) {
       console.error('[WHATSAPP] Error al obtener grupos de WhatsApp:', error);
       // Fallback: si falla pero tenemos caché previa, la usamos antes de devolver un array vacío
