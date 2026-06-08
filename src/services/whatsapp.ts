@@ -31,7 +31,7 @@ export function saveSettings(settings: Settings): void {
 }
 
 export interface WhatsAppStatus {
-  status: 'INITIALIZING' | 'DISCONNECTED' | 'QR_RECEIVED' | 'CONNECTED';
+  status: 'INITIALIZING' | 'DISCONNECTED' | 'QR_RECEIVED' | 'AUTHENTICATED' | 'CONNECTED';
   qrDataUrl?: string;
   user?: {
     name: string;
@@ -94,6 +94,7 @@ export function startWhatsAppClient(options: WhatsAppClientOptions): Client {
 
   // Autenticación exitosa
   client.on('authenticated', () => {
+    whatsappStatus.status = 'AUTHENTICATED';
     console.log('Autenticación exitosa con WhatsApp Web.');
   });
 

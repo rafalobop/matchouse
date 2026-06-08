@@ -3,6 +3,11 @@ let isConnected = false;
 let allGroups = [];
 let selectedGroups = [];
 
+// Estado de reconexión automática
+let isCountingDown = false;
+let countdownInterval = null;
+let countdownSeconds = 15;
+
 // Elementos del DOM
 const systemBadge = document.getElementById('system-badge');
 const statusText = document.getElementById('status-text');
@@ -45,11 +50,18 @@ async function checkStatus() {
 }
 
 function updateStatusUI(data) {
+  // Manejo del contador de reconexión
+  if (data.status !== 'DISCONNECTED') {
+    cancelCountdown();
+  }
+
   // Configurar insignia de estado
   if (data.status === 'CONNECTED') {
     systemBadge.className = 'system-badge connected';
     statusText.innerText = 'Conectado';
     toggleEditGroupsBtn.disabled = false;
+    restartWhatsappBtn.disabled = false;
+    restartWhatsappBtn.innerText = 'Forzar Reconexión (Borrar sesión)';
     
     if (!isConnected) {
       isConnected = true;
@@ -66,6 +78,16 @@ function updateStatusUI(data) {
       // Cargar lista de grupos e inicializar vistas
       loadGroups();
     }
+  } else if (data.status === 'AUTHENTICATED') {
+    isConnected = false;
+    userInfo.classList.add('hidden');
+    toggleEditGroupsBtn.disabled = true;
+    
+    systemBadge.className = 'system-badge connected';
+    statusText.innerText = 'Autenticado';
+    qrContainer.innerHTML = '<div class="spinner"></div><p class="qr-placeholder-text" style="color: var(--warning); font-weight: 600;">¡Autenticado! Sincronizando chats de WhatsApp...</p>';
+    qrContainer.style.background = 'rgba(255, 255, 255, 0.03)';
+    qrContainer.style.borderColor = 'var(--card-border)';
   } else {
     isConnected = false;
     userInfo.classList.add('hidden');
@@ -83,47 +105,98 @@ function updateStatusUI(data) {
       qrContainer.innerHTML = `<img src="${data.qrDataUrl}" alt="Escanea el QR" class="qr-image">`;
       qrContainer.style.background = 'white';
       qrContainer.style.borderColor = 'var(--card-border)';
+      restartWhatsappBtn.disabled = false;
+      restartWhatsappBtn.innerText = 'Forzar Reconexión (Borrar sesión)';
     } else if (data.status === 'INITIALIZING') {
       systemBadge.className = 'system-badge';
       statusText.innerText = 'Inicializando...';
       qrContainer.innerHTML = '<div class="spinner"></div><p class="qr-placeholder-text">Cargando WhatsApp Web...</p>';
-    } else {
+      restartWhatsappBtn.disabled = true;
+    } else if (data.status === 'DISCONNECTED') {
       systemBadge.className = 'system-badge disconnected';
       statusText.innerText = 'Desconectado';
       qrContainer.innerHTML = '<div class="spinner"></div><p class="qr-placeholder-text">Desconectado. Reintentando...</p>';
+      
+      // Iniciar reconexión automática si no está corriendo
+      if (!isCountingDown) {
+        startAutomaticReconnectCountdown();
+      }
     }
   }
 }
 
-// Forzar reinicio de WhatsApp (Borrar Caché)
-restartWhatsappBtn.addEventListener('click', async () => {
-  if (!confirm('¿Estás seguro de que quieres forzar la reconexión? Esto cerrará la sesión actual, borrará el caché de autenticación y generará un código QR nuevo.')) {
-    return;
-  }
+// Iniciar contador para reconexión automática
+function startAutomaticReconnectCountdown() {
+  isCountingDown = true;
+  countdownSeconds = 15;
+  restartWhatsappBtn.disabled = false;
   
+  updateCountdownUI();
+  
+  countdownInterval = setInterval(async () => {
+    countdownSeconds--;
+    updateCountdownUI();
+    
+    if (countdownSeconds <= 0) {
+      clearInterval(countdownInterval);
+      await triggerRestart();
+    }
+  }, 1000);
+}
+
+function updateCountdownUI() {
+  restartWhatsappBtn.innerText = `Reconectando en ${countdownSeconds}s... (o clic para forzar)`;
+  qrContainer.innerHTML = `<div class="spinner"></div><p class="qr-placeholder-text">Desconectado. Reconectando en ${countdownSeconds} segundos...</p>`;
+}
+
+function cancelCountdown() {
+  if (isCountingDown) {
+    isCountingDown = false;
+    if (countdownInterval) {
+      clearInterval(countdownInterval);
+      countdownInterval = null;
+    }
+    restartWhatsappBtn.innerText = 'Forzar Reconexión (Borrar sesión)';
+  }
+}
+
+// Ejecutar reinicio del cliente en el backend
+async function triggerRestart() {
+  cancelCountdown();
   restartWhatsappBtn.disabled = true;
-  restartWhatsappBtn.innerText = 'Reiniciando...';
+  restartWhatsappBtn.innerText = 'Reiniciando cliente...';
   
   try {
     const res = await fetch('/api/whatsapp/restart', { method: 'POST' });
     if (res.ok) {
-      // Limpiar UI local e ir al estado inicial de carga
       isConnected = false;
       userInfo.classList.add('hidden');
       qrContainer.innerHTML = '<div class="spinner"></div><p class="qr-placeholder-text">Reiniciando sesión y solicitando QR...</p>';
       qrContainer.style.background = 'rgba(255, 255, 255, 0.03)';
       qrContainer.style.borderColor = 'var(--card-border)';
     } else {
-      alert('No se pudo reiniciar la sesión.');
+      console.error('Error al reiniciar en el servidor.');
     }
   } catch (error) {
-    console.error(error);
-    alert('Error al conectar con el servidor.');
+    console.error('Error al conectar con el servidor:', error);
   } finally {
     setTimeout(() => {
       restartWhatsappBtn.disabled = false;
       restartWhatsappBtn.innerText = 'Forzar Reconexión (Borrar sesión)';
-    }, 5000);
+    }, 4000);
+  }
+}
+
+// Forzar reinicio de WhatsApp manual
+restartWhatsappBtn.addEventListener('click', async () => {
+  if (isCountingDown) {
+    // Si estaba contando, forzar de inmediato sin alert
+    await triggerRestart();
+    return;
+  }
+  
+  if (confirm('¿Estás seguro de que quieres forzar la reconexión? Esto cerrará la sesión actual, borrará el caché de autenticación y generará un código QR nuevo.')) {
+    await triggerRestart();
   }
 });
 
