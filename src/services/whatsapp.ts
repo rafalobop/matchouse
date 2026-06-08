@@ -253,6 +253,21 @@ export async function restartWhatsAppClient(): Promise<void> {
 }
 
 /**
+ * Auxiliar para ejecutar una promesa con un límite de tiempo de espera (timeout)
+ */
+function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMsg: string): Promise<T> {
+  let timeoutId: NodeJS.Timeout;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(errorMsg));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timeoutId);
+  });
+}
+
+/**
  * Retorna todos los chats grupales del cliente actual
  */
 export async function getActiveGroups(): Promise<{ id: string; name: string }[]> {
@@ -260,7 +275,15 @@ export async function getActiveGroups(): Promise<{ id: string; name: string }[]>
     return [];
   }
   try {
-    const chats = await clientInstance.getChats();
+    console.log('[WHATSAPP] Solicitando chats a whatsapp-web.js...');
+    // Límite de 12 segundos para evitar que la petición al backend quede colgada indefinidamente
+    const chats = await promiseWithTimeout(
+      clientInstance.getChats(),
+      12000,
+      'Tiempo de espera agotado al recuperar los chats de WhatsApp Web.'
+    );
+    
+    console.log(`[WHATSAPP] Chats obtenidos con éxito: ${chats.length} totales.`);
     return chats
       .filter(chat => chat.isGroup)
       .map(chat => ({
@@ -268,7 +291,7 @@ export async function getActiveGroups(): Promise<{ id: string; name: string }[]>
         name: chat.name || 'Grupo sin nombre'
       }));
   } catch (error) {
-    console.error('Error al obtener grupos de WhatsApp:', error);
+    console.error('[WHATSAPP] Error al obtener grupos de WhatsApp:', error);
     return [];
   }
 }
