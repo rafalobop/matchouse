@@ -297,7 +297,24 @@ toggleEditGroupsBtn.addEventListener('click', async () => {
   
   // Re-cargar grupos del backend en tiempo real
   await loadGroups();
+  
+  // Rellenar el textarea manual con aquellos grupos seleccionados que no estén en la lista de checkboxes
+  populateManualGroupsInput();
 });
+
+function populateManualGroupsInput() {
+  const manualInput = document.getElementById('manual-groups-input');
+  if (!manualInput) return;
+  
+  const manualNames = [];
+  selectedGroups.forEach(idOrName => {
+    const groupExists = allGroups.some(g => g.id === idOrName || g.name === idOrName);
+    if (!groupExists) {
+      manualNames.push(idOrName);
+    }
+  });
+  manualInput.value = manualNames.join('\n');
+}
 
 cancelEditGroupsBtn.addEventListener('click', () => {
   groupsEditSection.classList.add('hidden');
@@ -354,16 +371,35 @@ saveGroupsBtn.addEventListener('click', async () => {
   saveStatus.innerText = 'Guardando...';
   saveStatus.style.color = 'var(--text-secondary)';
 
+  // Leer nombres ingresados manualmente del textarea
+  const manualInput = document.getElementById('manual-groups-input');
+  const manualNames = manualInput 
+    ? manualInput.value.split('\n').map(line => line.trim()).filter(line => line.length > 0)
+    : [];
+
+  // Obtener los seleccionados de los checkboxes
+  const checkedGroups = [];
+  const checkboxes = groupsList.querySelectorAll('input[type="checkbox"]');
+  checkboxes.forEach(cb => {
+    if (cb.checked) {
+      checkedGroups.push(cb.value);
+    }
+  });
+
+  // Combinar ambos sin duplicados
+  const finalSelectedGroups = Array.from(new Set([...checkedGroups, ...manualNames]));
+
   try {
     const res = await fetch('/api/groups', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ selectedGroups })
+      body: JSON.stringify({ selectedGroups: finalSelectedGroups })
     });
 
     if (res.ok) {
       saveStatus.innerText = '¡Guardado!';
       saveStatus.style.color = 'var(--success)';
+      selectedGroups = finalSelectedGroups;
       updateSelectedGroupsSummary();
       
       // Salir del modo edición automáticamente tras guardar

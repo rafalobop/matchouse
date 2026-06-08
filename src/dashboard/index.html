@@ -127,6 +127,13 @@
             </div>
           </div>
 
+          <div style="margin-top: 1rem; border-top: 1px solid var(--card-border); padding-top: 1rem;">
+            <label style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem; display: block; font-weight: 500;">
+              O escribe los nombres de los grupos manualmente (uno por línea):
+            </label>
+            <textarea id="manual-groups-input" rows="3" style="width: 100%; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--card-border); border-radius: 8px; padding: 0.75rem; color: var(--text-primary); font-family: var(--font-family); font-size: 0.85rem; outline: none; resize: vertical; box-sizing: border-box;" placeholder="Ejemplo:&#10;Grupo Matchhouse&#10;Negocios Inmobiliarios"></textarea>
+          </div>
+
           <div class="groups-edit-actions">
             <button id="save-groups-btn" class="btn btn-primary">Guardar</button>
             <button id="cancel-edit-groups-btn" class="btn btn-secondary">Cancelar</button>
