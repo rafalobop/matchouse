@@ -267,6 +267,28 @@ function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMsg:
   });
 }
 
+/**
+ * Espera de forma asíncrona a que el objeto window.Store esté inicializado en la página de Puppeteer
+ */
+async function waitForStore(page: any, timeoutMs = 25000): Promise<boolean> {
+  const checkInterval = 1000;
+  let elapsed = 0;
+  while (elapsed < timeoutMs) {
+    try {
+      const isReady = await page.evaluate(() => {
+        // @ts-ignore
+        return !!(window.Store && window.Store.Chat && window.Store.Chat.models);
+      });
+      if (isReady) return true;
+    } catch (e) {
+      // Ignorar errores de contexto temporalmente no disponible
+    }
+    await new Promise(resolve => setTimeout(resolve, checkInterval));
+    elapsed += checkInterval;
+  }
+  return false;
+}
+
 // Variables para caché y evitar llamadas concurrentes a Puppeteer
 let cachedGroups: { id: string; name: string }[] = [];
 let lastFetchedGroupsTime = 0;
@@ -298,40 +320,38 @@ export async function getActiveGroups(): Promise<{ id: string; name: string }[]>
   activeFetchPromise = (async () => {
     try {
       let groups: { id: string; name: string }[] | null = null;
+      // @ts-ignore
+      const page = clientInstance.pupPage;
 
-      // Intentar evaluación rápida y súper ligera directo en la página de Puppeteer
-      try {
-        console.log('[WHATSAPP] Intentando evaluación rápida de chats via Store.Chat...');
-        // @ts-ignore
-        const page = clientInstance.pupPage;
-        if (page) {
+      if (page) {
+        console.log('[WHATSAPP] Esperando a que el Store de WhatsApp esté inicializado...');
+        const storeReady = await waitForStore(page, 25000);
+        
+        if (storeReady) {
+          console.log('[WHATSAPP] Store listo. Evaluando Store.Chat para extraer grupos...');
           groups = await promiseWithTimeout(
             page.evaluate(() => {
               // @ts-ignore
-              if (window.Store && window.Store.Chat && window.Store.Chat.models) {
-                // @ts-ignore
-                return window.Store.Chat.models
-                  .filter((chat: any) => chat.isGroup)
-                  .map((chat: any) => ({
-                    id: chat.id._serialized || chat.id,
-                    name: chat.name || chat.formattedTitle || 'Grupo sin nombre'
-                  }));
-              }
-              return null;
+              return window.Store.Chat.models
+                .filter((chat: any) => chat.isGroup)
+                .map((chat: any) => ({
+                  id: chat.id._serialized || chat.id,
+                  name: chat.name || chat.formattedTitle || 'Grupo sin nombre'
+                }));
             }),
             12000,
             'Tiempo agotado al evaluar Store.Chat'
           );
+        } else {
+          console.warn('[WHATSAPP] El Store no se inicializó a tiempo. Usando fallback de getChats estándar...');
         }
-      } catch (evalError: any) {
-        console.warn('[WHATSAPP] Falló evaluación directa de Store.Chat:', evalError.message);
       }
 
       // Si la evaluación ultra-rápida funcionó, la usamos de inmediato
       if (groups && groups.length > 0) {
         console.log(`[WHATSAPP] Grupos obtenidos exitosamente vía Store.Chat: ${groups.length}`);
       } else {
-        // Fallback clásico: si no estaba disponible Store, usamos el getChats completo
+        // Fallback clásico: si no estaba disponible Store o falló, usamos el getChats completo
         console.log('[WHATSAPP] Store.Chat no disponible o vacío. Usando clientInstance.getChats() estándar...');
         const chats = await promiseWithTimeout(
           clientInstance.getChats(),
