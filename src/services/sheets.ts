@@ -24,17 +24,35 @@ const CREDENTIALS_PATH = path.join(process.cwd(), 'credentials.json');
  * Obtiene el cliente autenticado de Google Sheets
  */
 function getSheetsClient() {
-  if (!fs.existsSync(CREDENTIALS_PATH)) {
-    throw new Error(
-      'Falta el archivo credentials.json de la Service Account de Google en la raíz del proyecto.\n' +
-      'Por favor, créalo y dale acceso de editor al correo de la service account en tu Google Sheet.'
-    );
+  let auth;
+
+  // 1. Intentar cargar desde la variable de entorno para producción/deploy
+  if (process.env.GOOGLE_CREDS_JSON) {
+    try {
+      const keys = JSON.parse(process.env.GOOGLE_CREDS_JSON);
+      auth = new google.auth.GoogleAuth({
+        credentials: keys,
+        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+      });
+    } catch (error) {
+      console.error('[SHEETS] Error al parsear la variable de entorno GOOGLE_CREDS_JSON:', error);
+    }
   }
 
-  const auth = new google.auth.GoogleAuth({
-    keyFile: CREDENTIALS_PATH,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-  });
+  // 2. Si no se pudo, caer en el archivo físico local credentials.json
+  if (!auth) {
+    if (!fs.existsSync(CREDENTIALS_PATH)) {
+      throw new Error(
+        'Falta el archivo credentials.json o la variable de entorno GOOGLE_CREDS_JSON de la Service Account de Google.\n' +
+        'Por favor, configúrala para poder acceder a Google Sheets.'
+      );
+    }
+
+    auth = new google.auth.GoogleAuth({
+      keyFile: CREDENTIALS_PATH,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+  }
 
   return google.sheets({ version: 'v4', auth });
 }
