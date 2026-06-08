@@ -286,10 +286,13 @@ function updateSelectedGroupsSummary() {
 }
 
 // Manejo de Edición de Grupos
-toggleEditGroupsBtn.addEventListener('click', () => {
+toggleEditGroupsBtn.addEventListener('click', async () => {
   groupsViewSection.classList.add('hidden');
   groupsEditSection.classList.remove('hidden');
-  renderGroups();
+  groupsList.innerHTML = '<div class="spinner" style="width: 25px; height: 25px; margin: 2rem auto 0.5rem;"></div>Sincronizando grupos desde WhatsApp...';
+  
+  // Re-cargar grupos del backend en tiempo real
+  await loadGroups();
 });
 
 cancelEditGroupsBtn.addEventListener('click', () => {
