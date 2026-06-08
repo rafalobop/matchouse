@@ -61,7 +61,7 @@ export function startWhatsAppClient(options: WhatsAppClientOptions): Client {
 
   // Buscar de forma robusta la ruta del navegador Puppeteer en producción/Linux
   let puppeteerExecutablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-  
+
   // Si la ruta no existe en el disco, la descartamos para buscar alternativas reales
   if (puppeteerExecutablePath && !fs.existsSync(puppeteerExecutablePath)) {
     console.warn(`[PUPPETEER] Ruta '${puppeteerExecutablePath}' no existe. Buscando alternativas...`);
@@ -145,7 +145,7 @@ export function startWhatsAppClient(options: WhatsAppClientOptions): Client {
   client.on('ready', () => {
     whatsappStatus.status = 'CONNECTED';
     whatsappStatus.qrDataUrl = undefined;
-    
+
     const info = client.info;
     whatsappStatus.user = {
       name: info.pushname || 'Usuario',
@@ -183,8 +183,8 @@ export function startWhatsAppClient(options: WhatsAppClientOptions): Client {
 
       // Filtrar por grupos seleccionados dinámicamente en settings.json
       const settings = loadSettings();
-      const isGroupSelected = settings.selectedGroups.some(groupId => 
-        groupId === chat.id._serialized || 
+      const isGroupSelected = settings.selectedGroups.some(groupId =>
+        groupId === chat.id._serialized ||
         groupId.toLowerCase() === chatName.toLowerCase()
       );
 
@@ -221,7 +221,7 @@ export function startWhatsAppClient(options: WhatsAppClientOptions): Client {
  */
 export async function restartWhatsAppClient(): Promise<void> {
   console.log('[WHATSAPP] Iniciando proceso de reinicio forzado...');
-  
+
   if (clientInstance) {
     try {
       await clientInstance.destroy();
@@ -267,6 +267,12 @@ function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMsg:
   });
 }
 
+// Variables para caché y evitar llamadas concurrentes a Puppeteer
+let cachedGroups: { id: string; name: string }[] = [];
+let lastFetchedGroupsTime = 0;
+const CACHE_TTL = 30000; // Caché de 30 segundos
+let activeFetchPromise: Promise<{ id: string; name: string }[]> | null = null;
+
 /**
  * Retorna todos los chats grupales del cliente actual
  */
@@ -274,24 +280,56 @@ export async function getActiveGroups(): Promise<{ id: string; name: string }[]>
   if (whatsappStatus.status !== 'CONNECTED' || !clientInstance) {
     return [];
   }
-  try {
-    console.log('[WHATSAPP] Solicitando chats a whatsapp-web.js...');
-    // Límite de 12 segundos para evitar que la petición al backend quede colgada indefinidamente
-    const chats = await promiseWithTimeout(
-      clientInstance.getChats(),
-      12000,
-      'Tiempo de espera agotado al recuperar los chats de WhatsApp Web.'
-    );
-    
-    console.log(`[WHATSAPP] Chats obtenidos con éxito: ${chats.length} totales.`);
-    return chats
-      .filter(chat => chat.isGroup)
-      .map(chat => ({
-        id: chat.id._serialized,
-        name: chat.name || 'Grupo sin nombre'
-      }));
-  } catch (error) {
-    console.error('[WHATSAPP] Error al obtener grupos de WhatsApp:', error);
-    return [];
+
+  const now = Date.now();
+  // 1. Si los grupos están en caché y no ha expirado, los retornamos de inmediato
+  if (cachedGroups.length > 0 && (now - lastFetchedGroupsTime) < CACHE_TTL) {
+    console.log(`[WHATSAPP] Retornando ${cachedGroups.length} grupos desde caché local.`);
+    return cachedGroups;
   }
+
+  // 2. Si ya hay una consulta en curso a Puppeteer, reutilizamos esa promesa para evitar colisiones
+  if (activeFetchPromise) {
+    console.log('[WHATSAPP] Consulta de grupos ya en curso. Reutilizando promesa activa.');
+    return activeFetchPromise;
+  }
+
+  // Crear la promesa de fetch único (single-flight)
+  activeFetchPromise = (async () => {
+    try {
+      console.log('[WHATSAPP] Solicitando chats a whatsapp-web.js (Límite: 60s)...');
+      // Subimos el timeout a 60 segundos porque la primera sincronización en cuentas con muchos chats puede tardar
+      const chats = await promiseWithTimeout(
+        clientInstance.getChats(),
+        60000,
+        'Tiempo de espera agotado al recuperar los chats de WhatsApp Web.'
+      );
+
+      console.log(`[WHATSAPP] Chats obtenidos con éxito: ${chats.length} totales.`);
+      const groups = chats
+        .filter(chat => chat.isGroup)
+        .map(chat => ({
+          id: chat.id._serialized,
+          name: chat.name || 'Grupo sin nombre'
+        }));
+
+      // Actualizar caché
+      cachedGroups = groups;
+      lastFetchedGroupsTime = Date.now();
+      return groups;
+    } catch (error) {
+      console.error('[WHATSAPP] Error al obtener grupos de WhatsApp:', error);
+      // Fallback: si falla pero tenemos caché previa, la usamos antes de devolver un array vacío
+      if (cachedGroups.length > 0) {
+        console.warn('[WHATSAPP] Retornando caché expirada como fallback tras el error.');
+        return cachedGroups;
+      }
+      return [];
+    } finally {
+      // Liberar el bloqueo para futuras consultas
+      activeFetchPromise = null;
+    }
+  })();
+
+  return activeFetchPromise;
 }
