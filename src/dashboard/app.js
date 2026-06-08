@@ -46,6 +46,7 @@ async function checkStatus() {
     console.error('Error al consultar estado:', error);
     systemBadge.className = 'system-badge disconnected';
     statusText.innerText = 'Desconectado (Error de Red)';
+    updateStatusUI({ status: 'DISCONNECTED' });
   }
 }
 
@@ -88,6 +89,12 @@ function updateStatusUI(data) {
     qrContainer.innerHTML = '<div class="spinner"></div><p class="qr-placeholder-text" style="color: var(--warning); font-weight: 600;">¡Autenticado! Sincronizando chats de WhatsApp...</p>';
     qrContainer.style.background = 'rgba(255, 255, 255, 0.03)';
     qrContainer.style.borderColor = 'var(--card-border)';
+
+    // Mostrar loader en tarjeta de grupos
+    const summaryBox = document.getElementById('selected-groups-summary');
+    if (summaryBox) summaryBox.classList.add('hidden');
+    noGroupsSelectedMsg.classList.remove('hidden');
+    noGroupsSelectedMsg.innerHTML = '<div class="spinner" style="width: 25px; height: 25px; margin: 0 auto 0.5rem;"></div>Sincronizando grupos desde WhatsApp...';
   } else {
     isConnected = false;
     userInfo.classList.add('hidden');
@@ -97,7 +104,6 @@ function updateStatusUI(data) {
     groupsEditSection.classList.add('hidden');
     groupsViewSection.classList.remove('hidden');
     noGroupsSelectedMsg.classList.remove('hidden');
-    noGroupsSelectedMsg.innerText = 'Conecta WhatsApp para ver tus grupos...';
 
     if (data.status === 'QR_RECEIVED' && data.qrDataUrl) {
       systemBadge.className = 'system-badge';
@@ -107,15 +113,18 @@ function updateStatusUI(data) {
       qrContainer.style.borderColor = 'var(--card-border)';
       restartWhatsappBtn.disabled = false;
       restartWhatsappBtn.innerText = 'Forzar Reconexión (Borrar sesión)';
+      noGroupsSelectedMsg.innerText = 'Conecta WhatsApp para ver tus grupos...';
     } else if (data.status === 'INITIALIZING') {
       systemBadge.className = 'system-badge';
       statusText.innerText = 'Inicializando...';
       qrContainer.innerHTML = '<div class="spinner"></div><p class="qr-placeholder-text">Cargando WhatsApp Web...</p>';
       restartWhatsappBtn.disabled = true;
+      noGroupsSelectedMsg.innerHTML = '<div class="spinner" style="width: 25px; height: 25px; margin: 0 auto 0.5rem;"></div>Iniciando WhatsApp...';
     } else if (data.status === 'DISCONNECTED') {
       systemBadge.className = 'system-badge disconnected';
       statusText.innerText = 'Desconectado';
       qrContainer.innerHTML = '<div class="spinner"></div><p class="qr-placeholder-text">Desconectado. Reintentando...</p>';
+      noGroupsSelectedMsg.innerText = 'WhatsApp desconectado. Esperando conexión...';
       
       // Iniciar reconexión automática si no está corriendo
       if (!isCountingDown) {
