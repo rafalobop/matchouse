@@ -2,7 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import * as path from 'path';
 import * as fs from 'fs';
-import { startWhatsAppClient, loadSettings, saveSettings, getActiveGroups, whatsappStatus } from './services/whatsapp';
+import { startWhatsAppClient, loadSettings, saveSettings, getActiveGroups, whatsappStatus, restartWhatsAppClient } from './services/whatsapp';
 import { extractRealEstateRequest, extractZoneIntent, ZoneIntentRequest } from './services/gemini';
 import { saveMatch, Property } from './services/sheets';
 import { isRealEstateRequest } from './utils/filter';
@@ -38,6 +38,15 @@ app.use(express.static(dashboardPath));
 // Endpoints de la API
 app.get('/api/status', (req, res) => {
   res.json(whatsappStatus);
+});
+
+app.post('/api/whatsapp/restart', async (req, res) => {
+  try {
+    await restartWhatsAppClient();
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al reiniciar cliente.' });
+  }
 });
 
 app.get('/api/groups', async (req, res) => {

@@ -44,6 +44,7 @@ export let whatsappStatus: WhatsAppStatus = {
 };
 
 let clientInstance: Client | null = null;
+let savedOptions: WhatsAppClientOptions | null = null;
 
 export interface WhatsAppClientOptions {
   onMessage: (message: Message, senderName: string, groupName: string) => Promise<void>;
@@ -52,6 +53,7 @@ export interface WhatsAppClientOptions {
 export function startWhatsAppClient(options: WhatsAppClientOptions): Client {
   console.log('Iniciando cliente de WhatsApp Web...');
   whatsappStatus.status = 'INITIALIZING';
+  savedOptions = options;
 
   const client = new Client({
     authStrategy: new LocalAuth({
@@ -173,6 +175,42 @@ export function startWhatsAppClient(options: WhatsAppClientOptions): Client {
   });
 
   return client;
+}
+
+/**
+ * Destruye la sesión actual de WhatsApp, limpia archivos temporales y reinicia el cliente
+ */
+export async function restartWhatsAppClient(): Promise<void> {
+  console.log('[WHATSAPP] Iniciando proceso de reinicio forzado...');
+  
+  if (clientInstance) {
+    try {
+      await clientInstance.destroy();
+      console.log('[WHATSAPP] Instancia anterior destruida con éxito.');
+    } catch (error) {
+      console.error('[WHATSAPP] Error al destruir instancia de WhatsApp:', error);
+    }
+    clientInstance = null;
+  }
+
+  // Esperar un momento a que Windows libere los archivos
+  await new Promise(resolve => setTimeout(resolve, 2000));
+
+  const authDir = path.join(process.cwd(), '.wwebjs_auth');
+  if (fs.existsSync(authDir)) {
+    try {
+      fs.rmSync(authDir, { recursive: true, force: true });
+      console.log('[WHATSAPP] Carpeta de sesión eliminada para forzar re-logueo.');
+    } catch (err) {
+      console.warn('[WHATSAPP] No se pudo borrar la carpeta de sesión (archivos bloqueados). Se continuará igualmente:', err);
+    }
+  }
+
+  if (savedOptions) {
+    startWhatsAppClient(savedOptions);
+  } else {
+    console.error('[WHATSAPP] No se puede reiniciar: faltan opciones iniciales de configuración.');
+  }
 }
 
 /**

@@ -10,12 +10,19 @@ const qrContainer = document.getElementById('qr-container');
 const userInfo = document.getElementById('user-info');
 const userName = document.getElementById('user-name');
 const userPhone = document.getElementById('user-phone');
+const restartWhatsappBtn = document.getElementById('restart-whatsapp-btn');
 
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('file-input');
 const uploadStatus = document.getElementById('upload-status');
 const propertiesCount = document.getElementById('properties-count');
 
+// Elementos del DOM - Grupos
+const toggleEditGroupsBtn = document.getElementById('toggle-edit-groups-btn');
+const cancelEditGroupsBtn = document.getElementById('cancel-edit-groups-btn');
+const groupsViewSection = document.getElementById('groups-view-section');
+const groupsEditSection = document.getElementById('groups-edit-section');
+const noGroupsSelectedMsg = document.getElementById('no-groups-selected-msg');
 const groupSearch = document.getElementById('group-search');
 const groupsList = document.getElementById('groups-list');
 const saveGroupsBtn = document.getElementById('save-groups-btn');
@@ -42,6 +49,7 @@ function updateStatusUI(data) {
   if (data.status === 'CONNECTED') {
     systemBadge.className = 'system-badge connected';
     statusText.innerText = 'Conectado';
+    toggleEditGroupsBtn.disabled = false;
     
     if (!isConnected) {
       isConnected = true;
@@ -55,13 +63,19 @@ function updateStatusUI(data) {
       qrContainer.style.background = 'rgba(16, 185, 129, 0.03)';
       qrContainer.style.borderColor = 'rgba(16, 185, 129, 0.2)';
 
-      // Cargar lista de grupos
+      // Cargar lista de grupos e inicializar vistas
       loadGroups();
     }
   } else {
     isConnected = false;
     userInfo.classList.add('hidden');
-    saveGroupsBtn.disabled = true;
+    toggleEditGroupsBtn.disabled = true;
+    
+    // Si no está conectado, forzar el cierre de la pantalla de edición
+    groupsEditSection.classList.add('hidden');
+    groupsViewSection.classList.remove('hidden');
+    noGroupsSelectedMsg.classList.remove('hidden');
+    noGroupsSelectedMsg.innerText = 'Conecta WhatsApp para ver tus grupos...';
 
     if (data.status === 'QR_RECEIVED' && data.qrDataUrl) {
       systemBadge.className = 'system-badge';
@@ -80,6 +94,38 @@ function updateStatusUI(data) {
     }
   }
 }
+
+// Forzar reinicio de WhatsApp (Borrar Caché)
+restartWhatsappBtn.addEventListener('click', async () => {
+  if (!confirm('¿Estás seguro de que quieres forzar la reconexión? Esto cerrará la sesión actual, borrará el caché de autenticación y generará un código QR nuevo.')) {
+    return;
+  }
+  
+  restartWhatsappBtn.disabled = true;
+  restartWhatsappBtn.innerText = 'Reiniciando...';
+  
+  try {
+    const res = await fetch('/api/whatsapp/restart', { method: 'POST' });
+    if (res.ok) {
+      // Limpiar UI local e ir al estado inicial de carga
+      isConnected = false;
+      userInfo.classList.add('hidden');
+      qrContainer.innerHTML = '<div class="spinner"></div><p class="qr-placeholder-text">Reiniciando sesión y solicitando QR...</p>';
+      qrContainer.style.background = 'rgba(255, 255, 255, 0.03)';
+      qrContainer.style.borderColor = 'var(--card-border)';
+    } else {
+      alert('No se pudo reiniciar la sesión.');
+    }
+  } catch (error) {
+    console.error(error);
+    alert('Error al conectar con el servidor.');
+  } finally {
+    setTimeout(() => {
+      restartWhatsappBtn.disabled = false;
+      restartWhatsappBtn.innerText = 'Forzar Reconexión (Borrar sesión)';
+    }, 5000);
+  }
+});
 
 // Cargar catálogo info
 async function loadCatalogInfo() {
@@ -103,7 +149,6 @@ async function loadGroups() {
     
     renderGroups();
     updateSelectedGroupsSummary();
-    saveGroupsBtn.disabled = false;
   } catch (error) {
     console.error('Error al cargar grupos:', error);
     groupsList.innerHTML = '<p class="list-placeholder error">Error al obtener grupos de WhatsApp</p>';
@@ -118,9 +163,12 @@ function updateSelectedGroupsSummary() {
 
   if (selectedGroups.length === 0) {
     summaryBox.classList.add('hidden');
+    noGroupsSelectedMsg.classList.remove('hidden');
+    noGroupsSelectedMsg.innerText = 'No has seleccionado ningún grupo aún. Haz clic en "Editar Grupos" para empezar.';
     return;
   }
 
+  noGroupsSelectedMsg.classList.add('hidden');
   summaryBox.classList.remove('hidden');
   tagsContainer.innerHTML = '';
   
@@ -136,7 +184,20 @@ function updateSelectedGroupsSummary() {
   });
 }
 
-// Renderizar la lista de grupos con filtro
+// Manejo de Edición de Grupos
+toggleEditGroupsBtn.addEventListener('click', () => {
+  groupsViewSection.classList.add('hidden');
+  groupsEditSection.classList.remove('hidden');
+  renderGroups();
+});
+
+cancelEditGroupsBtn.addEventListener('click', () => {
+  groupsEditSection.classList.add('hidden');
+  groupsViewSection.classList.remove('hidden');
+  loadGroups(); // Recargar de base
+});
+
+// Renderizar la lista de grupos con filtro en la vista de edición
 function renderGroups() {
   const query = groupSearch.value.toLowerCase();
   const filtered = allGroups.filter(g => g.name.toLowerCase().includes(query));
@@ -193,9 +254,15 @@ saveGroupsBtn.addEventListener('click', async () => {
     });
 
     if (res.ok) {
-      saveStatus.innerText = '¡Guardado con éxito!';
+      saveStatus.innerText = '¡Guardado!';
       saveStatus.style.color = 'var(--success)';
       updateSelectedGroupsSummary();
+      
+      // Salir del modo edición automáticamente tras guardar
+      setTimeout(() => {
+        groupsEditSection.classList.add('hidden');
+        groupsViewSection.classList.remove('hidden');
+      }, 1000);
     } else {
       saveStatus.innerText = 'Error al guardar.';
       saveStatus.style.color = 'var(--error)';
@@ -207,8 +274,8 @@ saveGroupsBtn.addEventListener('click', async () => {
   } finally {
     setTimeout(() => {
       saveStatus.innerText = '';
-      saveGroupsBtn.disabled = !isConnected;
-    }, 3000);
+      saveGroupsBtn.disabled = false;
+    }, 1500);
   }
 });
 
@@ -342,5 +409,7 @@ checkStatus();
 loadCatalogInfo();
 loadMatches();
 
-setInterval(checkStatus, 2000);   // Consultar QR/Conexión cada 2 segundos
-setInterval(loadMatches, 5000);   // Consultar matches cada 5 segundos
+// Acortamos los tiempos de polling para que sea más reactivo y cargue de inmediato
+setInterval(checkStatus, 1500);   // Consultar QR/Conexión cada 1.5 segundos
+setInterval(loadMatches, 2000);   // Consultar matches cada 2 segundos
+setInterval(loadCatalogInfo, 5000); // Consultar catálogo cada 5 segundos

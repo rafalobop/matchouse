@@ -50,6 +50,8 @@
             <p id="user-phone">+54 9 ...</p>
           </div>
         </div>
+
+        <button id="restart-whatsapp-btn" class="btn btn-danger btn-small">Forzar Reconexión (Borrar sesión)</button>
       </section>
 
       <!-- Sección central: Catálogo e Inventario -->
@@ -76,26 +78,39 @@
 
       <!-- Sección derecha: Filtro de Grupos -->
       <section class="card groups-card">
-        <h2>Grupos a Monitorear</h2>
+        <div class="card-header-actions">
+          <h2>Grupos a Monitorear</h2>
+          <button id="toggle-edit-groups-btn" class="btn btn-secondary btn-small" disabled>✏️ Editar Grupos</button>
+        </div>
         <p class="section-desc">Selecciona los grupos de WhatsApp que el bot debe escuchar para procesar pedidos.</p>
 
-        <div id="selected-groups-summary" class="selected-groups-summary hidden">
-          <strong>Grupos activos siendo escuchados:</strong>
-          <div id="selected-groups-tags" class="selected-groups-tags"></div>
-        </div>
-
-        <div class="search-box">
-          <input type="text" id="group-search" placeholder="Buscar grupo por nombre...">
-        </div>
-
-        <div class="groups-list-container">
-          <div id="groups-list" class="groups-list">
-            <p class="list-placeholder">Conecta WhatsApp para listar tus grupos...</p>
+        <!-- Vista de Grupos Seleccionados (Lectura) -->
+        <div id="groups-view-section">
+          <div id="selected-groups-summary" class="selected-groups-summary hidden">
+            <strong>Grupos activos siendo escuchados:</strong>
+            <div id="selected-groups-tags" class="selected-groups-tags"></div>
           </div>
+          <p id="no-groups-selected-msg" class="list-placeholder">Conecta WhatsApp para ver tus grupos...</p>
         </div>
 
-        <button id="save-groups-btn" class="btn btn-primary" disabled>Guardar Grupos</button>
-        <span id="save-status" class="save-status-msg"></span>
+        <!-- Sección de Edición (Oculta por defecto) -->
+        <div id="groups-edit-section" class="groups-edit-section hidden">
+          <div class="search-box">
+            <input type="text" id="group-search" placeholder="Buscar grupo por nombre...">
+          </div>
+
+          <div class="groups-list-container">
+            <div id="groups-list" class="groups-list">
+              <p class="list-placeholder">Cargando grupos de WhatsApp...</p>
+            </div>
+          </div>
+
+          <div class="groups-edit-actions">
+            <button id="save-groups-btn" class="btn btn-primary">Guardar</button>
+            <button id="cancel-edit-groups-btn" class="btn btn-secondary">Cancelar</button>
+          </div>
+          <span id="save-status" class="save-status-msg"></span>
+        </div>
       </section>
     </main>
 

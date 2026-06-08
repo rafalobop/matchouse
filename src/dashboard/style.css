@@ -578,3 +578,55 @@ tr:last-child td {
   animation: fadeIn 0.5s ease-out;
 }
 
+/* Edit / Layout adjustments */
+.card-header-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.btn-small {
+  padding: 0.4rem 0.8rem;
+  font-size: 0.8rem;
+  border-radius: 6px;
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  border: 1px solid var(--card-border);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.btn-danger {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.3);
+}
+
+.groups-edit-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.groups-edit-actions .btn {
+  flex: 1;
+}
+
+.groups-edit-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  animation: fadeIn 0.2s ease-out;
+}
+
+
