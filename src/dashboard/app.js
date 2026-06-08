@@ -17,6 +17,13 @@ const userName = document.getElementById('user-name');
 const userPhone = document.getElementById('user-phone');
 const restartWhatsappBtn = document.getElementById('restart-whatsapp-btn');
 
+// Elementos del DOM - Pantalla de Carga
+const loadingOverlay = document.getElementById('loading-overlay');
+const overlayTitle = document.getElementById('overlay-title');
+const overlayDesc = document.getElementById('overlay-desc');
+const progressBar = document.getElementById('progress-bar');
+const progressText = document.getElementById('progress-text');
+
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('file-input');
 const uploadStatus = document.getElementById('upload-status');
@@ -54,6 +61,11 @@ function updateStatusUI(data) {
   // Manejo del contador de reconexión
   if (data.status !== 'DISCONNECTED') {
     cancelCountdown();
+  }
+
+  // Ocultar pantalla de carga completa si no estamos en estado de autenticación/sincronización
+  if (data.status !== 'AUTHENTICATED') {
+    loadingOverlay.classList.add('hidden');
   }
 
   // Configurar insignia de estado
@@ -95,6 +107,13 @@ function updateStatusUI(data) {
     if (summaryBox) summaryBox.classList.add('hidden');
     noGroupsSelectedMsg.classList.remove('hidden');
     noGroupsSelectedMsg.innerHTML = '<div class="spinner" style="width: 25px; height: 25px; margin: 0 auto 0.5rem;"></div>Sincronizando grupos desde WhatsApp...';
+
+    // Mostrar overlay de carga en pantalla completa con porcentaje en tiempo real
+    loadingOverlay.classList.remove('hidden');
+    const percent = data.syncPercentage || 0;
+    progressBar.style.width = percent + '%';
+    progressText.innerText = percent + '%';
+    overlayDesc.innerText = data.syncMessage || 'Iniciando sincronización de chats...';
   } else {
     isConnected = false;
     userInfo.classList.add('hidden');

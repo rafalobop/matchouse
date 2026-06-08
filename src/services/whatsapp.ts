@@ -33,6 +33,8 @@ export function saveSettings(settings: Settings): void {
 export interface WhatsAppStatus {
   status: 'INITIALIZING' | 'DISCONNECTED' | 'QR_RECEIVED' | 'AUTHENTICATED' | 'CONNECTED';
   qrDataUrl?: string;
+  syncPercentage?: number;
+  syncMessage?: string;
   user?: {
     name: string;
     number: string;
@@ -53,6 +55,8 @@ export interface WhatsAppClientOptions {
 export function startWhatsAppClient(options: WhatsAppClientOptions): Client {
   console.log('Iniciando cliente de WhatsApp Web...');
   whatsappStatus.status = 'INITIALIZING';
+  whatsappStatus.syncPercentage = 0;
+  whatsappStatus.syncMessage = 'Inicializando...';
   savedOptions = options;
 
   const client = new Client({
@@ -75,6 +79,13 @@ export function startWhatsAppClient(options: WhatsAppClientOptions): Client {
   });
 
   clientInstance = client;
+
+  client.on('loading_screen', (percent, message) => {
+    whatsappStatus.status = 'AUTHENTICATED';
+    whatsappStatus.syncPercentage = typeof percent === 'string' ? parseFloat(percent) : percent;
+    whatsappStatus.syncMessage = message;
+    console.log(`[WHATSAPP SYNC] Sincronización en curso: ${percent}% - ${message}`);
+  });
 
   // Generación de código QR
   client.on('qr', async (qr) => {

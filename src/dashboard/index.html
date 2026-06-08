@@ -12,6 +12,28 @@
 </head>
 
 <body>
+  <!-- Overlay de Sincronización en Pantalla Completa -->
+  <div id="loading-overlay" class="loading-overlay hidden">
+    <div class="overlay-card">
+      <div class="logo-area" style="justify-content: center; margin-bottom: 1.5rem; width: 100%;">
+        <span class="logo-icon">🏠</span>
+        <div>
+          <h1 style="font-size: 2rem;">HouseMatch</h1>
+          <p class="tagline" style="text-align: center;">WhatsApp Real Estate Pipeline</p>
+        </div>
+      </div>
+      <div class="spinner" style="width: 60px; height: 60px; border-width: 5px; margin: 0 auto 1.5rem;"></div>
+      <h3 id="overlay-title" style="margin-bottom: 0.5rem; font-size: 1.25rem;">Sincronizando WhatsApp...</h3>
+      <p id="overlay-desc" class="section-desc" style="text-align: center; margin-bottom: 1.5rem;">
+        Por favor espera mientras conectamos con WhatsApp Web.
+      </p>
+      <div class="progress-bar-container" style="width: 100%; height: 8px; background: rgba(255,255,255,0.05); border-radius: 4px; overflow: hidden; margin-top: 1rem; border: 1px solid var(--card-border);">
+        <div id="progress-bar" class="progress-bar" style="width: 0%; height: 100%; background: linear-gradient(to right, var(--accent), #8b5cf6); transition: width 0.3s ease-out;"></div>
+      </div>
+      <span id="progress-text" style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.5rem; display: block; text-align: center; font-weight: 600;">0%</span>
+    </div>
+  </div>
+
   <div class="background-decorations">
     <div class="blob blob-1"></div>
     <div class="blob blob-2"></div>
