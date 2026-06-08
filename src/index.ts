@@ -183,6 +183,16 @@ async function processIncomingMessage(body: string, sender: string, groupName: s
  */
 async function main() {
   console.log('Iniciando HouseMatch MVP con Dashboard...');
+  
+  // Diagnóstico de entorno para Railway/Puppeteer
+  console.log('[DIAGNOSTIC] PUPPETEER_EXECUTABLE_PATH:', process.env.PUPPETEER_EXECUTABLE_PATH);
+  try {
+    const { execSync } = require('child_process');
+    const pathChromium = execSync('command -v chromium || which chromium').toString().trim();
+    console.log('[DIAGNOSTIC] Ubicación de chromium en sistema:', pathChromium);
+  } catch (e: any) {
+    console.warn('[DIAGNOSTIC] Falló comando al buscar chromium:', e.message);
+  }
 
   // Cargar catálogo inicialmente desde disco
   propertyCatalog = loadCatalogFromDisk();
