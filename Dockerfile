@@ -36,9 +36,6 @@ RUN npm run build
 # Definir variables de entorno de producción para Puppeteer
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
-ENV PORT=3000
-
-EXPOSE 3000
 
 # Arrancar la aplicación
 CMD ["npm", "start"]
