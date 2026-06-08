@@ -59,13 +59,32 @@ export function startWhatsAppClient(options: WhatsAppClientOptions): Client {
   whatsappStatus.syncMessage = 'Inicializando...';
   savedOptions = options;
 
+  // Buscar de forma robusta la ruta del navegador Puppeteer en producción/Linux
+  let puppeteerExecutablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  if (!puppeteerExecutablePath && process.platform === 'linux') {
+    const paths = [
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/google-chrome',
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser'
+    ];
+    for (const p of paths) {
+      if (fs.existsSync(p)) {
+        puppeteerExecutablePath = p;
+        break;
+      }
+    }
+  }
+
+  console.log(`[PUPPETEER] Usando executablePath: ${puppeteerExecutablePath || 'Por defecto (descargado por puppeteer)'}`);
+
   const client = new Client({
     authStrategy: new LocalAuth({
       dataPath: './.wwebjs_auth'
     }),
     puppeteer: {
       headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      executablePath: puppeteerExecutablePath || undefined,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
