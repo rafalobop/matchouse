@@ -119,9 +119,13 @@ function updateStatusUI(data) {
     userInfo.classList.add('hidden');
     toggleEditGroupsBtn.disabled = true;
     
-    // Si no está conectado, forzar el cierre de la pantalla de edición
+    // Si no está conectado, forzar el cierre de la pantalla de edición y ocultar resumen de grupos
     groupsEditSection.classList.add('hidden');
     groupsViewSection.classList.remove('hidden');
+    
+    const summaryBox = document.getElementById('selected-groups-summary');
+    if (summaryBox) summaryBox.classList.add('hidden');
+    
     noGroupsSelectedMsg.classList.remove('hidden');
 
     if (data.status === 'QR_RECEIVED' && data.qrDataUrl) {
