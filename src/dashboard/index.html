@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HouseMatch Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+
+<body>
+  <div class="background-decorations">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+  </div>
+
+  <div class="app-container">
+    <header class="app-header">
+      <div class="logo-area">
+        <span class="logo-icon">🏠</span>
+        <div>
+          <h1>HouseMatch</h1>
+          <p class="tagline">WhatsApp Real Estate Pipeline</p>
+        </div>
+      </div>
+      <div class="system-badge" id="system-badge">
+        <span class="badge-dot"></span>
+        <span class="badge-text" id="status-text">Conectando...</span>
+      </div>
+    </header>
+
+    <main class="dashboard-grid">
+      <!-- Sección izquierda: Conexión de WhatsApp -->
+      <section class="card connection-card">
+        <h2>Conexión de WhatsApp</h2>
+        <p class="section-desc">Escanea el código QR para autenticar tu cuenta de WhatsApp Web.</p>
+
+        <div class="qr-container" id="qr-container">
+          <div class="spinner"></div>
+          <p class="qr-placeholder-text">Cargando estado...</p>
+        </div>
+
+        <div id="user-info" class="user-info-box hidden">
+          <div class="user-avatar">💬</div>
+          <div class="user-details">
+            <h3 id="user-name">Usuario Conectado</h3>
+            <p id="user-phone">+54 9 ...</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Sección central: Catálogo e Inventario -->
+      <section class="card upload-card">
+        <h2>Inventario de Propiedades</h2>
+        <p class="section-desc">Arrastra tu archivo Excel (.xlsx) con la cartera de propiedades. Se procesará en memoria
+          de forma segura.</p>
+
+        <div class="dropzone" id="dropzone">
+          <div class="dropzone-icon">📊</div>
+          <p class="dropzone-text">Arrastra tu archivo Excel aquí o haz clic para buscar</p>
+          <input type="file" id="file-input" accept=".xlsx" style="display: none;">
+        </div>
+
+        <div id="upload-status" class="status-msg hidden"></div>
+
+        <div class="catalog-info" id="catalog-info">
+          <div class="stat-row">
+            <span>Propiedades cargadas:</span>
+            <strong id="properties-count">0</strong>
+          </div>
+        </div>
+      </section>
+
+      <!-- Sección derecha: Filtro de Grupos -->
+      <section class="card groups-card">
+        <h2>Grupos a Monitorear</h2>
+        <p class="section-desc">Selecciona los grupos de WhatsApp que el bot debe escuchar para procesar pedidos.</p>
+
+        <div id="selected-groups-summary" class="selected-groups-summary hidden">
+          <strong>Grupos activos siendo escuchados:</strong>
+          <div id="selected-groups-tags" class="selected-groups-tags"></div>
+        </div>
+
+        <div class="search-box">
+          <input type="text" id="group-search" placeholder="Buscar grupo por nombre...">
+        </div>
+
+        <div class="groups-list-container">
+          <div id="groups-list" class="groups-list">
+            <p class="list-placeholder">Conecta WhatsApp para listar tus grupos...</p>
+          </div>
+        </div>
+
+        <button id="save-groups-btn" class="btn btn-primary" disabled>Guardar Grupos</button>
+        <span id="save-status" class="save-status-msg"></span>
+      </section>
+    </main>
+
+    <!-- Sección Inferior: Logs en Tiempo Real -->
+    <section class="card matches-card">
+      <div class="matches-header">
+        <h2>Últimos Matches Encontrados</h2>
+        <span class="pulse-indicator">En Vivo</span>
+      </div>
+      <p class="section-desc">Aquí se muestran las últimas coincidencias encontradas por el sistema antes de registrarse
+        en Sheets.</p>
+
+      <div class="table-container">
+        <table id="matches-table">
+          <thead>
+            <tr>
+              <th>Fecha/Hora</th>
+              <th>Propiedad Cartera</th>
+              <th>Pedido WhatsApp</th>
+              <th>Solicitante</th>
+              <th>Score y Razones</th>
+            </tr>
+          </thead>
+          <tbody id="matches-tbody">
+            <tr>
+              <td colspan="5" class="table-placeholder">No se han registrado matches en esta sesión.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+
+</html>
