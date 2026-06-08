@@ -61,6 +61,13 @@ export function startWhatsAppClient(options: WhatsAppClientOptions): Client {
 
   // Buscar de forma robusta la ruta del navegador Puppeteer en producción/Linux
   let puppeteerExecutablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  
+  // Si la ruta no existe en el disco, la descartamos para buscar alternativas reales
+  if (puppeteerExecutablePath && !fs.existsSync(puppeteerExecutablePath)) {
+    console.warn(`[PUPPETEER] Ruta '${puppeteerExecutablePath}' no existe. Buscando alternativas...`);
+    puppeteerExecutablePath = undefined;
+  }
+
   if (!puppeteerExecutablePath && process.platform === 'linux') {
     const paths = [
       '/usr/bin/google-chrome-stable',
