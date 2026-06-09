@@ -1,8 +1,11 @@
 import { GoogleGenAI } from '@google/genai';
 import { OpenAI } from 'openai';
 import { config } from '../config/env';
+import { zones } from '../utils/constants/zones';
 
 // --- DEFINICIONES DE TIPOS ---
+
+export const ALLOWED_ZONE_IDS = [...Object.keys(zones), 'DESCONOCIDO'];
 
 export interface ExtractedRealEstateRequest {
   operacion: 'venta' | 'alquiler' | 'desconocido';
@@ -15,7 +18,7 @@ export interface ExtractedRealEstateRequest {
 }
 
 export interface ZoneIntentRequest {
-  zona_id: 'ZONA_MATE_DE_LUNA' | 'ZONA_YERBA_BUENA' | 'ZONA_CENTRO_BARRIO_NORTE' | 'DESCONOCIDO';
+  zona_id: string; // Dinámico según zones.ts
   texto_ubicacion_original: string;
   dormitorios_min: number | null;
   caracteristicas_claves: string[];
@@ -82,7 +85,7 @@ class GeminiStrategy implements AIStrategy {
         responseSchema: {
           type: 'OBJECT',
           properties: {
-            zona_id: { type: 'STRING', enum: ['ZONA_MATE_DE_LUNA', 'ZONA_YERBA_BUENA', 'ZONA_CENTRO_BARRIO_NORTE', 'DESCONOCIDO'] },
+            zona_id: { type: 'STRING', enum: ALLOWED_ZONE_IDS },
             texto_ubicacion_original: { type: 'STRING' },
             dormitorios_min: { type: 'INTEGER', nullable: true },
             caracteristicas_claves: { type: 'ARRAY', items: { type: 'STRING' } },
@@ -260,17 +263,27 @@ const SYSTEM_INSTRUCTIONS_AGENT2 = `
 Sos un Agente Extractor de Intenciones Inmobiliarias ultra preciso. Tu único objetivo es leer mensajes de texto provenientes de grupos de WhatsApp de clientes que buscan propiedades y transformarlos en un objeto JSON estricto. No debés incluir explicaciones, introducciones ni bloques de código Markdown, solo el objeto JSON válido.
 
 Zonas Geográficas Permitidas
-Debés clasificar la ubicación del mensaje únicamente en uno de los siguientes IDs de zona permitidos. Si el mensaje menciona una calle, avenida, barrio o country que pertenezca a esa zona, usá el ID correspondiente:
-
-- ZONA_MATE_DE_LUNA: Si menciona Av. Mate de Luna, Parque Avellaneda, esquinas o paralelas cercanas a la avenida (alturas del 1600 al 4700).
-- ZONA_YERBA_BUENA: Si menciona Yerba Buena, Av. Perón, Av. Aconquija, o countries de esa zona (La Arboledas, San Patricio, etc.).
-- ZONA_CENTRO_BARRIO_NORTE: Si menciona calles del centro (Santiago, 9 de Julio, Corrientes, Laprida, etc.).
+Debés clasificar la ubicación del mensaje únicamente en uno de los siguientes IDs de zona permitidos:
+- ZONA_MATE_DE_LUNA: Av. Mate de Luna, Parque Avellaneda, o cercanías.
+- BARRIO_NORTE: Barrio Norte de San Miguel de Tucumán (e.g., calles del norte del centro como Santa Fe, Corrientes, Santiago, Salta, Muñecas, Balcarce, Laprida, 25 de Mayo, etc. entre Av. Avellaneda y Av. Mitre / Sarmiento).
+- BARRIO_SUR: Barrio Sur de San Miguel de Tucumán (e.g., calles al sur de la Av. 24 de Septiembre como San Lorenzo, Las Heras, Ayacucho, Congreso al 1000/2000, etc.).
+- ZONA_CENTRO: Microcentro de la ciudad (calles céntricas como 9 de Julio, Congreso, San Martín, 24 de Septiembre al 500-1000, etc.).
+- YERBA_BUENA: Yerba Buena, Av. Aconquija, Av. Perón, countries locales (Las Cañas, San Pablo, La Arboleda, etc.).
+- ZONA_PARQUE_9_DE_JULIO: Parque 9 de Julio o inmediaciones.
+- VILLA_LUJAN: Barrio Villa Luján.
+- ZONA_RINCONADA: La Rinconada.
+- ZONA_PLAZA_VIEJA: Plaza Vieja.
+- ZONA_CASCO_VIEJO: Casco Viejo.
+- ZONA_ALTO_VERDE: Alto Verde.
+- ZONA_TAFI_VIEJO: Tafí Viejo.
+- ZONA_LOMAS_DE_TAFI: Lomas de Tafí.
+- ZONA_LOS_NOGALES: Los Nogales o countries/lotes de la zona.
 - DESCONOCIDO: Si no menciona ninguna ubicación o no podés asociarla con total seguridad a las anteriores.
 
 Esquema de Salida (JSON)
 Deberás devolver exactamente esta estructura:
 {
-  "zona_id": "ZONA_MATE_DE_LUNA" | "ZONA_YERBA_BUENA" | "ZONA_CENTRO_BARRIO_NORTE" | "DESCONOCIDO",
+  "zona_id": "string (uno de los IDs de zona permitidos anteriormente o DESCONOCIDO)",
   "texto_ubicacion_original": "string con lo que escribió el usuario sobre la ubicación",
   "dormitorios_min": número entero (si pide '3 dorm' es 3. Si no especifica, poner null),
   "caracteristicas_claves": ["array", "de", "strings", "como", "jardin", "pileta", "cochera", "amoblado"],
@@ -330,7 +343,7 @@ function normalizeAgent1(parsed: any): ExtractedRealEstateRequest {
 function normalizeAgent2(parsed: any, operacionOriginal?: string): ZoneIntentRequest {
   if (parsed.zona_id) {
     parsed.zona_id = String(parsed.zona_id).toUpperCase() as any;
-    if (!['ZONA_MATE_DE_LUNA', 'ZONA_YERBA_BUENA', 'ZONA_CENTRO_BARRIO_NORTE', 'DESCONOCIDO'].includes(parsed.zona_id)) {
+    if (!ALLOWED_ZONE_IDS.includes(parsed.zona_id)) {
       parsed.zona_id = 'DESCONOCIDO';
     }
   } else {

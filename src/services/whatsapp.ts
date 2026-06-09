@@ -200,11 +200,17 @@ export async function startWhatsAppClient(options: WhatsAppClientOptions): Promi
         );
 
         if (!isGroupSelected) continue;
-
         // Obtener el remitente (con soporte robusto para participantAlt de Baileys)
         const participantJid = (key as any).participantAlt || key.participant || (msg as any).participant || '';
-        console.log('PART', participantJid)
-        const number = participantJid ? participantJid.split('@')[0] : from.split('@')[0];
+        
+        let number = '';
+        if (participantJid && !participantJid.endsWith('@lid')) {
+          number = participantJid.split('@')[0];
+        } else {
+          // Extraer número del creador/identificador del grupo desde key.remoteJid (e.g. 5493814590816-1580358193@g.us)
+          number = from.split('@')[0].split('-')[0];
+        }
+        
         const senderName = msg.pushName || number || 'Remitente Anónimo';
         const senderContact = `@${number} (${senderName})`;
 

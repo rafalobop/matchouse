@@ -16,6 +16,8 @@ export interface Property {
   operacion: 'venta' | 'alquiler'; // Deductible por la pestaña
   tipo_propiedad: 'departamento' | 'casa' | 'terreno' | 'local' | 'oficina' | 'otro';
   sheetName: string;   // Origen de los datos
+  latitud?: number;
+  longitud?: number;
 }
 
 const CREDENTIALS_PATH = path.join(process.cwd(), 'credentials.json');
@@ -270,7 +272,7 @@ export async function saveMatch(
               'Contacto Captador',
               'Pedido WhatsApp (Original)',
               'Contacto Solicitante',
-              'Detalles de Coincidencia'
+              'Observaciones'
             ]],
           },
         });
