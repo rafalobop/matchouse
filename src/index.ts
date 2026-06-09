@@ -42,7 +42,24 @@ app.get('/api/status', (req, res) => {
 
 app.post('/api/whatsapp/restart', async (req, res) => {
   try {
+    // 1. Reiniciar cliente de WhatsApp (esto también limpia caché de grupos y configuraciones)
     await restartWhatsAppClient();
+
+    // 2. Limpiar variables en memoria del catálogo y de matches
+    propertyCatalog = [];
+    recentMatches.length = 0;
+
+    // 3. Eliminar el archivo catalog.json de disco si existe
+    const catalogPath = path.join(process.cwd(), 'catalog.json');
+    if (fs.existsSync(catalogPath)) {
+      try {
+        fs.unlinkSync(catalogPath);
+        console.log('[REINICIO] Archivo catalog.json eliminado.');
+      } catch (err) {
+        console.error('[REINICIO] Error al borrar catalog.json:', err);
+      }
+    }
+
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al reiniciar cliente.' });

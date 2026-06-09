@@ -222,10 +222,28 @@ export async function startWhatsAppClient(options: WhatsAppClientOptions): Promi
 }
 
 /**
+ * Limpia la configuración de grupos seleccionados y la caché en memoria y disco
+ */
+export function clearSessionLocalData(): void {
+  cachedGroups = [];
+  saveSettings({ selectedGroups: [] });
+  try {
+    if (fs.existsSync(GROUPS_CACHE_PATH)) {
+      fs.unlinkSync(GROUPS_CACHE_PATH);
+      console.log('[WHATSAPP] Caché de grupos eliminada de disco.');
+    }
+  } catch (e) {
+    console.error('[WHATSAPP] Error al borrar archivo de caché de grupos:', e);
+  }
+}
+
+/**
  * Destruye la sesión actual de WhatsApp, limpia archivos temporales y reinicia el cliente
  */
 export async function restartWhatsAppClient(): Promise<void> {
   console.log('[WHATSAPP] Iniciando proceso de reinicio forzado...');
+
+  clearSessionLocalData();
 
   if (sockInstance) {
     try {
