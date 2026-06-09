@@ -29,7 +29,18 @@ function getSheetsClient() {
   let auth;
 
   // 1. Intentar cargar desde la variable de entorno para producción/deploy
-  if (process.env.GOOGLE_CREDS_JSON) {
+  if (process.env.GOOGLE_CREDS_JSON_BASE64) {
+    try {
+      const decoded = Buffer.from(process.env.GOOGLE_CREDS_JSON_BASE64, 'base64').toString('utf-8');
+      const keys = JSON.parse(decoded);
+      auth = new google.auth.GoogleAuth({
+        credentials: keys,
+        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+      });
+    } catch (error) {
+      console.error('[SHEETS] Error al parsear la variable de entorno GOOGLE_CREDS_JSON_BASE64:', error);
+    }
+  } else if (process.env.GOOGLE_CREDS_JSON) {
     try {
       const keys = JSON.parse(process.env.GOOGLE_CREDS_JSON);
       auth = new google.auth.GoogleAuth({
@@ -219,6 +230,15 @@ export async function getPropertyCatalog(): Promise<Property[]> {
   return catalog;
 }
 
+function sanitizeValue(value: any): any {
+  if (typeof value !== 'string') return value;
+  // Si comienza con =, +, -, o @, anteponer una comilla simple para desactivar fórmulas
+  if (/^[=\+\-\@\t\r]/.test(value)) {
+    return `'${value}`;
+  }
+  return value;
+}
+
 /**
  * Guarda un match encontrado en la pestaña [MATCHES ENCONTRADOS]
  */
@@ -283,22 +303,24 @@ export async function saveMatch(
 
     const fecha = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Tucuman' });
 
+    const rowValues = [
+      fecha,
+      property.sheetName,
+      `${property.domicilio} ${property.pisoLote}`.trim(),
+      `${property.moneda} ${property.precio}`,
+      property.contacto,
+      originalText,
+      contactSender,
+      matchDetails
+    ].map(sanitizeValue);
+
     // Agregar fila del match
     await sheets.spreadsheets.values.append({
       spreadsheetId,
       range: `${tabName}!A:A`,
       valueInputOption: 'RAW',
       requestBody: {
-        values: [[
-          fecha,
-          property.sheetName,
-          `${property.domicilio} ${property.pisoLote}`.trim(),
-          `${property.moneda} ${property.precio}`,
-          property.contacto,
-          originalText,
-          contactSender,
-          matchDetails
-        ]],
+        values: [rowValues],
       },
     });
 
