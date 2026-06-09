@@ -243,8 +243,6 @@ export function clearSessionLocalData(): void {
 export async function restartWhatsAppClient(): Promise<void> {
   console.log('[WHATSAPP] Iniciando proceso de reinicio forzado...');
 
-  clearSessionLocalData();
-
   if (sockInstance) {
     try {
       sockInstance.end(new Error('Reinicio manual solicitado'));
