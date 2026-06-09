@@ -2,7 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import * as path from 'path';
 import * as fs from 'fs';
-import { startWhatsAppClient, loadSettings, saveSettings, getActiveGroups, whatsappStatus, restartWhatsAppClient } from './services/whatsapp';
+import { startWhatsAppClient, loadSettings, saveSettings, getActiveGroups, whatsappStatus, restartWhatsAppClient, sendWhatsAppNotification } from './services/whatsapp';
 import { extractRealEstateRequest, extractZoneIntent, ZoneIntentRequest } from './services/gemini';
 import { saveMatch, Property } from './services/sheets';
 import { isRealEstateRequest } from './utils/filter';
@@ -102,7 +102,7 @@ app.get('/api/matches', (req, res) => {
 /**
  * Procesa un mensaje calificado de WhatsApp
  */
-async function processIncomingMessage(body: string, sender: string, groupName: string) {
+async function processIncomingMessage(body: string, sender: string, groupName: string, senderPhone: string) {
   // 1. Filtrado local ultra-rápido (cero costo de API)
   if (!isRealEstateRequest(body)) {
     return;
@@ -139,11 +139,14 @@ async function processIncomingMessage(body: string, sender: string, groupName: s
 
   let matchesFoundCount = 0;
 
+  const matchedPropertiesList: { property: Property; score: number }[] = [];
+
   for (const property of propertyCatalog) {
     const matchResult = checkMatch(requestEntities, property, zoneIntent);
 
     if (matchResult.isMatch) {
       matchesFoundCount++;
+      matchedPropertiesList.push({ property, score: matchResult.score });
       console.log(`[¡MATCH ENCONTRADO!]:`);
       console.log(` - Propiedad: ${property.domicilio} (Precio: ${property.moneda} ${property.precio})`);
       console.log(` - Score de coincidencia: ${matchResult.score}%`);
@@ -174,6 +177,35 @@ async function processIncomingMessage(body: string, sender: string, groupName: s
 
   if (matchesFoundCount === 0) {
     console.log(`[MATCHER] No se encontraron coincidencias en la cartera para este pedido.`);
+  } else {
+    // 6. Enviar notificación al propio WhatsApp del usuario conectado
+    const matchIntro = matchesFoundCount === 1 
+      ? `🏠 *¡${matchesFoundCount} MATCH ENCONTRADO!*`
+      : `🏠 *¡${matchesFoundCount} MATCHES ENCONTRADOS!*`;
+
+    const propDetails = matchedPropertiesList.map((m, idx) => {
+      const waLink = m.property.contacto ? `https://wa.me/${m.property.contacto.replace(/\D/g, '')}` : '';
+      const contactInfo = waLink ? `[${m.property.contacto}](${waLink})` : (m.property.contacto || 'No especificado');
+      return `*${idx + 1}. ${m.property.domicilio}* (${m.property.sheetName})
+   • Precio: *${m.property.moneda} ${m.property.precio}*
+   • Zona: ${m.property.zona}
+   • Contacto Captador: ${contactInfo}`;
+    }).join('\n\n');
+
+    const notificationText = `${matchIntro}
+En el grupo: _${groupName}_
+
+*Pedido:*
+"${body.substring(0, 200)}${body.length > 200 ? '...' : ''}"
+
+*Cliente (Solicitante):*
+👤 ${sender}
+📱 Chat directo: wa.me/${senderPhone}
+
+*Propiedades Coincidentes:*
+${propDetails}`;
+
+    await sendWhatsAppNotification(notificationText);
   }
   console.log(`--------------------------------------------------\n`);
 }
@@ -200,8 +232,8 @@ async function main() {
 
   // Iniciar cliente de WhatsApp
   startWhatsAppClient({
-    onMessage: async (message, senderName, groupName) => {
-      await processIncomingMessage(message.body, senderName, groupName);
+    onMessage: async (message, senderName, groupName, senderPhone) => {
+      await processIncomingMessage(message.body, senderName, groupName, senderPhone);
     }
   });
 

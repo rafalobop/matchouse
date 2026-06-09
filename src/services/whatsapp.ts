@@ -85,7 +85,21 @@ let sockInstance: WASocket | null = null;
 let savedOptions: WhatsAppClientOptions | null = null;
 
 export interface WhatsAppClientOptions {
-  onMessage: (message: { body: string }, senderName: string, groupName: string) => Promise<void>;
+  onMessage: (message: { body: string }, senderName: string, groupName: string, senderPhone: string) => Promise<void>;
+}
+
+export async function sendWhatsAppNotification(message: string): Promise<void> {
+  if (whatsappStatus.status !== 'CONNECTED' || !sockInstance || !sockInstance.user?.id) {
+    console.warn('[WHATSAPP] No se puede enviar notificación: Cliente no conectado.');
+    return;
+  }
+  try {
+    const selfJid = sockInstance.user.id.split(':')[0] + '@s.whatsapp.net';
+    await sockInstance.sendMessage(selfJid, { text: message });
+    console.log(`[WHATSAPP] Notificación enviada al usuario conectado (${selfJid}).`);
+  } catch (error) {
+    console.error('[WHATSAPP] Error al enviar notificación de match:', error);
+  }
 }
 
 export async function startWhatsAppClient(options: WhatsAppClientOptions): Promise<WASocket> {
@@ -219,7 +233,7 @@ export async function startWhatsAppClient(options: WhatsAppClientOptions): Promi
         console.log(` > Mensaje: "${body.substring(0, 120)}${body.length > 120 ? '...' : ''}"`);
 
         // Delegar al orquestador del pipeline
-        await options.onMessage({ body }, senderContact, chatName);
+        await options.onMessage({ body }, senderContact, chatName, number);
       } catch (error) {
         console.error('Error al procesar mensaje entrante de WhatsApp:', error);
       }
