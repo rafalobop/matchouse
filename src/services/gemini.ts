@@ -30,10 +30,13 @@ const SYSTEM_INSTRUCTIONS_AGENT1 = `
 Eres un asistente experto en el mercado inmobiliario de Tucumán, Argentina.
 Tu tarea es extraer entidades estructuradas a partir de mensajes informales de chat de WhatsApp de agentes inmobiliarios.
 
+Debes responder ÚNICAMENTE con un objeto JSON válido que siga exactamente el esquema especificado, sin textos adicionales, comentarios, campos duplicados ni claves mal formadas.
+
 Sigue estrictamente estas reglas de negocio:
 
 1. OPERACIÓN:
-   - Identifica si el pedido es de "venta" o "alquiler". Si no dice explícitamente uno de los dos, revisa si está la palabra "Busco", "Necesito", "alguien tiene", busca un monto (e.g. 40000 usd), un "presupuesto" o "hasta XXX" (e.g. 100000 usd) y setea ante estas coincidencias secundarias, "Venta".
+   - Identifica si el pedido es de "venta" o "alquiler". Si no dice explícitamente uno de los dos, revisa si está la palabra "Busco", "Necesito", "alguien tiene", busca un monto (e.g. 40000 usd), un "presupuesto" o "hasta XXX" (e.g. 100000 usd) y setea ante estas coincidencias secundarias, "venta" (en minúsculas).
+   - El campo "operacion" DEBE ser una de estas tres opciones en minúsculas: "venta", "alquiler" o "desconocido". Nunca utilices valores en mayúsculas como "DESCONOCIDO".
 
 2. TIPO DE PROPIEDAD:
    - Debe ser uno de: "departamento", "casa", "terreno", "local", "oficina", "otro".
@@ -127,7 +130,46 @@ export async function extractRealEstateRequest(messageTexto: string): Promise<Ex
 
     const responseText = response.text;
     if (!responseText) throw new Error('Respuesta de Gemini vacía');
-    return JSON.parse(responseText.trim()) as ExtractedRealEstateRequest;
+    
+    const parsed = JSON.parse(responseText.trim()) as ExtractedRealEstateRequest;
+    
+    // Normalizar robustamente la respuesta de Gemini para prevenir roturas en el matcher
+    if (parsed.operacion) {
+      parsed.operacion = String(parsed.operacion).toLowerCase() as any;
+      if (!['venta', 'alquiler', 'desconocido'].includes(parsed.operacion)) {
+        parsed.operacion = 'desconocido';
+      }
+    } else {
+      parsed.operacion = 'desconocido';
+    }
+
+    if (parsed.tipo_propiedad) {
+      parsed.tipo_propiedad = String(parsed.tipo_propiedad).toLowerCase() as any;
+      if (!['departamento', 'casa', 'terreno', 'local', 'oficina', 'otro'].includes(parsed.tipo_propiedad)) {
+        parsed.tipo_propiedad = 'otro';
+      }
+    } else {
+      parsed.tipo_propiedad = 'otro';
+    }
+
+    if (parsed.moneda) {
+      parsed.moneda = String(parsed.moneda).toUpperCase() as any;
+      if (!['USD', 'ARS', 'desconocido'].includes(parsed.moneda)) {
+        parsed.moneda = 'desconocido';
+      }
+    } else {
+      parsed.moneda = 'desconocido';
+    }
+
+    if (!Array.isArray(parsed.zonas)) {
+      parsed.zonas = [];
+    }
+
+    if (!Array.isArray(parsed.caracteristicas_clave)) {
+      parsed.caracteristicas_clave = [];
+    }
+
+    return parsed;
   } catch (error) {
     console.error('Error en Agente 1 (Extracción Básica):', error);
     return {
