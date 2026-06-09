@@ -128,7 +128,7 @@ async function processIncomingMessage(body: string, sender: string, groupName: s
 
   if (hasUbicacion) {
     console.log(`Ubicación detectada. Ejecutando Agente 2 (Geolocalizador e Intenciones)...`);
-    zoneIntent = await extractZoneIntent(body);
+    zoneIntent = await extractZoneIntent(body, requestEntities.operacion);
     console.log(`[AGENTE 2 - GEO INTENT] JSON generado:`, JSON.stringify(zoneIntent, null, 2));
   } else {
     console.log(`No se detectó ubicación en la consulta. Se saltea el Agente 2.`);

@@ -27,7 +27,7 @@ export interface ZoneIntentRequest {
 export interface AIStrategy {
   name: string;
   extractRealEstateRequest(messageTexto: string, systemInstruction: string): Promise<any>;
-  extractZoneIntent(messageTexto: string, systemInstruction: string): Promise<any>;
+  extractZoneIntent(messageTexto: string, systemInstruction: string, operacion?: string): Promise<any>;
 }
 
 // --- ESTRATEGIAS CONCRETAS ---
@@ -68,10 +68,14 @@ class GeminiStrategy implements AIStrategy {
     return JSON.parse(responseText.trim());
   }
 
-  async extractZoneIntent(messageTexto: string, systemInstruction: string): Promise<any> {
+  async extractZoneIntent(messageTexto: string, systemInstruction: string, operacion?: string): Promise<any> {
+    const userMsg = operacion && operacion !== 'desconocido'
+      ? `Operación identificada por el Agente 1: ${operacion}\n\nClasifica la zona e intención de este mensaje: "${messageTexto}"`
+      : `Clasifica la zona e intención de este mensaje: "${messageTexto}"`;
+
     const response = await this.ai.models.generateContent({
       model: 'gemini-2.5-flash-lite',
-      contents: `Clasifica la zona e intención de este mensaje: "${messageTexto}"`,
+      contents: userMsg,
       config: {
         systemInstruction,
         responseMimeType: 'application/json',
@@ -118,16 +122,20 @@ class OpenAIStrategy implements AIStrategy {
     return JSON.parse(content.trim());
   }
 
-  async extractZoneIntent(messageTexto: string, systemInstruction: string): Promise<any> {
+  async extractZoneIntent(messageTexto: string, systemInstruction: string, operacion?: string): Promise<any> {
     if (!this.openai) {
       throw new Error('OpenAI API key no está configurada.');
     }
+
+    const userMsg = operacion && operacion !== 'desconocido'
+      ? `Operación identificada por el Agente 1: ${operacion}\n\nClasifica la zona e intención de este mensaje: "${messageTexto}"`
+      : `Clasifica la zona e intención de este mensaje: "${messageTexto}"`;
 
     const completion = await this.openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         { role: 'system', content: systemInstruction },
-        { role: 'user', content: `Clasifica la zona e intención de este mensaje: "${messageTexto}"` }
+        { role: 'user', content: userMsg }
       ],
       response_format: { type: 'json_object' }
     });
@@ -176,12 +184,12 @@ class AIExtractorContext {
     };
   }
 
-  async extractZoneIntent(messageTexto: string): Promise<ZoneIntentRequest> {
+  async extractZoneIntent(messageTexto: string, operacion?: string): Promise<ZoneIntentRequest> {
     for (const strategy of this.strategies) {
       try {
         console.log(`[AI STRATEGY] Intentando Geo Comparación con: ${strategy.name}`);
-        const rawResult = await strategy.extractZoneIntent(messageTexto, SYSTEM_INSTRUCTIONS_AGENT2);
-        return normalizeAgent2(rawResult);
+        const rawResult = await strategy.extractZoneIntent(messageTexto, SYSTEM_INSTRUCTIONS_AGENT2, operacion);
+        return normalizeAgent2(rawResult, operacion);
       } catch (error) {
         console.warn(`[AI STRATEGY] Falla en estrategia ${strategy.name}. Intentando fallback... Error:`, error);
       }
@@ -319,7 +327,7 @@ function normalizeAgent1(parsed: any): ExtractedRealEstateRequest {
   };
 }
 
-function normalizeAgent2(parsed: any): ZoneIntentRequest {
+function normalizeAgent2(parsed: any, operacionOriginal?: string): ZoneIntentRequest {
   if (parsed.zona_id) {
     parsed.zona_id = String(parsed.zona_id).toUpperCase() as any;
     if (!['ZONA_MATE_DE_LUNA', 'ZONA_YERBA_BUENA', 'ZONA_CENTRO_BARRIO_NORTE', 'DESCONOCIDO'].includes(parsed.zona_id)) {
@@ -336,6 +344,11 @@ function normalizeAgent2(parsed: any): ZoneIntentRequest {
     }
   } else {
     parsed.operacion = 'DESCONOCIDO';
+  }
+
+  // Rellenar la operación si el Agente 2 arrojó DESCONOCIDO pero ya la conocemos del Agente 1
+  if (parsed.operacion === 'DESCONOCIDO' && operacionOriginal && operacionOriginal !== 'desconocido') {
+    parsed.operacion = operacionOriginal === 'venta' ? 'COMPRA' : 'ALQUILER';
   }
 
   if (!Array.isArray(parsed.caracteristicas_claves)) {
@@ -359,6 +372,6 @@ export async function extractRealEstateRequest(messageTexto: string): Promise<Ex
   return aiContext.extractRealEstateRequest(messageTexto);
 }
 
-export async function extractZoneIntent(messageTexto: string): Promise<ZoneIntentRequest> {
-  return aiContext.extractZoneIntent(messageTexto);
+export async function extractZoneIntent(messageTexto: string, operacion?: 'venta' | 'alquiler' | 'desconocido'): Promise<ZoneIntentRequest> {
+  return aiContext.extractZoneIntent(messageTexto, operacion);
 }
