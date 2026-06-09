@@ -203,6 +203,7 @@ export async function startWhatsAppClient(options: WhatsAppClientOptions): Promi
 
         // Obtener el remitente (con soporte robusto para participantAlt de Baileys)
         const participantJid = (key as any).participantAlt || key.participant || (msg as any).participant || '';
+        console.log('PART', participantJid)
         const number = participantJid ? participantJid.split('@')[0] : from.split('@')[0];
         const senderName = msg.pushName || number || 'Remitente Anónimo';
         const senderContact = `@${number} (${senderName})`;

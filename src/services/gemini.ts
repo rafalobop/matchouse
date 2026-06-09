@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { OpenAI } from 'openai';
 import { config } from '../config/env';
 
 // --- AGENTE 1: EXTRACTOR DE ENTIDADES BÁSICAS ---
@@ -24,6 +25,7 @@ export interface ZoneIntentRequest {
 }
 
 const ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
+const openai = config.openaiApiKey ? new OpenAI({ apiKey: config.openaiApiKey }) : null;
 
 // System Instructions - Agente 1 (Extractor General)
 const SYSTEM_INSTRUCTIONS_AGENT1 = `
@@ -98,6 +100,91 @@ Deberás devolver exactamente esta estructura:
 `;
 
 /**
+ * Normaliza la respuesta del Agente 1
+ */
+function normalizeAgent1(parsed: any): ExtractedRealEstateRequest {
+  if (parsed.operacion) {
+    parsed.operacion = String(parsed.operacion).toLowerCase() as any;
+    if (!['venta', 'alquiler', 'desconocido'].includes(parsed.operacion)) {
+      parsed.operacion = 'desconocido';
+    }
+  } else {
+    parsed.operacion = 'desconocido';
+  }
+
+  if (parsed.tipo_propiedad) {
+    parsed.tipo_propiedad = String(parsed.tipo_propiedad).toLowerCase() as any;
+    if (!['departamento', 'casa', 'terreno', 'local', 'oficina', 'otro'].includes(parsed.tipo_propiedad)) {
+      parsed.tipo_propiedad = 'otro';
+    }
+  } else {
+    parsed.tipo_propiedad = 'otro';
+  }
+
+  if (parsed.moneda) {
+    parsed.moneda = String(parsed.moneda).toUpperCase() as any;
+    if (!['USD', 'ARS', 'desconocido'].includes(parsed.moneda)) {
+      parsed.moneda = 'desconocido';
+    }
+  } else {
+    parsed.moneda = 'desconocido';
+  }
+
+  if (!Array.isArray(parsed.zonas)) {
+    parsed.zonas = [];
+  }
+
+  if (!Array.isArray(parsed.caracteristicas_clave)) {
+    parsed.caracteristicas_clave = [];
+  }
+
+  return {
+    operacion: parsed.operacion,
+    tipo_propiedad: parsed.tipo_propiedad,
+    zonas: parsed.zonas,
+    presupuesto_max: parsed.presupuesto_max !== undefined ? parsed.presupuesto_max : null,
+    moneda: parsed.moneda,
+    dormitorios: parsed.dormitorios !== undefined ? parsed.dormitorios : null,
+    caracteristicas_clave: parsed.caracteristicas_clave
+  };
+}
+
+/**
+ * Normaliza la respuesta del Agente 2
+ */
+function normalizeAgent2(parsed: any): ZoneIntentRequest {
+  if (parsed.zona_id) {
+    parsed.zona_id = String(parsed.zona_id).toUpperCase() as any;
+    if (!['ZONA_MATE_DE_LUNA', 'ZONA_YERBA_BUENA', 'ZONA_CENTRO_BARRIO_NORTE', 'DESCONOCIDO'].includes(parsed.zona_id)) {
+      parsed.zona_id = 'DESCONOCIDO';
+    }
+  } else {
+    parsed.zona_id = 'DESCONOCIDO';
+  }
+
+  if (parsed.operacion) {
+    parsed.operacion = String(parsed.operacion).toUpperCase() as any;
+    if (!['ALQUILER', 'COMPRA', 'DESCONOCIDO'].includes(parsed.operacion)) {
+      parsed.operacion = 'DESCONOCIDO';
+    }
+  } else {
+    parsed.operacion = 'DESCONOCIDO';
+  }
+
+  if (!Array.isArray(parsed.caracteristicas_claves)) {
+    parsed.caracteristicas_claves = [];
+  }
+
+  return {
+    zona_id: parsed.zona_id,
+    texto_ubicacion_original: parsed.texto_ubicacion_original || '',
+    dormitorios_min: parsed.dormitorios_min !== undefined ? parsed.dormitorios_min : null,
+    caracteristicas_claves: parsed.caracteristicas_claves,
+    operacion: parsed.operacion
+  };
+}
+
+/**
  * Agente 1: Analiza el mensaje y extrae los datos básicos estruturados.
  */
 export async function extractRealEstateRequest(messageTexto: string): Promise<ExtractedRealEstateRequest> {
@@ -131,47 +218,32 @@ export async function extractRealEstateRequest(messageTexto: string): Promise<Ex
     const responseText = response.text;
     if (!responseText) throw new Error('Respuesta de Gemini vacía');
     
-    const parsed = JSON.parse(responseText.trim()) as ExtractedRealEstateRequest;
-    
-    // Normalizar robustamente la respuesta de Gemini para prevenir roturas en el matcher
-    if (parsed.operacion) {
-      parsed.operacion = String(parsed.operacion).toLowerCase() as any;
-      if (!['venta', 'alquiler', 'desconocido'].includes(parsed.operacion)) {
-        parsed.operacion = 'desconocido';
-      }
-    } else {
-      parsed.operacion = 'desconocido';
-    }
-
-    if (parsed.tipo_propiedad) {
-      parsed.tipo_propiedad = String(parsed.tipo_propiedad).toLowerCase() as any;
-      if (!['departamento', 'casa', 'terreno', 'local', 'oficina', 'otro'].includes(parsed.tipo_propiedad)) {
-        parsed.tipo_propiedad = 'otro';
-      }
-    } else {
-      parsed.tipo_propiedad = 'otro';
-    }
-
-    if (parsed.moneda) {
-      parsed.moneda = String(parsed.moneda).toUpperCase() as any;
-      if (!['USD', 'ARS', 'desconocido'].includes(parsed.moneda)) {
-        parsed.moneda = 'desconocido';
-      }
-    } else {
-      parsed.moneda = 'desconocido';
-    }
-
-    if (!Array.isArray(parsed.zonas)) {
-      parsed.zonas = [];
-    }
-
-    if (!Array.isArray(parsed.caracteristicas_clave)) {
-      parsed.caracteristicas_clave = [];
-    }
-
-    return parsed;
+    const parsed = JSON.parse(responseText.trim());
+    return normalizeAgent1(parsed);
   } catch (error) {
-    console.error('Error en Agente 1 (Extracción Básica):', error);
+    console.warn('[AI FALLBACK] Falló Gemini en Agente 1 (Extracción Básica). Error:', error);
+    
+    if (openai) {
+      console.log('[AI FALLBACK] Intentando contingencia con OpenAI (gpt-4o-mini)...');
+      try {
+        const completion = await openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: SYSTEM_INSTRUCTIONS_AGENT1 },
+            { role: 'user', content: `Analiza este mensaje: "${messageTexto}"` }
+          ],
+          response_format: { type: 'json_object' }
+        });
+        const content = completion.choices[0]?.message?.content;
+        if (content) {
+          const parsed = JSON.parse(content.trim());
+          return normalizeAgent1(parsed);
+        }
+      } catch (openaiError) {
+        console.error('[AI FALLBACK] Falló también la contingencia con OpenAI en Agente 1:', openaiError);
+      }
+    }
+
     return {
       operacion: 'desconocido',
       tipo_propiedad: 'otro',
@@ -211,9 +283,33 @@ export async function extractZoneIntent(messageTexto: string): Promise<ZoneInten
 
     const responseText = response.text;
     if (!responseText) throw new Error('Respuesta de Gemini vacía');
-    return JSON.parse(responseText.trim()) as ZoneIntentRequest;
+    
+    const parsed = JSON.parse(responseText.trim());
+    return normalizeAgent2(parsed);
   } catch (error) {
-    console.error('Error en Agente 2 (Geo Comparación):', error);
+    console.warn('[AI FALLBACK] Falló Gemini en Agente 2 (Geo Comparación). Error:', error);
+
+    if (openai) {
+      console.log('[AI FALLBACK] Intentando contingencia con OpenAI (gpt-4o-mini)...');
+      try {
+        const completion = await openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: SYSTEM_INSTRUCTIONS_AGENT2 },
+            { role: 'user', content: `Clasifica la zona e intención de este mensaje: "${messageTexto}"` }
+          ],
+          response_format: { type: 'json_object' }
+        });
+        const content = completion.choices[0]?.message?.content;
+        if (content) {
+          const parsed = JSON.parse(content.trim());
+          return normalizeAgent2(parsed);
+        }
+      } catch (openaiError) {
+        console.error('[AI FALLBACK] Falló también la contingencia con OpenAI en Agente 2:', openaiError);
+      }
+    }
+
     return {
       zona_id: 'DESCONOCIDO',
       texto_ubicacion_original: '',

@@ -75,14 +75,14 @@ function updateStatusUI(data) {
     toggleEditGroupsBtn.disabled = false;
     restartWhatsappBtn.disabled = false;
     restartWhatsappBtn.innerText = 'Forzar Reconexión (Borrar sesión)';
-    
+
     if (!isConnected) {
       isConnected = true;
       // Mostrar info de usuario
       userInfo.classList.remove('hidden');
       userName.innerText = data.user.name;
       userPhone.innerText = `+${data.user.number}`;
-      
+
       // Ocultar QR y mostrar éxito (sin spinner)
       qrContainer.innerHTML = '<div class="qr-success-icon">✅</div><p class="qr-placeholder-text" style="color: var(--success); font-weight: 600;">¡WhatsApp Conectado y Activo!</p>';
       qrContainer.style.background = 'rgba(16, 185, 129, 0.03)';
@@ -95,7 +95,7 @@ function updateStatusUI(data) {
     isConnected = false;
     userInfo.classList.add('hidden');
     toggleEditGroupsBtn.disabled = true;
-    
+
     systemBadge.className = 'system-badge connected';
     statusText.innerText = 'Autenticado';
     qrContainer.innerHTML = '<div class="spinner"></div><p class="qr-placeholder-text" style="color: var(--warning); font-weight: 600;">¡Autenticado! Sincronizando chats de WhatsApp...</p>';
@@ -118,14 +118,14 @@ function updateStatusUI(data) {
     isConnected = false;
     userInfo.classList.add('hidden');
     toggleEditGroupsBtn.disabled = true;
-    
+
     // Si no está conectado, forzar el cierre de la pantalla de edición y ocultar resumen de grupos
     groupsEditSection.classList.add('hidden');
     groupsViewSection.classList.remove('hidden');
-    
+
     const summaryBox = document.getElementById('selected-groups-summary');
     if (summaryBox) summaryBox.classList.add('hidden');
-    
+
     noGroupsSelectedMsg.classList.remove('hidden');
 
     if (data.status === 'QR_RECEIVED' && data.qrDataUrl) {
@@ -148,7 +148,7 @@ function updateStatusUI(data) {
       statusText.innerText = 'Desconectado';
       qrContainer.innerHTML = '<div class="spinner"></div><p class="qr-placeholder-text">Desconectado. Reintentando...</p>';
       noGroupsSelectedMsg.innerText = 'WhatsApp desconectado. Esperando conexión...';
-      
+
       // Iniciar reconexión automática si no está corriendo
       if (!isCountingDown) {
         startAutomaticReconnectCountdown();
@@ -162,13 +162,13 @@ function startAutomaticReconnectCountdown() {
   isCountingDown = true;
   countdownSeconds = 15;
   restartWhatsappBtn.disabled = false;
-  
+
   updateCountdownUI();
-  
+
   countdownInterval = setInterval(async () => {
     countdownSeconds--;
     updateCountdownUI();
-    
+
     if (countdownSeconds <= 0) {
       clearInterval(countdownInterval);
       await triggerRestart();
@@ -197,7 +197,7 @@ async function triggerRestart() {
   cancelCountdown();
   restartWhatsappBtn.disabled = true;
   restartWhatsappBtn.innerText = 'Reiniciando cliente...';
-  
+
   try {
     const res = await fetch('/api/whatsapp/restart', { method: 'POST' });
     if (res.ok) {
@@ -226,7 +226,7 @@ restartWhatsappBtn.addEventListener('click', async () => {
     await triggerRestart();
     return;
   }
-  
+
   if (confirm('¿Estás seguro de que quieres forzar la reconexión? Esto cerrará la sesión actual, borrará el caché de autenticación y generará un código QR nuevo.')) {
     await triggerRestart();
   }
@@ -248,10 +248,10 @@ async function loadGroups() {
   try {
     const res = await fetch('/api/groups');
     const data = await res.json();
-    
+
     allGroups = data.groups || [];
     selectedGroups = data.selected || [];
-    
+
     renderGroups();
     updateSelectedGroupsSummary();
   } catch (error) {
@@ -276,12 +276,12 @@ function updateSelectedGroupsSummary() {
   noGroupsSelectedMsg.classList.add('hidden');
   summaryBox.classList.remove('hidden');
   tagsContainer.innerHTML = '';
-  
+
   selectedGroups.forEach(id => {
     // Buscar el nombre del grupo a partir del ID
     const group = allGroups.find(g => g.id === id);
     const name = group ? group.name : id;
-    
+
     const span = document.createElement('span');
     span.className = 'group-tag';
     span.innerText = name;
@@ -294,10 +294,10 @@ toggleEditGroupsBtn.addEventListener('click', async () => {
   groupsViewSection.classList.add('hidden');
   groupsEditSection.classList.remove('hidden');
   groupsList.innerHTML = '<div class="spinner" style="width: 25px; height: 25px; margin: 2rem auto 0.5rem;"></div>Sincronizando grupos desde WhatsApp...';
-  
+
   // Re-cargar grupos del backend en tiempo real
   await loadGroups();
-  
+
   // Rellenar el textarea manual con aquellos grupos seleccionados que no estén en la lista de checkboxes
   populateManualGroupsInput();
 });
@@ -305,7 +305,7 @@ toggleEditGroupsBtn.addEventListener('click', async () => {
 function populateManualGroupsInput() {
   const manualInput = document.getElementById('manual-groups-input');
   if (!manualInput) return;
-  
+
   const manualNames = [];
   selectedGroups.forEach(idOrName => {
     const groupExists = allGroups.some(g => g.id === idOrName || g.name === idOrName);
@@ -335,16 +335,16 @@ function renderGroups() {
   groupsList.innerHTML = '';
   filtered.forEach(group => {
     const isChecked = selectedGroups.includes(group.id) || selectedGroups.includes(group.name);
-    
+
     const div = document.createElement('div');
     div.className = 'group-item';
-    
+
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.id = `group-${group.id}`;
     checkbox.value = group.id;
     checkbox.checked = isChecked;
-    
+
     // Cambiar estado en memoria al tildar/destildar
     checkbox.addEventListener('change', (e) => {
       if (e.target.checked) {
@@ -373,7 +373,7 @@ saveGroupsBtn.addEventListener('click', async () => {
 
   // Leer nombres ingresados manualmente del textarea
   const manualInput = document.getElementById('manual-groups-input');
-  const manualNames = manualInput 
+  const manualNames = manualInput
     ? manualInput.value.split('\n').map(line => line.trim()).filter(line => line.length > 0)
     : [];
 
@@ -392,7 +392,7 @@ saveGroupsBtn.addEventListener('click', async () => {
       saveStatus.style.color = 'var(--success)';
       selectedGroups = finalSelectedGroups;
       updateSelectedGroupsSummary();
-      
+
       // Salir del modo edición automáticamente tras guardar
       setTimeout(() => {
         groupsEditSection.classList.add('hidden');
@@ -451,7 +451,7 @@ async function handleFileUpload(file) {
   }
 
   showUploadStatus('Subiendo y procesando archivo...', '');
-  
+
   const formData = new FormData();
   formData.append('excelFile', file);
 
@@ -460,9 +460,9 @@ async function handleFileUpload(file) {
       method: 'POST',
       body: formData
     });
-    
+
     const data = await res.json();
-    
+
     if (res.ok) {
       showUploadStatus(`¡Éxito! Se cargaron ${data.count} propiedades en memoria.`, 'success');
       loadCatalogInfo();
@@ -483,7 +483,7 @@ function showUploadStatus(msg, type) {
   } else {
     uploadStatus.classList.add('hidden');
   }
-  
+
   if (type === 'success') {
     setTimeout(() => {
       uploadStatus.classList.add('hidden');
@@ -496,9 +496,9 @@ async function loadMatches() {
   try {
     const res = await fetch('/api/matches');
     const data = await res.json();
-    
+
     const matches = data.matches || [];
-    
+
     if (matches.length === 0) {
       matchesTbody.innerHTML = '<tr><td colspan="5" class="table-placeholder">No se han registrado matches en esta sesión.</td></tr>';
       return;
@@ -506,21 +506,23 @@ async function loadMatches() {
 
     matchesTbody.innerHTML = '';
     matches.forEach(m => {
+      console.log('MMMMMMMM', matches)
       const tr = document.createElement('tr');
-      
+
       const tdFecha = document.createElement('td');
       tdFecha.innerText = m.fecha;
-      
+
       const tdProp = document.createElement('td');
       tdProp.innerHTML = `<strong>${m.property.domicilio}</strong><br><small>${m.property.moneda} ${m.property.precio} (${m.property.operacion})</small>`;
-      
+
       const tdPedido = document.createElement('td');
       tdPedido.innerText = m.originalText;
-      
+
       const tdSolicitante = document.createElement('td');
       let contactHtml = m.contactSender;
       const matchNumber = m.contactSender.match(/@(\d+)/);
       if (matchNumber) {
+        console.log('MATCH', matchNumber)
         const phone = matchNumber[1];
         const name = m.contactSender.replace(`@${phone}`, '').replace(/[()]/g, '').trim();
         contactHtml = `<a href="https://wa.me/${phone}" target="_blank" class="contact-link" title="Contactar por WhatsApp" style="color: #25d366; text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; gap: 4px;">
@@ -529,7 +531,7 @@ async function loadMatches() {
         </a> (${name})`;
       }
       tdSolicitante.innerHTML = `${contactHtml}<br><span class="match-group-tag">${m.groupName || 'Grupo Desconocido'}</span>`;
-      
+
       const tdDetalles = document.createElement('td');
       const divDetails = document.createElement('div');
       divDetails.className = 'match-reasons';
@@ -541,7 +543,7 @@ async function loadMatches() {
       tr.appendChild(tdPedido);
       tr.appendChild(tdSolicitante);
       tr.appendChild(tdDetalles);
-      
+
       matchesTbody.appendChild(tr);
     });
   } catch (error) {

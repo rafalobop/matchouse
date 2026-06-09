@@ -6,6 +6,7 @@ dotenv.config();
 
 export interface Config {
   geminiApiKey: string;
+  openaiApiKey?: string;
   googleSheetId: string;
   googleCarteraTabName: string;
   googleMatchesTabName: string;
@@ -19,6 +20,7 @@ function cleanEnvVar(val: string | undefined): string | undefined {
 
 export function validateConfig(): Config {
   const geminiApiKey = cleanEnvVar(process.env.GEMINI_API_KEY);
+  const openaiApiKey = cleanEnvVar(process.env.OPENAI_API_KEY);
   const googleSheetId = cleanEnvVar(process.env.GOOGLE_SHEET_ID);
   const googleCarteraTabName = cleanEnvVar(process.env.GOOGLE_CARTERA_TAB_NAME) || 'Cartera';
   const googleMatchesTabName = cleanEnvVar(process.env.GOOGLE_MATCHES_TAB_NAME) || '[MATCHES ENCONTRADOS]';
@@ -34,6 +36,7 @@ export function validateConfig(): Config {
 
   return {
     geminiApiKey,
+    openaiApiKey,
     googleSheetId,
     googleCarteraTabName,
     googleMatchesTabName,
