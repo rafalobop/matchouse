@@ -377,17 +377,8 @@ saveGroupsBtn.addEventListener('click', async () => {
     ? manualInput.value.split('\n').map(line => line.trim()).filter(line => line.length > 0)
     : [];
 
-  // Obtener los seleccionados de los checkboxes
-  const checkedGroups = [];
-  const checkboxes = groupsList.querySelectorAll('input[type="checkbox"]');
-  checkboxes.forEach(cb => {
-    if (cb.checked) {
-      checkedGroups.push(cb.value);
-    }
-  });
-
-  // Combinar ambos sin duplicados
-  const finalSelectedGroups = Array.from(new Set([...checkedGroups, ...manualNames]));
+  // Combinar los grupos seleccionados (que se actualizan en memoria al hacer click) con los ingresados manualmente
+  const finalSelectedGroups = Array.from(new Set([...selectedGroups, ...manualNames]));
 
   try {
     const res = await fetch('/api/groups', {
