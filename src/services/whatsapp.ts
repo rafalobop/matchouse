@@ -1,7 +1,7 @@
-import makeWASocket, { 
-  useMultiFileAuthState, 
-  DisconnectReason, 
-  WASocket 
+import makeWASocket, {
+  useMultiFileAuthState,
+  DisconnectReason,
+  WASocket
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import * as qrcodeTerminal from 'qrcode-terminal';
@@ -128,7 +128,7 @@ export async function startWhatsAppClient(options: WhatsAppClientOptions): Promi
     if (connection === 'close') {
       const shouldReconnect = (lastDisconnect?.error as any)?.output?.statusCode !== DisconnectReason.loggedOut;
       console.log('Conexión cerrada debido a:', lastDisconnect?.error, ', reconectando:', shouldReconnect);
-      
+
       whatsappStatus.status = 'DISCONNECTED';
       whatsappStatus.user = undefined;
 
@@ -140,7 +140,7 @@ export async function startWhatsAppClient(options: WhatsAppClientOptions): Promi
     } else if (connection === 'open') {
       whatsappStatus.status = 'CONNECTED';
       whatsappStatus.qrDataUrl = undefined;
-      
+
       const userJid = sock.user?.id;
       const userNumber = userJid ? userJid.split(':')[0] : 'Desconocido';
       whatsappStatus.user = {
@@ -167,10 +167,10 @@ export async function startWhatsAppClient(options: WhatsAppClientOptions): Promi
         if (!isGroup) continue;
 
         // Extraer cuerpo del mensaje
-        const body = msg.message?.conversation || 
-                     msg.message?.extendedTextMessage?.text || 
-                     msg.message?.imageMessage?.caption || 
-                     msg.message?.videoMessage?.caption || '';
+        const body = msg.message?.conversation ||
+          msg.message?.extendedTextMessage?.text ||
+          msg.message?.imageMessage?.caption ||
+          msg.message?.videoMessage?.caption || '';
 
         if (!body) continue;
 
@@ -201,8 +201,9 @@ export async function startWhatsAppClient(options: WhatsAppClientOptions): Promi
 
         if (!isGroupSelected) continue;
 
-        // Obtener el remitente
-        const number = key.participant ? key.participant.split('@')[0] : from.split('@')[0];
+        // Obtener el remitente (con soporte robusto para participantAlt de Baileys)
+        const participantJid = (key as any).participantAlt || key.participant || (msg as any).participant || '';
+        const number = participantJid ? participantJid.split('@')[0] : from.split('@')[0];
         const senderName = msg.pushName || number || 'Remitente Anónimo';
         const senderContact = `@${number} (${senderName})`;
 
@@ -300,7 +301,7 @@ export async function getActiveGroups(): Promise<{ id: string; name: string }[]>
       }
     }
     saveGroupsCache();
-    
+
     return groups;
   } catch (error) {
     console.error('[WHATSAPP] Error al obtener grupos de WhatsApp:', error);
