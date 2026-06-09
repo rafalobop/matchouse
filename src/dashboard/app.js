@@ -491,6 +491,17 @@ function showUploadStatus(msg, type) {
   }
 }
 
+// Variables de paginación y ordenación para matches
+let currentPage = 1;
+const pageSize = 10;
+let sortOption = 'fecha-desc';
+
+// Helper para extraer el score desde matchDetails
+function getScore(match) {
+  const m = match.matchDetails.match(/Score:\s*(\d+)%/i);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
 // Cargar Logs de Matches en tiempo real
 async function loadMatches() {
   try {
@@ -501,12 +512,49 @@ async function loadMatches() {
 
     if (matches.length === 0) {
       matchesTbody.innerHTML = '<tr><td colspan="5" class="table-placeholder">No se han registrado matches en esta sesión.</td></tr>';
+      document.getElementById('page-start').innerText = '0';
+      document.getElementById('page-end').innerText = '0';
+      document.getElementById('total-matches').innerText = '0';
+      document.getElementById('current-page-text').innerText = 'Pág. 1 de 1';
+      document.getElementById('prev-page-btn').disabled = true;
+      document.getElementById('next-page-btn').disabled = true;
       return;
     }
 
+    // Clonar para realizar ordenamiento local sin mutar el original
+    let matchesList = [...matches];
+
+    // Aplicar ordenación
+    if (sortOption === 'fecha-desc') {
+      // Orden nativo (más recientes primero)
+    } else if (sortOption === 'fecha-asc') {
+      matchesList.reverse();
+    } else if (sortOption === 'score-desc') {
+      matchesList.sort((a, b) => getScore(b) - getScore(a));
+    } else if (sortOption === 'score-asc') {
+      matchesList.sort((a, b) => getScore(a) - getScore(b));
+    }
+
+    // Aplicar paginación
+    const totalMatches = matchesList.length;
+    const totalPages = Math.ceil(totalMatches / pageSize) || 1;
+    if (currentPage > totalPages) currentPage = totalPages;
+    if (currentPage < 1) currentPage = 1;
+
+    const startIndex = (currentPage - 1) * pageSize;
+    const endIndex = Math.min(startIndex + pageSize, totalMatches);
+    const paginatedMatches = matchesList.slice(startIndex, endIndex);
+
+    // Actualizar UI de paginación
+    document.getElementById('page-start').innerText = totalMatches > 0 ? startIndex + 1 : 0;
+    document.getElementById('page-end').innerText = endIndex;
+    document.getElementById('total-matches').innerText = totalMatches;
+    document.getElementById('current-page-text').innerText = `Pág. ${currentPage} de ${totalPages}`;
+    document.getElementById('prev-page-btn').disabled = currentPage <= 1;
+    document.getElementById('next-page-btn').disabled = currentPage >= totalPages;
+
     matchesTbody.innerHTML = '';
-    matches.forEach(m => {
-      console.log('MMMMMMMM', matches)
+    paginatedMatches.forEach(m => {
       const tr = document.createElement('tr');
 
       const tdFecha = document.createElement('td');
@@ -522,7 +570,6 @@ async function loadMatches() {
       let contactHtml = m.contactSender;
       const matchNumber = m.contactSender.match(/@(\d+)/);
       if (matchNumber) {
-        console.log('MATCH', matchNumber)
         const phone = matchNumber[1];
         const name = m.contactSender.replace(`@${phone}`, '').replace(/[()]/g, '').trim();
         contactHtml = `<a href="https://wa.me/${phone}" target="_blank" class="contact-link" title="Contactar por WhatsApp" style="color: #25d366; text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; gap: 4px;">
@@ -550,6 +597,25 @@ async function loadMatches() {
     console.error('Error al cargar historial de matches:', error);
   }
 }
+
+// Configurar event listeners para ordenación y paginación
+document.getElementById('sort-select').addEventListener('change', (e) => {
+  sortOption = e.target.value;
+  currentPage = 1; // reset a la primera página al ordenar
+  loadMatches();
+});
+
+document.getElementById('prev-page-btn').addEventListener('click', () => {
+  if (currentPage > 1) {
+    currentPage--;
+    loadMatches();
+  }
+});
+
+document.getElementById('next-page-btn').addEventListener('click', () => {
+  currentPage++;
+  loadMatches();
+});
 
 // Inicialización de Polling
 checkStatus();
