@@ -2,7 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import { OpenAI } from 'openai';
 import { config } from '../config/env';
 
-// --- AGENTE 1: EXTRACTOR DE ENTIDADES BÁSICAS ---
+// --- DEFINICIONES DE TIPOS ---
 
 export interface ExtractedRealEstateRequest {
   operacion: 'venta' | 'alquiler' | 'desconocido';
@@ -14,8 +14,6 @@ export interface ExtractedRealEstateRequest {
   caracteristicas_clave: string[];
 }
 
-// --- AGENTE 2: GEOLOCALIZADOR E INTENCIONES DETALLADAS ---
-
 export interface ZoneIntentRequest {
   zona_id: 'ZONA_MATE_DE_LUNA' | 'ZONA_YERBA_BUENA' | 'ZONA_CENTRO_BARRIO_NORTE' | 'DESCONOCIDO';
   texto_ubicacion_original: string;
@@ -24,10 +22,184 @@ export interface ZoneIntentRequest {
   operacion: 'ALQUILER' | 'COMPRA' | 'DESCONOCIDO';
 }
 
-const ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
-const openai = config.openaiApiKey ? new OpenAI({ apiKey: config.openaiApiKey }) : null;
+// --- INTERFAZ DEL PATRÓN STRATEGY ---
 
-// System Instructions - Agente 1 (Extractor General)
+export interface AIStrategy {
+  name: string;
+  extractRealEstateRequest(messageTexto: string, systemInstruction: string): Promise<any>;
+  extractZoneIntent(messageTexto: string, systemInstruction: string): Promise<any>;
+}
+
+// --- ESTRATEGIAS CONCRETAS ---
+
+class GeminiStrategy implements AIStrategy {
+  readonly name = 'Google Gemini (gemini-2.5-flash-lite)';
+  private ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
+
+  async extractRealEstateRequest(messageTexto: string, systemInstruction: string): Promise<any> {
+    const response = await this.ai.models.generateContent({
+      model: 'gemini-2.5-flash-lite',
+      contents: `Analiza este mensaje: "${messageTexto}"`,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'OBJECT',
+          properties: {
+            operacion: { type: 'STRING', enum: ['venta', 'alquiler', 'desconocido'] },
+            tipo_propiedad: { type: 'STRING', enum: ['departamento', 'casa', 'terreno', 'local', 'oficina', 'otro'] },
+            zonas: {
+              type: 'ARRAY',
+              items: { type: 'STRING' },
+              description: 'Zonas normalizadas'
+            },
+            presupuesto_max: { type: 'INTEGER', nullable: true },
+            moneda: { type: 'STRING', enum: ['USD', 'ARS', 'desconocido'] },
+            dormitorios: { type: 'INTEGER', nullable: true },
+            caracteristicas_clave: { type: 'ARRAY', items: { type: 'STRING' } }
+          },
+          required: ['operacion', 'tipo_propiedad', 'zonas', 'presupuesto_max', 'moneda', 'dormitorios', 'caracteristicas_clave']
+        }
+      }
+    });
+
+    const responseText = response.text;
+    if (!responseText) throw new Error('Respuesta de Gemini vacía');
+    return JSON.parse(responseText.trim());
+  }
+
+  async extractZoneIntent(messageTexto: string, systemInstruction: string): Promise<any> {
+    const response = await this.ai.models.generateContent({
+      model: 'gemini-2.5-flash-lite',
+      contents: `Clasifica la zona e intención de este mensaje: "${messageTexto}"`,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'OBJECT',
+          properties: {
+            zona_id: { type: 'STRING', enum: ['ZONA_MATE_DE_LUNA', 'ZONA_YERBA_BUENA', 'ZONA_CENTRO_BARRIO_NORTE', 'DESCONOCIDO'] },
+            texto_ubicacion_original: { type: 'STRING' },
+            dormitorios_min: { type: 'INTEGER', nullable: true },
+            caracteristicas_claves: { type: 'ARRAY', items: { type: 'STRING' } },
+            operacion: { type: 'STRING', enum: ['ALQUILER', 'COMPRA', 'DESCONOCIDO'] }
+          },
+          required: ['zona_id', 'texto_ubicacion_original', 'dormitorios_min', 'caracteristicas_claves', 'operacion']
+        }
+      }
+    });
+
+    const responseText = response.text;
+    if (!responseText) throw new Error('Respuesta de Gemini vacía');
+    return JSON.parse(responseText.trim());
+  }
+}
+
+class OpenAIStrategy implements AIStrategy {
+  readonly name = 'OpenAI (gpt-4o-mini)';
+  private openai = config.openaiApiKey ? new OpenAI({ apiKey: config.openaiApiKey }) : null;
+
+  async extractRealEstateRequest(messageTexto: string, systemInstruction: string): Promise<any> {
+    if (!this.openai) {
+      throw new Error('OpenAI API key no está configurada.');
+    }
+
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemInstruction },
+        { role: 'user', content: `Analiza este mensaje: "${messageTexto}"` }
+      ],
+      response_format: { type: 'json_object' }
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) throw new Error('Respuesta de OpenAI vacía');
+    return JSON.parse(content.trim());
+  }
+
+  async extractZoneIntent(messageTexto: string, systemInstruction: string): Promise<any> {
+    if (!this.openai) {
+      throw new Error('OpenAI API key no está configurada.');
+    }
+
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemInstruction },
+        { role: 'user', content: `Clasifica la zona e intención de este mensaje: "${messageTexto}"` }
+      ],
+      response_format: { type: 'json_object' }
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) throw new Error('Respuesta de OpenAI vacía');
+    return JSON.parse(content.trim());
+  }
+}
+
+// --- CONTEXT / MANAGER DE ESTRATEGIAS DE IA ---
+
+class AIExtractorContext {
+  private strategies: AIStrategy[] = [];
+
+  constructor() {
+    // Definimos el orden de prioridades de las estrategias
+    this.strategies.push(new GeminiStrategy());
+    if (config.openaiApiKey) {
+      this.strategies.push(new OpenAIStrategy());
+    } else {
+      console.warn('[AI CONTEXT] OpenAI no está disponible (falta OPENAI_API_KEY).');
+    }
+  }
+
+  async extractRealEstateRequest(messageTexto: string): Promise<ExtractedRealEstateRequest> {
+    for (const strategy of this.strategies) {
+      try {
+        console.log(`[AI STRATEGY] Intentando Extracción Básica con: ${strategy.name}`);
+        const rawResult = await strategy.extractRealEstateRequest(messageTexto, SYSTEM_INSTRUCTIONS_AGENT1);
+        return normalizeAgent1(rawResult);
+      } catch (error) {
+        console.warn(`[AI STRATEGY] Falla en estrategia ${strategy.name}. Intentando fallback... Error:`, error);
+      }
+    }
+
+    console.error('[AI STRATEGY] Todas las estrategias de extracción fallaron.');
+    return {
+      operacion: 'desconocido',
+      tipo_propiedad: 'otro',
+      zonas: [],
+      presupuesto_max: null,
+      moneda: 'desconocido',
+      dormitorios: null,
+      caracteristicas_clave: []
+    };
+  }
+
+  async extractZoneIntent(messageTexto: string): Promise<ZoneIntentRequest> {
+    for (const strategy of this.strategies) {
+      try {
+        console.log(`[AI STRATEGY] Intentando Geo Comparación con: ${strategy.name}`);
+        const rawResult = await strategy.extractZoneIntent(messageTexto, SYSTEM_INSTRUCTIONS_AGENT2);
+        return normalizeAgent2(rawResult);
+      } catch (error) {
+        console.warn(`[AI STRATEGY] Falla en estrategia ${strategy.name}. Intentando fallback... Error:`, error);
+      }
+    }
+
+    console.error('[AI STRATEGY] Todas las estrategias de zona fallaron.');
+    return {
+      zona_id: 'DESCONOCIDO',
+      texto_ubicacion_original: '',
+      dormitorios_min: null,
+      caracteristicas_claves: [],
+      operacion: 'DESCONOCIDO'
+    };
+  }
+}
+
+// --- PROMPTS DE INSTRUCCIONES COMPARTIDOS ---
+
 const SYSTEM_INSTRUCTIONS_AGENT1 = `
 Eres un asistente experto en el mercado inmobiliario de Tucumán, Argentina.
 Tu tarea es extraer entidades estructuradas a partir de mensajes informales de chat de WhatsApp de agentes inmobiliarios.
@@ -76,7 +248,6 @@ Sigue estrictamente estas reglas de negocio:
      * "amueblado", "amob" -> "amueblado"
 `;
 
-// System Instructions - Agente 2 (Geolocalizador e Intenciones Específicas)
 const SYSTEM_INSTRUCTIONS_AGENT2 = `
 Sos un Agente Extractor de Intenciones Inmobiliarias ultra preciso. Tu único objetivo es leer mensajes de texto provenientes de grupos de WhatsApp de clientes que buscan propiedades y transformarlos en un objeto JSON estricto. No debés incluir explicaciones, introducciones ni bloques de código Markdown, solo el objeto JSON válido.
 
@@ -99,9 +270,8 @@ Deberás devolver exactamente esta estructura:
 }
 `;
 
-/**
- * Normaliza la respuesta del Agente 1
- */
+// --- FUNCIONES DE NORMALIZACIÓN COMPARTIDAS ---
+
 function normalizeAgent1(parsed: any): ExtractedRealEstateRequest {
   if (parsed.operacion) {
     parsed.operacion = String(parsed.operacion).toLowerCase() as any;
@@ -149,9 +319,6 @@ function normalizeAgent1(parsed: any): ExtractedRealEstateRequest {
   };
 }
 
-/**
- * Normaliza la respuesta del Agente 2
- */
 function normalizeAgent2(parsed: any): ZoneIntentRequest {
   if (parsed.zona_id) {
     parsed.zona_id = String(parsed.zona_id).toUpperCase() as any;
@@ -184,138 +351,14 @@ function normalizeAgent2(parsed: any): ZoneIntentRequest {
   };
 }
 
-/**
- * Agente 1: Analiza el mensaje y extrae los datos básicos estruturados.
- */
+// --- INSTANCIACIÓN DEL CONTEXTO Y EXPORTS PÚBLICOS ---
+
+const aiContext = new AIExtractorContext();
+
 export async function extractRealEstateRequest(messageTexto: string): Promise<ExtractedRealEstateRequest> {
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-lite',
-      contents: `Analiza este mensaje: "${messageTexto}"`,
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTIONS_AGENT1,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: 'OBJECT',
-          properties: {
-            operacion: { type: 'STRING', enum: ['venta', 'alquiler', 'desconocido'] },
-            tipo_propiedad: { type: 'STRING', enum: ['departamento', 'casa', 'terreno', 'local', 'oficina', 'otro'] },
-            zonas: {
-              type: 'ARRAY',
-              items: { type: 'STRING' },
-              description: 'Zonas normalizadas'
-            },
-            presupuesto_max: { type: 'INTEGER', nullable: true },
-            moneda: { type: 'STRING', enum: ['USD', 'ARS', 'desconocido'] },
-            dormitorios: { type: 'INTEGER', nullable: true },
-            caracteristicas_clave: { type: 'ARRAY', items: { type: 'STRING' } }
-          },
-          required: ['operacion', 'tipo_propiedad', 'zonas', 'presupuesto_max', 'moneda', 'dormitorios', 'caracteristicas_clave']
-        }
-      }
-    });
-
-    const responseText = response.text;
-    if (!responseText) throw new Error('Respuesta de Gemini vacía');
-    
-    const parsed = JSON.parse(responseText.trim());
-    return normalizeAgent1(parsed);
-  } catch (error) {
-    console.warn('[AI FALLBACK] Falló Gemini en Agente 1 (Extracción Básica). Error:', error);
-    
-    if (openai) {
-      console.log('[AI FALLBACK] Intentando contingencia con OpenAI (gpt-4o-mini)...');
-      try {
-        const completion = await openai.chat.completions.create({
-          model: 'gpt-4o-mini',
-          messages: [
-            { role: 'system', content: SYSTEM_INSTRUCTIONS_AGENT1 },
-            { role: 'user', content: `Analiza este mensaje: "${messageTexto}"` }
-          ],
-          response_format: { type: 'json_object' }
-        });
-        const content = completion.choices[0]?.message?.content;
-        if (content) {
-          const parsed = JSON.parse(content.trim());
-          return normalizeAgent1(parsed);
-        }
-      } catch (openaiError) {
-        console.error('[AI FALLBACK] Falló también la contingencia con OpenAI en Agente 1:', openaiError);
-      }
-    }
-
-    return {
-      operacion: 'desconocido',
-      tipo_propiedad: 'otro',
-      zonas: [],
-      presupuesto_max: null,
-      moneda: 'desconocido',
-      dormitorios: null,
-      caracteristicas_clave: []
-    };
-  }
+  return aiContext.extractRealEstateRequest(messageTexto);
 }
 
-/**
- * Agente 2: Geocomparador de intenciones de zona.
- */
 export async function extractZoneIntent(messageTexto: string): Promise<ZoneIntentRequest> {
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-lite',
-      contents: `Clasifica la zona e intención de este mensaje: "${messageTexto}"`,
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTIONS_AGENT2,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: 'OBJECT',
-          properties: {
-            zona_id: { type: 'STRING', enum: ['ZONA_MATE_DE_LUNA', 'ZONA_YERBA_BUENA', 'ZONA_CENTRO_BARRIO_NORTE', 'DESCONOCIDO'] },
-            texto_ubicacion_original: { type: 'STRING' },
-            dormitorios_min: { type: 'INTEGER', nullable: true },
-            caracteristicas_claves: { type: 'ARRAY', items: { type: 'STRING' } },
-            operacion: { type: 'STRING', enum: ['ALQUILER', 'COMPRA', 'DESCONOCIDO'] }
-          },
-          required: ['zona_id', 'texto_ubicacion_original', 'dormitorios_min', 'caracteristicas_claves', 'operacion']
-        }
-      }
-    });
-
-    const responseText = response.text;
-    if (!responseText) throw new Error('Respuesta de Gemini vacía');
-    
-    const parsed = JSON.parse(responseText.trim());
-    return normalizeAgent2(parsed);
-  } catch (error) {
-    console.warn('[AI FALLBACK] Falló Gemini en Agente 2 (Geo Comparación). Error:', error);
-
-    if (openai) {
-      console.log('[AI FALLBACK] Intentando contingencia con OpenAI (gpt-4o-mini)...');
-      try {
-        const completion = await openai.chat.completions.create({
-          model: 'gpt-4o-mini',
-          messages: [
-            { role: 'system', content: SYSTEM_INSTRUCTIONS_AGENT2 },
-            { role: 'user', content: `Clasifica la zona e intención de este mensaje: "${messageTexto}"` }
-          ],
-          response_format: { type: 'json_object' }
-        });
-        const content = completion.choices[0]?.message?.content;
-        if (content) {
-          const parsed = JSON.parse(content.trim());
-          return normalizeAgent2(parsed);
-        }
-      } catch (openaiError) {
-        console.error('[AI FALLBACK] Falló también la contingencia con OpenAI en Agente 2:', openaiError);
-      }
-    }
-
-    return {
-      zona_id: 'DESCONOCIDO',
-      texto_ubicacion_original: '',
-      dormitorios_min: null,
-      caracteristicas_claves: [],
-      operacion: 'DESCONOCIDO'
-    };
-  }
+  return aiContext.extractZoneIntent(messageTexto);
 }
