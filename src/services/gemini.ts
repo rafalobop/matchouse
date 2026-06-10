@@ -233,7 +233,7 @@ Sigue estrictamente estas reglas de negocio:
 
 3. ZONAS (Mapeo Local):
    - Mapea los barrios locales a los municipios principales:
-     * "Barrio Norte", "Barrio Sur", "Centro", "SMT", "San Miguel", "B° Norte", "B° Sur" -> "San Miguel de Tucumán"
+     * "Barrio Norte", "Barrio Sur", "Centro", "SMT", "San Miguel", "B° Norte", "B° Sur", "4 Avenidas", "cuatro avenidas" -> "San Miguel de Tucumán"
      * "Yerba Buena", "YB", "El Corte", "Marcos Paz", "San José" -> "Yerba Buena"
      * "Tafí Viejo", "Lomas de Tafí" -> "Tafí Viejo"
    - Si se mencionan múltiples zonas, agrégalas al array.
@@ -286,6 +286,7 @@ Debés clasificar la ubicación del mensaje únicamente en uno de los siguientes
 - ZONA_TAFI_VIEJO: Tafí Viejo.
 - ZONA_LOMAS_DE_TAFI: Lomas de Tafí.
 - ZONA_LOS_NOGALES: Los Nogales o countries/lotes de la zona.
+- ZONA_LAS_4_AVENIDAS: Cuatro Avenidas de San Miguel de Tucumán (área delimitada por las avenidas principales: Av. Avellaneda/Sarmiento, Av. Mitre/Alem).
 - DESCONOCIDO: Si no menciona ninguna ubicación o no podés asociarla con total seguridad a las anteriores.
 
 Esquema de Salida (JSON)
