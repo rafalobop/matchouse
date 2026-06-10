@@ -15,6 +15,7 @@ export interface ExtractedRealEstateRequest {
   moneda: 'USD' | 'ARS' | 'desconocido';
   dormitorios: number | null;
   caracteristicas_clave: string[];
+  country: 'si' | 'no' | 'indiferente';
 }
 
 export interface ZoneIntentRequest {
@@ -59,9 +60,10 @@ class GeminiStrategy implements AIStrategy {
             presupuesto_max: { type: 'INTEGER', nullable: true },
             moneda: { type: 'STRING', enum: ['USD', 'ARS', 'desconocido'] },
             dormitorios: { type: 'INTEGER', nullable: true },
-            caracteristicas_clave: { type: 'ARRAY', items: { type: 'STRING' } }
+            caracteristicas_clave: { type: 'ARRAY', items: { type: 'STRING' } },
+            country: { type: 'STRING', enum: ['si', 'no', 'indiferente'], description: 'Indica si busca dentro de un country (si), fuera de un country (no) o si no lo especifica (indiferente)' }
           },
-          required: ['operacion', 'tipo_propiedad', 'zonas', 'presupuesto_max', 'moneda', 'dormitorios', 'caracteristicas_clave']
+          required: ['operacion', 'tipo_propiedad', 'zonas', 'presupuesto_max', 'moneda', 'dormitorios', 'caracteristicas_clave', 'country']
         }
       }
     });
@@ -183,7 +185,8 @@ class AIExtractorContext {
       presupuesto_max: null,
       moneda: 'desconocido',
       dormitorios: null,
-      caracteristicas_clave: []
+      caracteristicas_clave: [],
+      country: 'indiferente'
     };
   }
 
@@ -261,6 +264,10 @@ Sigue estrictamente estas reglas de negocio:
      * "balcón", "balcon" -> "balcon"
      * "amenities", "sum" -> "amenities"
      * "amueblado", "amob" -> "amueblado"
+
+7. COUNTRY / BARRIO CERRADO:
+   - Determina si el cliente busca explícitamente en un country o barrio cerrado, o si explícitamente los excluye.
+   - El campo "country" debe ser uno de: "si" (si pide 'en country', 'en barrio cerrado', 'en barrio privado', 'en countries'), "no" (si pide 'no country', 'no barrio cerrado', 'fuera de country', 'no countries'), o "indiferente" (si no especifica ninguna restricción al respecto).
 `;
 
 const SYSTEM_INSTRUCTIONS_AGENT2 = `
@@ -338,6 +345,15 @@ function normalizeAgent1(parsed: any): ExtractedRealEstateRequest {
     parsed.caracteristicas_clave = [];
   }
 
+  if (parsed.country) {
+    parsed.country = String(parsed.country).toLowerCase() as any;
+    if (!['si', 'no', 'indiferente'].includes(parsed.country)) {
+      parsed.country = 'indiferente';
+    }
+  } else {
+    parsed.country = 'indiferente';
+  }
+
   return {
     operacion: parsed.operacion,
     tipo_propiedad: parsed.tipo_propiedad,
@@ -345,7 +361,8 @@ function normalizeAgent1(parsed: any): ExtractedRealEstateRequest {
     presupuesto_max: parsed.presupuesto_max !== undefined ? parsed.presupuesto_max : null,
     moneda: parsed.moneda,
     dormitorios: parsed.dormitorios !== undefined ? parsed.dormitorios : null,
-    caracteristicas_clave: parsed.caracteristicas_clave
+    caracteristicas_clave: parsed.caracteristicas_clave,
+    country: parsed.country
   };
 }
 

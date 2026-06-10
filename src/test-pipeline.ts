@@ -108,7 +108,8 @@ const mockExtractedEntities: Record<number, ExtractedRealEstateRequest> = {
     presupuesto_max: 400,
     moneda: 'USD',
     dormitorios: 1,
-    caracteristicas_clave: ['cochera']
+    caracteristicas_clave: ['cochera'],
+    country: 'indiferente'
   },
   3: {
     operacion: 'venta',
@@ -117,7 +118,8 @@ const mockExtractedEntities: Record<number, ExtractedRealEstateRequest> = {
     presupuesto_max: 50000,
     moneda: 'USD',
     dormitorios: null,
-    caracteristicas_clave: ['apto credito']
+    caracteristicas_clave: ['apto credito'],
+    country: 'indiferente'
   },
   5: {
     operacion: 'alquiler',
@@ -126,7 +128,8 @@ const mockExtractedEntities: Record<number, ExtractedRealEstateRequest> = {
     presupuesto_max: null,
     moneda: 'ARS',
     dormitorios: 2,
-    caracteristicas_clave: ['pileta']
+    caracteristicas_clave: ['pileta'],
+    country: 'indiferente'
   }
 };
 

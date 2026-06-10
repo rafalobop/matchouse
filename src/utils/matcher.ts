@@ -104,6 +104,32 @@ export function classifyPropertyZoneId(property: Property): string {
 }
 
 /**
+ * Determina si una propiedad está ubicada dentro de un country o barrio cerrado/privado
+ */
+export function isPropertyInCountry(property: Property): boolean {
+  const text = `${property.domicilio} ${property.caracteristicas} ${property.pisoLote} ${property.sheetName}`.toLowerCase();
+  
+  const countryKeywords = [
+    'country',
+    'barrio cerrado',
+    'barrio privado',
+    'b° cerrado',
+    'b° privado',
+    'club de campo',
+    'las yungas',
+    'san patricio',
+    'las cañas',
+    'la arboleda',
+    'alto verde',
+    'valle escondido',
+    'cerro azul',
+    'lomas de tafi' // a veces lomas es barrio abierto pero los countries sí
+  ];
+
+  return countryKeywords.some(keyword => text.includes(keyword));
+}
+
+/**
  * Compara un pedido de cliente con una propiedad de la cartera
  */
 export function checkMatch(
@@ -139,6 +165,18 @@ export function checkMatch(
   // 3. Tipo de Propiedad
   if (request.tipo_propiedad !== 'otro' && request.tipo_propiedad !== property.tipo_propiedad) {
     return { isMatch: false, score: 0, reasons: ['Diferente tipo de propiedad'] };
+  }
+
+  // 3.5. Filtrado por Country / Barrio Cerrado
+  if (request.country && request.country !== 'indiferente') {
+    const propInCountry = isPropertyInCountry(property);
+    if (request.country === 'si' && !propInCountry) {
+      return { isMatch: false, score: 0, reasons: ['El pedido requiere country/barrio cerrado y la propiedad no está en uno.'] };
+    }
+    if (request.country === 'no' && propInCountry) {
+      return { isMatch: false, score: 0, reasons: ['El pedido excluye countries/barrios cerrados y la propiedad está en uno.'] };
+    }
+    reasons.push(request.country === 'si' ? 'Propiedad en country/barrio cerrado como fue requerido' : 'Propiedad fuera de country/barrio cerrado como fue requerido');
   }
 
   // 4. Zona de Ubicación General (Si no se usó el Agente 2 para geo-filtrado específico)
