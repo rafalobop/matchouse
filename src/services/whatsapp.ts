@@ -140,18 +140,40 @@ export async function startWhatsAppClient(options: WhatsAppClientOptions): Promi
     }
 
     if (connection === 'close') {
-      const shouldReconnect = (lastDisconnect?.error as any)?.output?.statusCode !== DisconnectReason.loggedOut;
+      const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       console.log('Conexión cerrada debido a:', lastDisconnect?.error, ', reconectando:', shouldReconnect);
 
-      whatsappStatus.status = 'DISCONNECTED';
-      whatsappStatus.user = undefined;
+      // Solo actualizar el estado global si esta es la instancia activa
+      if (sock === sockInstance) {
+        whatsappStatus.status = 'DISCONNECTED';
+        whatsappStatus.user = undefined;
+      }
 
       if (shouldReconnect) {
-        setTimeout(() => {
-          startWhatsAppClient(options);
-        }, 3000);
+        if (sock === sockInstance) {
+          console.log('[WHATSAPP] Reintentando conexión en 3 segundos...');
+          setTimeout(() => {
+            if (sock === sockInstance) {
+              startWhatsAppClient(options);
+            } else {
+              console.log('[WHATSAPP] Ignorando reconexión programada: la instancia de socket ya no es la activa.');
+            }
+          }, 3000);
+        } else {
+          console.log('[WHATSAPP] Ignorando reconexión: la instancia de socket cerrada no es la activa.');
+        }
+      } else {
+        if (sock === sockInstance) {
+          sockInstance = null;
+        }
       }
     } else if (connection === 'open') {
+      if (sock !== sockInstance) {
+        console.log('[WHATSAPP] Conexión abierta de una instancia no activa. Cerrándola.');
+        try { sock.end(undefined); } catch(e) {}
+        return;
+      }
       whatsappStatus.status = 'CONNECTED';
       whatsappStatus.qrDataUrl = undefined;
 
@@ -266,13 +288,14 @@ export async function restartWhatsAppClient(): Promise<void> {
   console.log('[WHATSAPP] Iniciando proceso de reinicio forzado...');
 
   if (sockInstance) {
+    const oldSock = sockInstance;
+    sockInstance = null; // Evitar que el handler 'close' intente reconectar
     try {
-      sockInstance.end(new Error('Reinicio manual solicitado'));
+      oldSock.end(new Error('Reinicio manual solicitado'));
       console.log('[WHATSAPP] Instancia anterior finalizada.');
     } catch (error) {
       console.error('[WHATSAPP] Error al finalizar instancia de WhatsApp:', error);
     }
-    sockInstance = null;
   }
 
   // Esperar un momento a que Windows libere los archivos
