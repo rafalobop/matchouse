@@ -1,7 +1,8 @@
 import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
-  WASocket
+  WASocket,
+  fetchLatestBaileysVersion
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import * as qrcodeTerminal from 'qrcode-terminal';
@@ -112,8 +113,19 @@ export async function startWhatsAppClient(options: WhatsAppClientOptions): Promi
 
   const { state, saveCreds } = await useMultiFileAuthState('./.baileys_auth');
 
+  // Obtener la versión de WhatsApp Web más reciente para evitar desconexiones por versión desactualizada
+  let version: any = [2, 3000, 1017531287]; // Fallback por defecto si falla la petición
+  try {
+    const latest = await fetchLatestBaileysVersion();
+    version = latest.version;
+    console.log(`[WHATSAPP] Usando versión de WhatsApp Web v${version.join('.')}, última versión: ${latest.isLatest}`);
+  } catch (err) {
+    console.warn('[WHATSAPP] No se pudo obtener la última versión de WhatsApp Web. Usando fallback:', err);
+  }
+
   const sock = makeWASocket({
     auth: state,
+    version,
     printQRInTerminal: false,
     logger: pino({ level: 'error' }),
   });
