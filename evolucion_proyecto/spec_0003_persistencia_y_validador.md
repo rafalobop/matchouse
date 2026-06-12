@@ -2,8 +2,9 @@
 
 ## 1. Contexto y Objetivos
 Para escalar HouseMatch a 10 clientes de forma robusta en Railway, se requiere:
-1.  **Persistencia Relacional**: Sustituir el almacenamiento efímero local (`catalog.json`, arrays en memoria) y sincronizar Google Sheets/Excel en tablas de PostgreSQL usando Prisma ORM.
+1.  **Persistencia Relacional**: Sustituir el almacenamiento efímero local (`catalog.json`, arrays en memoria) y sincronizar Google Sheets/Excel en tablas de PostgreSQL usando Prisma ORM. La base de datos estará alojada en el proyecto **matchouse** de **Supabase** y se conectará mediante la variable de entorno `DATABASE_URL`.
 2.  **Agente Validador (Gatekeeper)**: Incorporar un nuevo sub-agente basado en LLM que actúe después del algoritmo físico de matching para validar la calidad del match, reduciendo falsos positivos e impidiendo notificaciones de bajo score.
+
 
 ## 2. Arquitectura de Datos (Esquema Prisma Propuesto)
 

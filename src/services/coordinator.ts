@@ -1,4 +1,4 @@
-import { extractRealEstateRequest, extractZoneIntent, ExtractedRealEstateRequest, ZoneIntentRequest } from './gemini';
+import { extractRealEstateRequest, extractZoneIntent, ExtractedRealEstateRequest, ZoneIntentRequest, validateMatch } from './gemini';
 import { Property, saveMatch } from './sheets';
 import { checkMatch } from '../utils/matcher';
 import { sendWhatsAppNotification } from './whatsapp';
@@ -98,33 +98,41 @@ export class CoordinatorAgent {
         const matchResult = checkMatch(context.extractedData, property, context.zoneIntent);
 
         if (matchResult.isMatch) {
-          matchesFoundCount++;
-          context.matches.push({ property, score: matchResult.score });
-          
-          console.log(`[COORDINADOR - MATCH ENCONTRADO]:`);
-          console.log(` - Propiedad: ${property.domicilio} (Precio: ${property.moneda} ${property.precio})`);
-          console.log(` - Score de coincidencia: ${matchResult.score}%`);
-          console.log(` - Detalles:`, matchResult.reasons.join(', '));
+          console.log(`[COORDINADOR] Match algorítmico encontrado para ${property.domicilio}. Ejecutando Agente Validador...`);
+          const validation = await validateMatch(body, property, context.extractedData);
+          console.log(`[COORDINADOR - VALIDADOR] Score: ${validation.score}%, isValid: ${validation.isValid}, Razonamiento: "${validation.reasoning}"`);
 
-          const matchDetailsText = `Score: ${matchResult.score}%\n\nDetalles:\n${matchResult.reasons.join('\n')}`;
+          if (validation.isValid && validation.score >= 70) {
+            matchesFoundCount++;
+            context.matches.push({ property, score: validation.score });
+            
+            console.log(`[COORDINADOR - MATCH APROBADO]:`);
+            console.log(` - Propiedad: ${property.domicilio} (Precio: ${property.moneda} ${property.precio})`);
+            console.log(` - Score de validación: ${validation.score}%`);
+            console.log(` - Detalles:`, matchResult.reasons.join(', '));
 
-          // Guardar coincidencia en Google Sheets
-          await saveMatch(body, sender, property, matchDetailsText);
+            const matchDetailsText = `Score Físico: ${matchResult.score}% | Score IA: ${validation.score}%\n\nMotivo Validación:\n${validation.reasoning}\n\nDetalles Algorítmicos:\n${matchResult.reasons.join('\n')}`;
 
-          // Registrar en memoria local del coordinador
-          const matchFecha = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Tucuman' });
-          this.recentMatches.unshift({
-            fecha: matchFecha,
-            originalText: body,
-            contactSender: sender,
-            groupName: groupName,
-            property,
-            matchDetails: matchDetailsText
-          });
+            // Guardar coincidencia en Google Sheets
+            await saveMatch(body, sender, property, matchDetailsText);
 
-          // Limitar caché de matches recientes
-          if (this.recentMatches.length > 50) {
-            this.recentMatches.pop();
+            // Registrar en memoria local del coordinador
+            const matchFecha = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Tucuman' });
+            this.recentMatches.unshift({
+              fecha: matchFecha,
+              originalText: body,
+              contactSender: sender,
+              groupName: groupName,
+              property,
+              matchDetails: matchDetailsText
+            });
+
+            // Limitar caché de matches recientes
+            if (this.recentMatches.length > 50) {
+              this.recentMatches.pop();
+            }
+          } else {
+            console.log(`[COORDINADOR - MATCH RECHAZADO/SILENCIADO] La propiedad ${property.domicilio} no superó la curación del Validador.`);
           }
         }
       }

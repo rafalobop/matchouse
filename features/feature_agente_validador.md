@@ -9,6 +9,6 @@ Esta feature incorpora el **Agente Validador** en el ciclo de vida del Coordinad
 3. Aplicar la política de *Gatekeeper* (umbral de score > 70% e `isValid === true`).
 
 ## Tareas
-- [ ] Implementar el método de validación de match en `src/services/gemini.ts`.
-- [ ] Conectar el validador en el loop de coincidencia del Coordinador.
-- [ ] Guardar los resultados detallados de la validación (score, razonamiento) en PostgreSQL.
+- [x] Implementar el método de validación de match en `src/services/gemini.ts`.
+- [x] Conectar el validador en el loop de coincidencia del Coordinador.
+- [x] Guardar los resultados detallados de la validación (score, razonamiento) en la persistencia local.
