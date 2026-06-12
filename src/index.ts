@@ -68,7 +68,7 @@ app.post('/api/groups', (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/upload', upload.single('excelFile'), (req, res) => {
+app.post('/api/upload', upload.single('excelFile'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No se subió ningún archivo' });
   }
@@ -82,6 +82,10 @@ app.post('/api/upload', upload.single('excelFile'), (req, res) => {
     saveCatalogToDisk(catalog);
     propertyCatalog = catalog;
     coordinator.setCatalog(catalog);
+    
+    const { syncPropertiesToDatabase } = require('./services/sheets');
+    await syncPropertiesToDatabase(catalog);
+
     res.json({ success: true, count: catalog.length });
   } catch (error: any) {
     console.error('Error al procesar subida de Excel:', error);
@@ -93,8 +97,45 @@ app.get('/api/catalog', (req, res) => {
   res.json({ count: propertyCatalog.length });
 });
 
-app.get('/api/matches', (req, res) => {
-  res.json({ matches: coordinator.getRecentMatches() });
+app.get('/api/matches', async (req, res) => {
+  const { prisma } = require('./services/db');
+  try {
+    const dbMatches = await prisma.match.findMany({
+      orderBy: { fecha: 'desc' },
+      take: 50,
+      include: {
+        property: true,
+        message: true
+      }
+    });
+
+    const mappedMatches = dbMatches.map((m: any) => ({
+      fecha: m.fecha.toLocaleString('es-AR', { timeZone: 'America/Argentina/Tucuman' }),
+      originalText: m.message.body,
+      contactSender: m.message.sender,
+      groupName: m.message.groupName,
+      property: {
+        domicilio: m.property.domicilio,
+        pisoLote: m.property.pisoLote || '',
+        precio: m.property.precio,
+        moneda: m.property.moneda,
+        expensas: m.property.expensas,
+        dormitorios: m.property.dormitorios,
+        caracteristicas: m.property.caracteristicas || '',
+        contacto: m.property.contacto || '',
+        zona: m.property.zona,
+        operacion: m.property.operacion,
+        tipo_propiedad: m.property.tipoPropiedad,
+        sheetName: m.property.sheetName
+      },
+      matchDetails: m.matchDetails
+    }));
+
+    res.json({ matches: mappedMatches });
+  } catch (error: any) {
+    console.error('Error al recuperar matches de la base de datos:', error);
+    res.json({ matches: coordinator.getRecentMatches() });
+  }
 });
 
 // La lógica de procesamiento de mensajes entrantes fue delegada al Agente Coordinador (coordinator.ts)
@@ -115,9 +156,41 @@ async function main() {
     console.warn('[DIAGNOSTIC] Falló comando al buscar chromium:', e.message);
   }
 
-  // Cargar catálogo inicialmente desde disco
-  propertyCatalog = loadCatalogFromDisk();
-  console.log(`Catálogo inicializado con ${propertyCatalog.length} propiedades.`);
+  const { prisma } = require('./services/db');
+  const { syncPropertiesToDatabase } = require('./services/sheets');
+  
+  let propertiesFromDb: any[] = [];
+  try {
+    propertiesFromDb = await prisma.property.findMany();
+  } catch (e) {
+    console.warn('[MAIN - DB] No se pudo recuperar propiedades desde PostgreSQL:', e);
+  }
+
+  if (propertiesFromDb.length > 0) {
+    console.log(`[MAIN - DB] Catálogo cargado desde PostgreSQL (${propertiesFromDb.length} propiedades).`);
+    propertyCatalog = propertiesFromDb.map(p => ({
+      domicilio: p.domicilio,
+      pisoLote: p.pisoLote || '',
+      precio: p.precio,
+      moneda: p.moneda as any,
+      expensas: p.expensas,
+      dormitorios: p.dormitorios,
+      caracteristicas: p.caracteristicas || '',
+      contacto: p.contacto || '',
+      zona: p.zona,
+      operacion: p.operacion as any,
+      tipo_propiedad: p.tipoPropiedad as any,
+      sheetName: p.sheetName,
+      latitud: p.latitud || undefined,
+      longitud: p.longitud || undefined
+    }));
+  } else {
+    propertyCatalog = loadCatalogFromDisk();
+    console.log(`[MAIN] Catálogo local inicializado con ${propertyCatalog.length} propiedades.`);
+    if (propertyCatalog.length > 0) {
+      await syncPropertiesToDatabase(propertyCatalog);
+    }
+  }
   coordinator.setCatalog(propertyCatalog);
 
   // Iniciar cliente de WhatsApp
