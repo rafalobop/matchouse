@@ -64,6 +64,21 @@ export class CoordinatorAgent {
     console.log(`[COORDINADOR] Iniciando orquestación de pedido de ${sender} en [${groupName}]`);
     console.log(`Contenido: "${body}"`);
 
+    const { prisma } = require('./db');
+    let dbMessage: any = null;
+    try {
+      dbMessage = await prisma.message.create({
+        data: {
+          body,
+          sender,
+          groupName,
+          senderPhone
+        }
+      });
+    } catch (e) {
+      console.warn('[COORDINADOR - DB] No se pudo guardar el mensaje entrante en PostgreSQL:', e);
+    }
+
     try {
       // 1. Agente 1: Extractor de Entidades
       console.log(`[COORDINADOR] Ejecutando Agente 1 (Extractor)...`);
@@ -102,6 +117,38 @@ export class CoordinatorAgent {
           const validation = await validateMatch(body, property, context.extractedData);
           console.log(`[COORDINADOR - VALIDADOR] Score: ${validation.score}%, isValid: ${validation.isValid}, Razonamiento: "${validation.reasoning}"`);
 
+          const matchDetailsText = `Score Físico: ${matchResult.score}% | Score IA: ${validation.score}%\n\nMotivo Validación:\n${validation.reasoning}\n\nDetalles Algorítmicos:\n${matchResult.reasons.join('\n')}`;
+
+          // Persistir el match en PostgreSQL (tanto si es válido como si no)
+          if (dbMessage) {
+            try {
+              const dbProperty = await prisma.property.findFirst({
+                where: {
+                  domicilio: property.domicilio,
+                  sheetName: property.sheetName,
+                  pisoLote: property.pisoLote || null
+                }
+              });
+
+              if (dbProperty) {
+                await prisma.match.create({
+                  data: {
+                    messageId: dbMessage.id,
+                    propertyId: dbProperty.id,
+                    score: matchResult.score,
+                    validationScore: validation.score,
+                    isValid: validation.isValid,
+                    reasoning: validation.reasoning,
+                    matchDetails: matchDetailsText
+                  }
+                });
+                console.log(`[COORDINADOR - DB] Match con propiedad ${property.domicilio} registrado en PostgreSQL.`);
+              }
+            } catch (dbErr) {
+              console.warn('[COORDINADOR - DB] Error al registrar el match en PostgreSQL:', dbErr);
+            }
+          }
+
           if (validation.isValid && validation.score >= 70) {
             matchesFoundCount++;
             context.matches.push({ property, score: validation.score });
@@ -110,8 +157,6 @@ export class CoordinatorAgent {
             console.log(` - Propiedad: ${property.domicilio} (Precio: ${property.moneda} ${property.precio})`);
             console.log(` - Score de validación: ${validation.score}%`);
             console.log(` - Detalles:`, matchResult.reasons.join(', '));
-
-            const matchDetailsText = `Score Físico: ${matchResult.score}% | Score IA: ${validation.score}%\n\nMotivo Validación:\n${validation.reasoning}\n\nDetalles Algorítmicos:\n${matchResult.reasons.join('\n')}`;
 
             // Guardar coincidencia en Google Sheets
             await saveMatch(body, sender, property, matchDetailsText);

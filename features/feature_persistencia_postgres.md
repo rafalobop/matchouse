@@ -10,7 +10,7 @@ Esta feature reemplaza la caché en memoria y archivos estáticos JSON con una b
 4. Persistir cada mensaje y match procesado.
 
 ## Tareas
-- [ ] Instalar `@prisma/client` y configurar el provider en `schema.prisma`.
-- [ ] Correr la migración inicial.
-- [ ] Crear la lógica de sincronización en `src/services/sheets.ts` y `src/services/excel.ts` hacia PostgreSQL.
-- [ ] Modificar el coordinador para almacenar cada `PipelineContext` (mensajes, matches) en las tablas relacionales.
+- [x] Instalar `@prisma/client` y configurar el provider en `schema.prisma`.
+- [x] Correr la migración inicial.
+- [x] Crear la lógica de sincronización en `src/services/sheets.ts` y `src/services/excel.ts` hacia PostgreSQL.
+- [x] Modificar el coordinador para almacenar cada `PipelineContext` (mensajes, matches) en las tablas relacionales.
