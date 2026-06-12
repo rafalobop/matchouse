@@ -5,6 +5,10 @@ Este directorio contiene la trazabilidad de las decisiones de arquitectura, dise
 ## Índice de Especificaciones (ADR)
 
 *   [spec_0001_mvp_base.md](file:///c:/Users/NoxiePC/Desktop/Software/housematch/evolucion_proyecto/spec_0001_mvp_base.md): Estado inicial del MVP, arquitectura base lineal, integraciones existentes y límites del sistema.
+*   [spec_0002_definicion_coordinador.md](file:///c:/Users/NoxiePC/Desktop/Software/housematch/evolucion_proyecto/spec_0002_definicion_coordinador.md): Definición del rol, responsabilidades e interfaz técnica del Agente Coordinador (Orquestador).
+*   [spec_0003_persistencia_y_validador.md](file:///c:/Users/NoxiePC/Desktop/Software/housematch/evolucion_proyecto/spec_0003_persistencia_y_validador.md): Persistencia con PostgreSQL (Prisma) y Agente Validador de Matches.
+
+
 
 ## Estado del Arte Actual
 - **Agente Coordinador**: Definido (Orquestador principal).

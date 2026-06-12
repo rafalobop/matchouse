@@ -1,0 +1,11 @@
+{
+  "id": "feat-0003",
+  "name": "Agente Validador / Curador de Matches",
+  "status": "PLANNING",
+  "description": "Implementar un sub-agente basado en LLM que evalúe y califique cualitativamente los matches del motor para filtrar falsos positivos.",
+  "created_at": "2026-06-12T18:32:00-03:00",
+  "updated_at": "2026-06-12T18:32:00-03:00",
+  "priority": "HIGH",
+  "assignee": "Antigravity",
+  "dependencies": ["feat-0001", "feat-0002"]
+}
