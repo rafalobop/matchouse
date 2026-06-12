@@ -28,10 +28,22 @@ export interface ZoneIntentRequest {
 
 // --- INTERFAZ DEL PATRÓN STRATEGY ---
 
+export interface ValidationResult {
+  score: number;
+  isValid: boolean;
+  reasoning: string;
+}
+
 export interface AIStrategy {
   name: string;
   extractRealEstateRequest(messageTexto: string, systemInstruction: string): Promise<any>;
   extractZoneIntent(messageTexto: string, systemInstruction: string, operacion?: string): Promise<any>;
+  validateMatch(
+    messageTexto: string,
+    property: any,
+    extractedData: any,
+    systemInstruction: string
+  ): Promise<ValidationResult>;
 }
 
 // --- ESTRATEGIAS CONCRETAS ---
@@ -102,6 +114,43 @@ class GeminiStrategy implements AIStrategy {
     if (!responseText) throw new Error('Respuesta de Gemini vacía');
     return JSON.parse(responseText.trim());
   }
+
+  async validateMatch(
+    messageTexto: string,
+    property: any,
+    extractedData: any,
+    systemInstruction: string
+  ): Promise<ValidationResult> {
+    const prompt = `
+Analiza si esta propiedad coincide cualitativamente con la búsqueda de WhatsApp del cliente.
+
+Búsqueda de WhatsApp: "${messageTexto}"
+Datos estructurados de la búsqueda: ${JSON.stringify(extractedData)}
+Propiedad Candidata de la Cartera: ${JSON.stringify(property)}
+    `;
+
+    const response = await this.ai.models.generateContent({
+      model: 'gemini-2.5-flash-lite',
+      contents: prompt,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'OBJECT',
+          properties: {
+            score: { type: 'INTEGER', description: 'Porcentaje de coincidencia de 0 a 100 basado en criterios cualitativos de idoneidad' },
+            isValid: { type: 'BOOLEAN', description: 'Indica si califica como un match real para notificar' },
+            reasoning: { type: 'STRING', description: 'Explicación muy breve de por qué califica o por qué se descarta (en español)' }
+          },
+          required: ['score', 'isValid', 'reasoning']
+        }
+      }
+    });
+
+    const responseText = response.text;
+    if (!responseText) throw new Error('Respuesta de Gemini vacía');
+    return JSON.parse(responseText.trim());
+  }
 }
 
 class OpenAIStrategy implements AIStrategy {
@@ -141,6 +190,38 @@ class OpenAIStrategy implements AIStrategy {
       messages: [
         { role: 'system', content: systemInstruction },
         { role: 'user', content: userMsg }
+      ],
+      response_format: { type: 'json_object' }
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) throw new Error('Respuesta de OpenAI vacía');
+    return JSON.parse(content.trim());
+  }
+
+  async validateMatch(
+    messageTexto: string,
+    property: any,
+    extractedData: any,
+    systemInstruction: string
+  ): Promise<ValidationResult> {
+    if (!this.openai) {
+      throw new Error('OpenAI API key no está configurada.');
+    }
+
+    const prompt = `
+Analiza si esta propiedad coincide cualitativamente con la búsqueda de WhatsApp del cliente.
+
+Búsqueda de WhatsApp: "${messageTexto}"
+Datos estructurados de la búsqueda: ${JSON.stringify(extractedData)}
+Propiedad Candidata de la Cartera: ${JSON.stringify(property)}
+    `;
+
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemInstruction },
+        { role: 'user', content: prompt }
       ],
       response_format: { type: 'json_object' }
     });
@@ -208,6 +289,33 @@ class AIExtractorContext {
       dormitorios_min: null,
       caracteristicas_claves: [],
       operacion: 'DESCONOCIDO'
+    };
+  }
+
+  async validateMatch(
+    messageTexto: string,
+    property: any,
+    extractedData: any
+  ): Promise<ValidationResult> {
+    for (const strategy of this.strategies) {
+      try {
+        console.log(`[AI STRATEGY] Intentando Validación con: ${strategy.name}`);
+        const result = await strategy.validateMatch(messageTexto, property, extractedData, SYSTEM_INSTRUCTIONS_VALIDATOR);
+        return {
+          score: Number(result.score) || 0,
+          isValid: Boolean(result.isValid),
+          reasoning: result.reasoning || ''
+        };
+      } catch (error) {
+        console.warn(`[AI STRATEGY] Falla en estrategia ${strategy.name}. Intentando fallback... Error:`, error);
+      }
+    }
+
+    console.error('[AI STRATEGY] Todas las estrategias de validación fallaron.');
+    return {
+      score: 0,
+      isValid: false,
+      reasoning: 'Error interno en la validación por IA.'
     };
   }
 }
@@ -414,3 +522,35 @@ export async function extractRealEstateRequest(messageTexto: string): Promise<Ex
 export async function extractZoneIntent(messageTexto: string, operacion?: 'venta' | 'alquiler' | 'desconocido'): Promise<ZoneIntentRequest> {
   return aiContext.extractZoneIntent(messageTexto, operacion);
 }
+
+export async function validateMatch(
+  messageTexto: string,
+  property: any,
+  extractedData: any
+): Promise<ValidationResult> {
+  return aiContext.validateMatch(messageTexto, property, extractedData);
+}
+
+// --- PROMPT DE INSTRUCCIONES DEL VALIDADOR ---
+
+const SYSTEM_INSTRUCTIONS_VALIDATOR = `
+Eres un Agente Curador y Validador Inmobiliario experto en el mercado de Tucumán, Argentina.
+Tu tarea es analizar si una propiedad candidata realmente coincide con el pedido de WhatsApp de un cliente de forma cualitativa y lógica.
+
+El motor algorítmico básico ya validó coincidencias básicas como la zona y dormitorios. Tu trabajo consiste en detectar falsos positivos y detalles semánticos que el algoritmo no puede resolver.
+
+Criterios Críticos de Descarte (Establece isValid = false y un score bajo si se incumple):
+1. Tipología incompatible: Si busca "terreno/lote" y se le ofrece "departamento". O si busca "oficina comercial" y se le ofrece una "casa de familia".
+2. Restricción de Country: Si el cliente solicita explícitamente "NO country" o "fuera de country" y la propiedad está en un country o barrio privado (o viceversa).
+3. Presupuesto abusivo: Si la propiedad excede en gran medida el presupuesto del cliente.
+4. Tipo de contrato incompatible: Si busca "alquiler" y la propiedad solo se vende (operación).
+5. Características críticas no negociables: Si el cliente pide explícitamente "cochera doble si o si" y la propiedad tiene cochera simple.
+
+Formato de Respuesta Exclusivo (JSON):
+Debes responder ÚNICAMENTE con un objeto JSON válido con la siguiente estructura:
+{
+  "score": número entero del 0 al 100 indicando la calidad del match,
+  "isValid": booleano (true si cumple con el pedido, false si debe descartarse),
+  "reasoning": "Breve explicación en español de una sola frase de por qué es apto o por qué se descarta"
+}
+`;

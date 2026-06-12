@@ -2,16 +2,13 @@ import express from 'express';
 import multer from 'multer';
 import * as path from 'path';
 import * as fs from 'fs';
-import { startWhatsAppClient, loadSettings, saveSettings, getActiveGroups, whatsappStatus, restartWhatsAppClient, sendWhatsAppNotification } from './services/whatsapp';
-import { extractRealEstateRequest, extractZoneIntent, ZoneIntentRequest } from './services/gemini';
-import { saveMatch, Property } from './services/sheets';
-import { isRealEstateRequest } from './utils/filter';
-import { checkMatch } from './utils/matcher';
+import { startWhatsAppClient, loadSettings, saveSettings, getActiveGroups, whatsappStatus, restartWhatsAppClient } from './services/whatsapp';
+import { Property } from './services/sheets';
 import { loadCatalogFromDisk, saveCatalogToDisk, processExcelBuffer } from './services/excel';
+import { coordinator } from './services/coordinator';
 
-// In-memory property catalog and matches log
+// In-memory property catalog
 let propertyCatalog: Property[] = [];
-const recentMatches: any[] = [];
 
 // Express Setup
 const app = express();
@@ -71,7 +68,7 @@ app.post('/api/groups', (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/upload', upload.single('excelFile'), (req, res) => {
+app.post('/api/upload', upload.single('excelFile'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No se subió ningún archivo' });
   }
@@ -84,6 +81,11 @@ app.post('/api/upload', upload.single('excelFile'), (req, res) => {
 
     saveCatalogToDisk(catalog);
     propertyCatalog = catalog;
+    coordinator.setCatalog(catalog);
+    
+    const { syncPropertiesToDatabase } = require('./services/sheets');
+    await syncPropertiesToDatabase(catalog);
+
     res.json({ success: true, count: catalog.length });
   } catch (error: any) {
     console.error('Error al procesar subida de Excel:', error);
@@ -95,120 +97,48 @@ app.get('/api/catalog', (req, res) => {
   res.json({ count: propertyCatalog.length });
 });
 
-app.get('/api/matches', (req, res) => {
-  res.json({ matches: recentMatches });
+app.get('/api/matches', async (req, res) => {
+  const { prisma } = require('./services/db');
+  try {
+    const dbMatches = await prisma.match.findMany({
+      orderBy: { fecha: 'desc' },
+      take: 50,
+      include: {
+        property: true,
+        message: true
+      }
+    });
+
+    const mappedMatches = dbMatches.map((m: any) => ({
+      fecha: m.fecha.toLocaleString('es-AR', { timeZone: 'America/Argentina/Tucuman' }),
+      originalText: m.message.body,
+      contactSender: m.message.sender,
+      groupName: m.message.groupName,
+      property: {
+        domicilio: m.property.domicilio,
+        pisoLote: m.property.pisoLote || '',
+        precio: m.property.precio,
+        moneda: m.property.moneda,
+        expensas: m.property.expensas,
+        dormitorios: m.property.dormitorios,
+        caracteristicas: m.property.caracteristicas || '',
+        contacto: m.property.contacto || '',
+        zona: m.property.zona,
+        operacion: m.property.operacion,
+        tipo_propiedad: m.property.tipoPropiedad,
+        sheetName: m.property.sheetName
+      },
+      matchDetails: m.matchDetails
+    }));
+
+    res.json({ matches: mappedMatches });
+  } catch (error: any) {
+    console.error('Error al recuperar matches de la base de datos:', error);
+    res.json({ matches: coordinator.getRecentMatches() });
+  }
 });
 
-/**
- * Procesa un mensaje calificado de WhatsApp
- */
-async function processIncomingMessage(body: string, sender: string, groupName: string, senderPhone: string) {
-  // 1. Filtrado local ultra-rápido (cero costo de API)
-  if (!isRealEstateRequest(body)) {
-    return;
-  }
-
-  console.log(`\n--------------------------------------------------`);
-  console.log(`[PRE-FILTRO MATCH] Pedido detectado de ${sender} en [${groupName}]`);
-  console.log(`Contenido: "${body}"`);
-  console.log(`Ejecutando Agente 1 (Extractor de Entidades)...`);
-
-  // 2. Agente 1: Extraer entidades estructuradas básicas
-  const requestEntities = await extractRealEstateRequest(body);
-  console.log(`[AGENTE 1 - ENTIDADES] JSON generado:`, JSON.stringify(requestEntities, null, 2));
-
-  if (requestEntities.operacion === 'desconocido') {
-    console.log('[PROCESO] Cancelado: Operación desconocida o no clasificada como pedido inmobiliario.');
-    return;
-  }
-
-  // Validar si se extrajo ubicación
-  let zoneIntent: ZoneIntentRequest | undefined = undefined;
-  const hasUbicacion = requestEntities.zonas && requestEntities.zonas.length > 0;
-
-  if (hasUbicacion) {
-    console.log(`Ubicación detectada. Ejecutando Agente 2 (Geolocalizador e Intenciones)...`);
-    zoneIntent = await extractZoneIntent(body, requestEntities.operacion);
-    console.log(`[AGENTE 2 - GEO INTENT] JSON generado:`, JSON.stringify(zoneIntent, null, 2));
-  } else {
-    console.log(`No se detectó ubicación en la consulta. Se saltea el Agente 2.`);
-  }
-
-  // 3. Ejecutar algoritmo de matching contra la cartera local en memoria
-  console.log(`[MATCHER] Comparando con ${propertyCatalog.length} propiedades de la cartera...`);
-
-  let matchesFoundCount = 0;
-
-  const matchedPropertiesList: { property: Property; score: number }[] = [];
-
-  for (const property of propertyCatalog) {
-    const matchResult = checkMatch(requestEntities, property, zoneIntent);
-
-    if (matchResult.isMatch) {
-      matchesFoundCount++;
-      matchedPropertiesList.push({ property, score: matchResult.score });
-      console.log(`[¡MATCH ENCONTRADO!]:`);
-      console.log(` - Propiedad: ${property.domicilio} (Precio: ${property.moneda} ${property.precio})`);
-      console.log(` - Score de coincidencia: ${matchResult.score}%`);
-      console.log(` - Detalles:`, matchResult.reasons.join(', '));
-
-      const matchDetailsText = `Score: ${matchResult.score}%\n\nDetalles:\n${matchResult.reasons.join('\n')}`;
-
-      // 4. Guardar coincidencia en Google Sheets (para persistencia)
-      await saveMatch(body, sender, property, matchDetailsText);
-
-      // 5. Guardar en lista de matches recientes en memoria para mostrar en el Dashboard
-      const matchFecha = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Tucuman' });
-      recentMatches.unshift({
-        fecha: matchFecha,
-        originalText: body,
-        contactSender: sender,
-        groupName: groupName,
-        property,
-        matchDetails: matchDetailsText
-      });
-
-      // Mantener los últimos 50 matches
-      if (recentMatches.length > 50) {
-        recentMatches.pop();
-      }
-    }
-  }
-
-  if (matchesFoundCount === 0) {
-    console.log(`[MATCHER] No se encontraron coincidencias en la cartera para este pedido.`);
-  } else {
-    // 6. Enviar notificación al propio WhatsApp del usuario conectado
-    const matchIntro = matchesFoundCount === 1 
-      ? `🏠 *¡${matchesFoundCount} MATCH ENCONTRADO!*`
-      : `🏠 *¡${matchesFoundCount} MATCHES ENCONTRADOS!*`;
-
-    const propDetails = matchedPropertiesList.map((m, idx) => {
-      const waLink = m.property.contacto ? `https://wa.me/${m.property.contacto.replace(/\D/g, '')}` : '';
-      const contactInfo = waLink ? `[${m.property.contacto}](${waLink})` : (m.property.contacto || 'No especificado');
-      return `*${idx + 1}. ${m.property.domicilio}* (${m.property.sheetName})
-   • Precio: *${m.property.moneda} ${m.property.precio}*
-   • Zona: ${m.property.zona}
-   • Contacto Captador: ${contactInfo}`;
-    }).join('\n\n');
-
-    const notificationText = `${matchIntro}
-En el grupo: _${groupName}_
-
-*Pedido:*
-"${body.substring(0, 200)}${body.length > 200 ? '...' : ''}"
-
-*Cliente (Solicitante):*
-👤 ${sender}
-📱 Chat directo: wa.me/${senderPhone}
-
-*Propiedades Coincidentes:*
-${propDetails}`;
-
-    await sendWhatsAppNotification(notificationText);
-  }
-  console.log(`--------------------------------------------------\n`);
-}
+// La lógica de procesamiento de mensajes entrantes fue delegada al Agente Coordinador (coordinator.ts)
 
 /**
  * Función principal
@@ -226,14 +156,47 @@ async function main() {
     console.warn('[DIAGNOSTIC] Falló comando al buscar chromium:', e.message);
   }
 
-  // Cargar catálogo inicialmente desde disco
-  propertyCatalog = loadCatalogFromDisk();
-  console.log(`Catálogo inicializado con ${propertyCatalog.length} propiedades.`);
+  const { prisma } = require('./services/db');
+  const { syncPropertiesToDatabase } = require('./services/sheets');
+  
+  let propertiesFromDb: any[] = [];
+  try {
+    propertiesFromDb = await prisma.property.findMany();
+  } catch (e) {
+    console.warn('[MAIN - DB] No se pudo recuperar propiedades desde PostgreSQL:', e);
+  }
+
+  if (propertiesFromDb.length > 0) {
+    console.log(`[MAIN - DB] Catálogo cargado desde PostgreSQL (${propertiesFromDb.length} propiedades).`);
+    propertyCatalog = propertiesFromDb.map(p => ({
+      domicilio: p.domicilio,
+      pisoLote: p.pisoLote || '',
+      precio: p.precio,
+      moneda: p.moneda as any,
+      expensas: p.expensas,
+      dormitorios: p.dormitorios,
+      caracteristicas: p.caracteristicas || '',
+      contacto: p.contacto || '',
+      zona: p.zona,
+      operacion: p.operacion as any,
+      tipo_propiedad: p.tipoPropiedad as any,
+      sheetName: p.sheetName,
+      latitud: p.latitud || undefined,
+      longitud: p.longitud || undefined
+    }));
+  } else {
+    propertyCatalog = loadCatalogFromDisk();
+    console.log(`[MAIN] Catálogo local inicializado con ${propertyCatalog.length} propiedades.`);
+    if (propertyCatalog.length > 0) {
+      await syncPropertiesToDatabase(propertyCatalog);
+    }
+  }
+  coordinator.setCatalog(propertyCatalog);
 
   // Iniciar cliente de WhatsApp
   startWhatsAppClient({
     onMessage: async (message, senderName, groupName, senderPhone) => {
-      await processIncomingMessage(message.body, senderName, groupName, senderPhone);
+      await coordinator.handleIncomingMessage(message.body, senderName, groupName, senderPhone);
     }
   });
 

@@ -1,0 +1,55 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Property {
+  id              String   @id @default(uuid())
+  domicilio       String
+  pisoLote        String?
+  precio          Float
+  moneda          String
+  expensas        Float    @default(0)
+  dormitorios     Int      @default(0)
+  caracteristicas String?
+  contacto        String?
+  zona            String
+  operacion       String
+  tipoPropiedad   String
+  sheetName       String
+  latitud         Float?
+  longitud        Float?
+  createdAt       DateTime @default(now())
+  matches         Match[]
+}
+
+model Message {
+  id           String   @id @default(uuid())
+  body         String
+  sender       String
+  groupName    String
+  senderPhone  String
+  timestamp    DateTime @default(now())
+  matches      Match[]
+}
+
+model Match {
+  id              String   @id @default(uuid())
+  messageId       String
+  propertyId      String
+  score           Float
+  validationScore Float
+  isValid         Boolean
+  reasoning       String
+  matchDetails    String
+  fecha           DateTime @default(now())
+
+  message         Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  property        Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+}

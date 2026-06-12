@@ -329,3 +329,40 @@ export async function saveMatch(
     console.error('Error al guardar el match en Google Sheets:', error);
   }
 }
+
+/**
+ * Sincroniza el catálogo de propiedades parseado en la base de datos PostgreSQL
+ */
+export async function syncPropertiesToDatabase(properties: Property[]): Promise<void> {
+  const { prisma } = require('./db');
+  try {
+    console.log(`[DB] Iniciando sincronización de ${properties.length} propiedades en PostgreSQL...`);
+    
+    await prisma.$transaction([
+      prisma.property.deleteMany(),
+      prisma.property.createMany({
+        data: properties.map(p => ({
+          domicilio: p.domicilio,
+          pisoLote: p.pisoLote || null,
+          precio: p.precio,
+          moneda: p.moneda,
+          expensas: p.expensas,
+          dormitorios: p.dormitorios,
+          caracteristicas: p.caracteristicas || null,
+          contacto: p.contacto || null,
+          zona: p.zona,
+          operacion: p.operacion,
+          tipoPropiedad: p.tipo_propiedad,
+          sheetName: p.sheetName,
+          latitud: p.latitud || null,
+          longitud: p.longitud || null
+        }))
+      })
+    ]);
+    
+    console.log('[DB] Catálogo de propiedades sincronizado con éxito en PostgreSQL.');
+  } catch (error) {
+    console.error('[DB] Error al sincronizar propiedades en PostgreSQL:', error);
+  }
+}
+

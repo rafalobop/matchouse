@@ -12,3 +12,5 @@ backlog.md
 catalog.json
 settings.json
 .baileys_auth/
+
+/src/generated/prisma
