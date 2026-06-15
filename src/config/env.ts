@@ -11,6 +11,8 @@ export interface Config {
   googleCarteraTabName: string;
   googleMatchesTabName: string;
   whatsappGroupName?: string;
+  supabaseUrl?: string;
+  supabaseServiceRoleKey?: string;
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -25,6 +27,8 @@ export function validateConfig(): Config {
   const googleCarteraTabName = cleanEnvVar(process.env.GOOGLE_CARTERA_TAB_NAME) || 'Cartera';
   const googleMatchesTabName = cleanEnvVar(process.env.GOOGLE_MATCHES_TAB_NAME) || '[MATCHES ENCONTRADOS]';
   const whatsappGroupName = cleanEnvVar(process.env.WHATSAPP_GROUP_NAME);
+  const supabaseUrl = cleanEnvVar(process.env.SUPABASE_URL);
+  const supabaseServiceRoleKey = cleanEnvVar(process.env.SUPABASE_SERVICE_ROLE_KEY);
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
@@ -41,6 +45,8 @@ export function validateConfig(): Config {
     googleCarteraTabName,
     googleMatchesTabName,
     whatsappGroupName,
+    supabaseUrl,
+    supabaseServiceRoleKey,
   };
 }
 

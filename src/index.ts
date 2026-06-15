@@ -1,3 +1,6 @@
+import dns from 'dns';
+dns.setDefaultResultOrder('ipv4first');
+
 import express from 'express';
 import multer from 'multer';
 import * as path from 'path';
@@ -98,19 +101,22 @@ app.get('/api/catalog', (req, res) => {
 });
 
 app.get('/api/matches', async (req, res) => {
-  const { prisma } = require('./services/db');
+  const { supabase } = require('./services/supabase');
   try {
-    const dbMatches = await prisma.match.findMany({
-      orderBy: { fecha: 'desc' },
-      take: 50,
-      include: {
-        property: true,
-        message: true
-      }
-    });
+    const { data: dbMatches, error } = await supabase
+      .from('Match')
+      .select(`
+        *,
+        property:Property(*),
+        message:Message(*)
+      `)
+      .order('fecha', { ascending: false })
+      .limit(50);
+
+    if (error) throw error;
 
     const mappedMatches = dbMatches.map((m: any) => ({
-      fecha: m.fecha.toLocaleString('es-AR', { timeZone: 'America/Argentina/Tucuman' }),
+      fecha: new Date(m.fecha).toLocaleString('es-AR', { timeZone: 'America/Argentina/Tucuman' }),
       originalText: m.message.body,
       contactSender: m.message.sender,
       groupName: m.message.groupName,
@@ -156,18 +162,23 @@ async function main() {
     console.warn('[DIAGNOSTIC] Falló comando al buscar chromium:', e.message);
   }
 
-  const { prisma } = require('./services/db');
+  const { supabase } = require('./services/supabase');
   const { syncPropertiesToDatabase } = require('./services/sheets');
   
   let propertiesFromDb: any[] = [];
   try {
-    propertiesFromDb = await prisma.property.findMany();
+    const { data, error } = await supabase
+      .from('Property')
+      .select('*');
+      
+    if (error) throw error;
+    propertiesFromDb = data || [];
   } catch (e) {
-    console.warn('[MAIN - DB] No se pudo recuperar propiedades desde PostgreSQL:', e);
+    console.warn('[MAIN - SUPABASE] No se pudo recuperar propiedades:', e);
   }
 
   if (propertiesFromDb.length > 0) {
-    console.log(`[MAIN - DB] Catálogo cargado desde PostgreSQL (${propertiesFromDb.length} propiedades).`);
+    console.log(`[MAIN - SUPABASE] Catálogo cargado desde la base de datos (${propertiesFromDb.length} propiedades).`);
     propertyCatalog = propertiesFromDb.map(p => ({
       domicilio: p.domicilio,
       pisoLote: p.pisoLote || '',

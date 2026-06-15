@@ -331,17 +331,28 @@ export async function saveMatch(
 }
 
 /**
- * Sincroniza el catálogo de propiedades parseado en la base de datos PostgreSQL
+ * Sincroniza el catálogo de propiedades parseado en la base de datos PostgreSQL mediante Supabase
  */
 export async function syncPropertiesToDatabase(properties: Property[]): Promise<void> {
-  const { prisma } = require('./db');
+  const { supabase } = require('./supabase');
   try {
-    console.log(`[DB] Iniciando sincronización de ${properties.length} propiedades en PostgreSQL...`);
+    console.log(`[SUPABASE] Iniciando sincronización de ${properties.length} propiedades...`);
     
-    await prisma.$transaction([
-      prisma.property.deleteMany(),
-      prisma.property.createMany({
-        data: properties.map(p => ({
+    // Limpiar catálogo anterior
+    const { error: deleteError } = await supabase
+      .from('Property')
+      .delete()
+      .neq('domicilio', '_impossible_domicilio_');
+
+    if (deleteError) {
+      throw deleteError;
+    }
+
+    // Insertar lote actual
+    const { error: insertError } = await supabase
+      .from('Property')
+      .insert(
+        properties.map(p => ({
           domicilio: p.domicilio,
           pisoLote: p.pisoLote || null,
           precio: p.precio,
@@ -357,12 +368,15 @@ export async function syncPropertiesToDatabase(properties: Property[]): Promise<
           latitud: p.latitud || null,
           longitud: p.longitud || null
         }))
-      })
-    ]);
+      );
+
+    if (insertError) {
+      throw insertError;
+    }
     
-    console.log('[DB] Catálogo de propiedades sincronizado con éxito en PostgreSQL.');
+    console.log('[SUPABASE] Catálogo de propiedades sincronizado con éxito.');
   } catch (error) {
-    console.error('[DB] Error al sincronizar propiedades en PostgreSQL:', error);
+    console.error('[SUPABASE] Error al sincronizar propiedades:', error);
   }
 }
 
