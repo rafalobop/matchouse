@@ -64,19 +64,24 @@ export class CoordinatorAgent {
     console.log(`[COORDINADOR] Iniciando orquestación de pedido de ${sender} en [${groupName}]`);
     console.log(`Contenido: "${body}"`);
 
-    const { prisma } = require('./db');
+    const { supabase } = require('./supabase');
     let dbMessage: any = null;
     try {
-      dbMessage = await prisma.message.create({
-        data: {
+      const { data, error } = await supabase
+        .from('Message')
+        .insert({
           body,
           sender,
           groupName,
           senderPhone
-        }
-      });
+        })
+        .select()
+        .single();
+        
+      if (error) throw error;
+      dbMessage = data;
     } catch (e) {
-      console.warn('[COORDINADOR - DB] No se pudo guardar el mensaje entrante en PostgreSQL:', e);
+      console.warn('[COORDINADOR - SUPABASE] No se pudo guardar el mensaje entrante:', e);
     }
 
     try {
@@ -119,20 +124,24 @@ export class CoordinatorAgent {
 
           const matchDetailsText = `Score Físico: ${matchResult.score}% | Score IA: ${validation.score}%\n\nMotivo Validación:\n${validation.reasoning}\n\nDetalles Algorítmicos:\n${matchResult.reasons.join('\n')}`;
 
-          // Persistir el match en PostgreSQL (tanto si es válido como si no)
+          // Persistir el match en Supabase (tanto si es válido como si no)
           if (dbMessage) {
             try {
-              const dbProperty = await prisma.property.findFirst({
-                where: {
-                  domicilio: property.domicilio,
-                  sheetName: property.sheetName,
-                  pisoLote: property.pisoLote || null
-                }
-              });
+              const { data: dbProperty, error: propErr } = await supabase
+                .from('Property')
+                .select('id')
+                .eq('domicilio', property.domicilio)
+                .eq('sheetName', property.sheetName)
+                .eq('pisoLote', property.pisoLote || null)
+                .limit(1)
+                .maybeSingle();
+
+              if (propErr) throw propErr;
 
               if (dbProperty) {
-                await prisma.match.create({
-                  data: {
+                const { error: matchErr } = await supabase
+                  .from('Match')
+                  .insert({
                     messageId: dbMessage.id,
                     propertyId: dbProperty.id,
                     score: matchResult.score,
@@ -140,12 +149,12 @@ export class CoordinatorAgent {
                     isValid: validation.isValid,
                     reasoning: validation.reasoning,
                     matchDetails: matchDetailsText
-                  }
-                });
-                console.log(`[COORDINADOR - DB] Match con propiedad ${property.domicilio} registrado en PostgreSQL.`);
+                  });
+                if (matchErr) throw matchErr;
+                console.log(`[COORDINADOR - SUPABASE] Match con propiedad ${property.domicilio} registrado.`);
               }
             } catch (dbErr) {
-              console.warn('[COORDINADOR - DB] Error al registrar el match en PostgreSQL:', dbErr);
+              console.warn('[COORDINADOR - SUPABASE] Error al registrar el match:', dbErr);
             }
           }
 
