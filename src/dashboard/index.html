@@ -172,6 +172,7 @@
               <th>Pedido WhatsApp</th>
               <th>Solicitante</th>
               <th>Score y Razones</th>
+              <th>Curación</th>
             </tr>
           </thead>
           <tbody id="matches-tbody">
@@ -194,6 +195,46 @@
         </div>
       </div>
     </section>
+  </div>
+
+  <!-- Modal de Rechazo de Match -->
+  <div id="rejection-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <h3>Rechazar Match</h3>
+      <p class="section-desc">Selecciona el motivo de rechazo para ayudarnos a entrenar el modelo:</p>
+      
+      <div class="rejection-options">
+        <label class="radio-option">
+          <input type="radio" name="rejection-reason" value="mal_filtrado" checked>
+          <span>Mal filtrado (no es un pedido inmobiliario)</span>
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="rejection-reason" value="mal_match_zona">
+          <span>Zona errónea o incorrecta</span>
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="rejection-reason" value="mal_match_caracteristicas">
+          <span>Mal match de características (dorms, tipo, etc.)</span>
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="rejection-reason" value="precio_incompatible">
+          <span>Precio incompatible / fuera de rango</span>
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="rejection-reason" value="otro">
+          <span>Otro motivo</span>
+        </label>
+      </div>
+
+      <div class="manual-reason-container hidden" id="manual-reason-container">
+        <input type="text" id="manual-reason-input" placeholder="Escribe el motivo detallado...">
+      </div>
+
+      <div class="modal-actions">
+        <button id="confirm-reject-btn" class="btn btn-danger">Rechazar Match</button>
+        <button id="cancel-reject-btn" class="btn btn-secondary">Cancelar</button>
+      </div>
+    </div>
   </div>
 
   <script src="/app.js"></script>
