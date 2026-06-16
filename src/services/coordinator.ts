@@ -2,6 +2,7 @@ import { extractRealEstateRequest, extractZoneIntent, ExtractedRealEstateRequest
 import { Property, saveMatch } from './sheets';
 import { checkMatch } from '../utils/matcher';
 import { sendWhatsAppNotification } from './whatsapp';
+import { randomUUID } from 'crypto';
 
 export interface PipelineContext {
   messageId?: string;
@@ -70,6 +71,7 @@ export class CoordinatorAgent {
       const { data, error } = await supabase
         .from('Message')
         .insert({
+          id: randomUUID(),
           body,
           sender,
           groupName,
@@ -142,6 +144,7 @@ export class CoordinatorAgent {
                 const { error: matchErr } = await supabase
                   .from('Match')
                   .insert({
+                    id: randomUUID(),
                     messageId: dbMessage.id,
                     propertyId: dbProperty.id,
                     score: matchResult.score,
