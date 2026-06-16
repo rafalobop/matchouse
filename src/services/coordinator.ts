@@ -50,7 +50,8 @@ export class CoordinatorAgent {
     body: string, 
     sender: string, 
     groupName: string, 
-    senderPhone: string
+    senderPhone: string,
+    messageId?: string
   ): Promise<PipelineContext> {
     const context: PipelineContext = {
       body,
@@ -62,15 +63,36 @@ export class CoordinatorAgent {
       errors: []
     };
 
-    logger.info({ sender, groupName, bodySnippet: body.substring(0, 100) }, '[COORDINADOR] Iniciando orquestación de pedido');
+    logger.info({ sender, groupName, bodySnippet: body.substring(0, 100), messageId }, '[COORDINADOR] Iniciando orquestación de pedido');
 
     const { supabase } = require('./supabase');
+
+    if (messageId) {
+      try {
+        const { data: existingMsg, error: checkErr } = await supabase
+          .from('Message')
+          .select('id')
+          .eq('id', messageId)
+          .maybeSingle();
+
+        if (checkErr) throw checkErr;
+
+        if (existingMsg) {
+          logger.info({ messageId }, '[COORDINADOR] Mensaje ya procesado (idempotencia). Omitiendo pipeline.');
+          context.status = 'MATCHED';
+          return context;
+        }
+      } catch (checkErr: any) {
+        logger.warn({ error: checkErr.message || checkErr, messageId }, '[COORDINADOR] Error al comprobar idempotencia del mensaje');
+      }
+    }
+
     let dbMessage: any = null;
     try {
       const { data, error } = await supabase
         .from('Message')
         .insert({
-          id: randomUUID(),
+          id: messageId || randomUUID(),
           body,
           sender,
           groupName,
