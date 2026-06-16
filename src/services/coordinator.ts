@@ -3,6 +3,7 @@ import { Property, saveMatch } from './sheets';
 import { checkMatch } from '../utils/matcher';
 import { sendWhatsAppNotification } from './whatsapp';
 import { randomUUID } from 'crypto';
+import { logger } from './logger';
 
 export interface PipelineContext {
   messageId?: string;
@@ -61,9 +62,7 @@ export class CoordinatorAgent {
       errors: []
     };
 
-    console.log(`\n--------------------------------------------------`);
-    console.log(`[COORDINADOR] Iniciando orquestación de pedido de ${sender} en [${groupName}]`);
-    console.log(`Contenido: "${body}"`);
+    logger.info({ sender, groupName, bodySnippet: body.substring(0, 100) }, '[COORDINADOR] Iniciando orquestación de pedido');
 
     const { supabase } = require('./supabase');
     let dbMessage: any = null;
@@ -82,18 +81,18 @@ export class CoordinatorAgent {
         
       if (error) throw error;
       dbMessage = data;
-    } catch (e) {
-      console.warn('[COORDINADOR - SUPABASE] No se pudo guardar el mensaje entrante:', e);
+    } catch (e: any) {
+      logger.warn({ error: e.message || e }, '[COORDINADOR - SUPABASE] No se pudo guardar el mensaje entrante');
     }
 
     try {
       // 1. Agente 1: Extractor de Entidades
-      console.log(`[COORDINADOR] Ejecutando Agente 1 (Extractor)...`);
+      logger.info('[COORDINADOR] Ejecutando Agente 1 (Extractor)...');
       context.extractedData = await extractRealEstateRequest(body);
-      console.log(`[COORDINADOR - AGENTE 1] JSON generado:`, JSON.stringify(context.extractedData, null, 2));
+      logger.info({ extractedData: context.extractedData }, '[COORDINADOR - AGENTE 1] Extracción completada');
 
       if (context.extractedData.operacion === 'desconocido') {
-        console.log('[COORDINADOR] Cancelado: Operación desconocida o no clasificada como pedido.');
+        logger.info('[COORDINADOR] Cancelado: Operación desconocida o no clasificada como pedido.');
         context.status = 'FAILED';
         context.errors.push('Operación no clasificada.');
         return context;
@@ -103,16 +102,16 @@ export class CoordinatorAgent {
       // 2. Agente 2: Geolocalizador e intenciones
       const hasUbicacion = context.extractedData.zonas && context.extractedData.zonas.length > 0;
       if (hasUbicacion) {
-        console.log(`[COORDINADOR] Ubicación detectada. Ejecutando Agente 2 (Geolocalizador)...`);
+        logger.info('[COORDINADOR] Ubicación detectada. Ejecutando Agente 2 (Geolocalizador)...');
         context.zoneIntent = await extractZoneIntent(body, context.extractedData.operacion);
-        console.log(`[COORDINADOR - AGENTE 2] JSON generado:`, JSON.stringify(context.zoneIntent, null, 2));
+        logger.info({ zoneIntent: context.zoneIntent }, '[COORDINADOR - AGENTE 2] Geolocalización completada');
         context.status = 'GEOLOCATED';
       } else {
-        console.log(`[COORDINADOR] No se detectó ubicación. Saltando Agente 2.`);
+        logger.info('[COORDINADOR] No se detectó ubicación. Saltando Agente 2.');
       }
 
       // 3. Matcher
-      console.log(`[COORDINADOR] Comparando con ${this.propertyCatalog.length} propiedades...`);
+      logger.info({ catalogLength: this.propertyCatalog.length }, '[COORDINADOR] Comparando con propiedades del catálogo...');
       context.matches = [];
       let matchesFoundCount = 0;
 
@@ -120,9 +119,14 @@ export class CoordinatorAgent {
         const matchResult = checkMatch(context.extractedData, property, context.zoneIntent);
 
         if (matchResult.isMatch) {
-          console.log(`[COORDINADOR] Match algorítmico encontrado para ${property.domicilio}. Ejecutando Agente Validador...`);
+          logger.info({ property: property.domicilio }, '[COORDINADOR] Match algorítmico encontrado. Ejecutando Agente Validador...');
           const validation = await validateMatch(body, property, context.extractedData);
-          console.log(`[COORDINADOR - VALIDADOR] Score: ${validation.score}%, isValid: ${validation.isValid}, Razonamiento: "${validation.reasoning}"`);
+          logger.info({ 
+            property: property.domicilio, 
+            score: validation.score, 
+            isValid: validation.isValid,
+            reasoning: validation.reasoning
+          }, '[COORDINADOR - VALIDADOR] Evaluación finalizada');
 
           const matchDetailsText = `Score Físico: ${matchResult.score}% | Score IA: ${validation.score}%\n\nMotivo Validación:\n${validation.reasoning}\n\nDetalles Algorítmicos:\n${matchResult.reasons.join('\n')}`;
 
@@ -154,10 +158,10 @@ export class CoordinatorAgent {
                     matchDetails: matchDetailsText
                   });
                 if (matchErr) throw matchErr;
-                console.log(`[COORDINADOR - SUPABASE] Match con propiedad ${property.domicilio} registrado.`);
+                logger.info({ property: property.domicilio }, '[COORDINADOR - SUPABASE] Match registrado con éxito');
               }
-            } catch (dbErr) {
-              console.warn('[COORDINADOR - SUPABASE] Error al registrar el match:', dbErr);
+            } catch (dbErr: any) {
+              logger.warn({ error: dbErr.message || dbErr }, '[COORDINADOR - SUPABASE] Error al registrar el match');
             }
           }
 
@@ -165,10 +169,11 @@ export class CoordinatorAgent {
             matchesFoundCount++;
             context.matches.push({ property, score: validation.score });
             
-            console.log(`[COORDINADOR - MATCH APROBADO]:`);
-            console.log(` - Propiedad: ${property.domicilio} (Precio: ${property.moneda} ${property.precio})`);
-            console.log(` - Score de validación: ${validation.score}%`);
-            console.log(` - Detalles:`, matchResult.reasons.join(', '));
+            logger.info({ 
+              property: property.domicilio, 
+              precio: `${property.moneda} ${property.precio}`, 
+              score: validation.score 
+            }, '[COORDINADOR - MATCH APROBADO]');
 
             // Guardar coincidencia en Google Sheets
             await saveMatch(body, sender, property, matchDetailsText);
@@ -189,7 +194,7 @@ export class CoordinatorAgent {
               this.recentMatches.pop();
             }
           } else {
-            console.log(`[COORDINADOR - MATCH RECHAZADO/SILENCIADO] La propiedad ${property.domicilio} no superó la curación del Validador.`);
+            logger.info({ property: property.domicilio }, '[COORDINADOR - MATCH RECHAZADO/SILENCIADO] La propiedad no superó la curación del Validador.');
           }
         }
       }
@@ -227,16 +232,15 @@ ${propDetails}`;
         await sendWhatsAppNotification(notificationText);
         context.status = 'NOTIFIED';
       } else {
-        console.log(`[COORDINADOR] No se encontraron coincidencias para este pedido.`);
+        logger.info('[COORDINADOR] No se encontraron coincidencias para este pedido.');
       }
 
     } catch (error: any) {
-      console.error('[COORDINADOR] Error en la ejecución del pipeline:', error);
+      logger.error({ error: error.message || error }, '[COORDINADOR] Error en la ejecución del pipeline');
       context.status = 'FAILED';
       context.errors.push(error.message || 'Error desconocido.');
     }
 
-    console.log(`--------------------------------------------------\n`);
     return context;
   }
 }
