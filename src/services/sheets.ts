@@ -2,6 +2,7 @@ import { google } from 'googleapis';
 import * as path from 'path';
 import * as fs from 'fs';
 import { config } from '../config/env';
+import { randomUUID } from 'crypto';
 
 export interface Property {
   domicilio: string;
@@ -31,14 +32,26 @@ function getSheetsClient() {
   // 1. Intentar cargar desde la variable de entorno para producción/deploy
   if (process.env.GOOGLE_CREDS_JSON_BASE64) {
     try {
-      const decoded = Buffer.from(process.env.GOOGLE_CREDS_JSON_BASE64, 'base64').toString('utf-8');
+      let base64Str = process.env.GOOGLE_CREDS_JSON_BASE64.trim();
+      // Limpiar comillas si fueron incluidas en el panel de control de Railway
+      if (base64Str.startsWith('"') && base64Str.endsWith('"')) {
+        base64Str = base64Str.slice(1, -1);
+      }
+      if (base64Str.startsWith("'") && base64Str.endsWith("'")) {
+        base64Str = base64Str.slice(1, -1);
+      }
+      const decoded = Buffer.from(base64Str, 'base64').toString('utf-8');
       const keys = JSON.parse(decoded);
       auth = new google.auth.GoogleAuth({
         credentials: keys,
         scopes: ['https://www.googleapis.com/auth/spreadsheets'],
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('[SHEETS] Error al parsear la variable de entorno GOOGLE_CREDS_JSON_BASE64:', error);
+      try {
+        const rawVal = process.env.GOOGLE_CREDS_JSON_BASE64 || '';
+        console.error(`[SHEETS] Detalles de la variable: Longitud=${rawVal.length}, Empieza con="${rawVal.substring(0, 15)}...", Termina con="...${rawVal.substring(rawVal.length - 15)}"`);
+      } catch (err) {}
     }
   } else if (process.env.GOOGLE_CREDS_JSON) {
     try {
@@ -353,6 +366,7 @@ export async function syncPropertiesToDatabase(properties: Property[]): Promise<
       .from('Property')
       .insert(
         properties.map(p => ({
+          id: randomUUID(),
           domicilio: p.domicilio,
           pisoLote: p.pisoLote || null,
           precio: p.precio,
