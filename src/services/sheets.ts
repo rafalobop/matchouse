@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { config } from '../config/env';
 import { randomUUID } from 'crypto';
+import { logger } from './logger';
 
 export interface Property {
   domicilio: string;
@@ -343,54 +344,97 @@ export async function saveMatch(
   }
 }
 
-/**
- * Sincroniza el catálogo de propiedades parseado en la base de datos PostgreSQL mediante Supabase
- */
 export async function syncPropertiesToDatabase(properties: Property[]): Promise<void> {
   const { supabase } = require('./supabase');
   try {
-    console.log(`[SUPABASE] Iniciando sincronización de ${properties.length} propiedades...`);
+    logger.info({ propertiesCount: properties.length }, '[SUPABASE] Iniciando sincronización de propiedades...');
     
-    // Limpiar catálogo anterior
-    const { error: deleteError } = await supabase
+    // 1. Obtener todas las propiedades actuales de Supabase
+    const { data: dbProps, error: fetchErr } = await supabase
       .from('Property')
-      .delete()
-      .neq('domicilio', '_impossible_domicilio_');
+      .select('id, domicilio, pisoLote, sheetName');
 
-    if (deleteError) {
-      throw deleteError;
+    if (fetchErr) {
+      throw fetchErr;
     }
 
-    // Insertar lote actual
-    const { error: insertError } = await supabase
-      .from('Property')
-      .insert(
-        properties.map(p => ({
-          id: randomUUID(),
-          domicilio: p.domicilio,
-          pisoLote: p.pisoLote || null,
-          precio: p.precio,
-          moneda: p.moneda,
-          expensas: p.expensas,
-          dormitorios: p.dormitorios,
-          caracteristicas: p.caracteristicas || null,
-          contacto: p.contacto || null,
-          zona: p.zona,
-          operacion: p.operacion,
-          tipoPropiedad: p.tipo_propiedad,
-          sheetName: p.sheetName,
-          latitud: p.latitud || null,
-          longitud: p.longitud || null
-        }))
-      );
+    const dbProperties = dbProps || [];
 
-    if (insertError) {
-      throw insertError;
+    // 2. Mapear en memoria los registros actuales usando la clave compuesta: (domicilio + '_' + pisoLote + '_' + sheetName)
+    const dbPropsMap = new Map<string, string>(); // clave -> id
+    dbProperties.forEach((p: any) => {
+      const key = `${p.domicilio}_${p.pisoLote || ''}_${p.sheetName}`.toLowerCase().trim();
+      dbPropsMap.set(key, p.id);
+    });
+
+    // 3. Iterar las propiedades frescas y clasificarlas
+    const upsertList: any[] = [];
+    const matchedIds = new Set<string>();
+
+    properties.forEach(p => {
+      const key = `${p.domicilio}_${p.pisoLote || ''}_${p.sheetName}`.toLowerCase().trim();
+      const existingId = dbPropsMap.get(key);
+      
+      const propertyPayload = {
+        id: existingId || randomUUID(),
+        domicilio: p.domicilio,
+        pisoLote: p.pisoLote || null,
+        precio: p.precio,
+        moneda: p.moneda,
+        expensas: p.expensas,
+        dormitorios: p.dormitorios,
+        caracteristicas: p.caracteristicas || null,
+        contacto: p.contacto || null,
+        zona: p.zona,
+        operacion: p.operacion,
+        tipoPropiedad: p.tipo_propiedad,
+        sheetName: p.sheetName,
+        latitud: p.latitud || null,
+        longitud: p.longitud || null
+      };
+
+      if (existingId) {
+        matchedIds.add(existingId);
+      }
+      upsertList.push(propertyPayload);
+    });
+
+    // 4. Generar lista de eliminaciones
+    const deleteList: string[] = [];
+    dbProperties.forEach((p: any) => {
+      if (!matchedIds.has(p.id)) {
+        deleteList.push(p.id);
+      }
+    });
+
+    // 5. Ejecutar operaciones
+    if (upsertList.length > 0) {
+      const { error: upsertErr } = await supabase
+        .from('Property')
+        .upsert(upsertList);
+
+      if (upsertErr) {
+        throw upsertErr;
+      }
+    }
+
+    if (deleteList.length > 0) {
+      const { error: deleteErr } = await supabase
+        .from('Property')
+        .delete()
+        .in('id', deleteList);
+
+      if (deleteErr) {
+        throw deleteErr;
+      }
     }
     
-    console.log('[SUPABASE] Catálogo de propiedades sincronizado con éxito.');
-  } catch (error) {
-    console.error('[SUPABASE] Error al sincronizar propiedades:', error);
+    logger.info({ 
+      upsertedCount: upsertList.length, 
+      deletedCount: deleteList.length 
+    }, '[SUPABASE] Sincronización de propiedades finalizada con éxito.');
+  } catch (error: any) {
+    logger.error({ error: error.message || error }, '[SUPABASE] Error al sincronizar propiedades');
   }
 }
 

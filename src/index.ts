@@ -207,7 +207,7 @@ async function main() {
   // Iniciar cliente de WhatsApp
   startWhatsAppClient({
     onMessage: async (message, senderName, groupName, senderPhone) => {
-      await coordinator.handleIncomingMessage(message.body, senderName, groupName, senderPhone);
+      await coordinator.handleIncomingMessage(message.body, senderName, groupName, senderPhone, message.id);
     }
   });
 
