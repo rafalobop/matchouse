@@ -15,4 +15,5 @@ Este directorio contiene la trazabilidad de las decisiones de arquitectura, dise
 - **Sub-Agentes**:
   - [extractor.md](file:///c:/Users/NoxiePC/Desktop/Software/housematch/.agents/extractor.md) (Agente 1: Extractor de Entidades).
   - [geolocator.md](file:///c:/Users/NoxiePC/Desktop/Software/housematch/.agents/geolocator.md) (Agente 2: Geolocalizador y Normalizador de Zona).
+  - [version_manager.md](file:///c:/Users/NoxiePC/Desktop/Software/housematch/.agents/version_manager.md) (Agente Gestor de Versiones y Ramas).
 - **Bases de Datos**: PostgreSQL en Supabase gestionado vía REST SDK, con resguardo de duplicados y sincronización atómica sin caídas del catálogo.
