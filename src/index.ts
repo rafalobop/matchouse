@@ -9,6 +9,7 @@ import { startWhatsAppClient, loadSettings, saveSettings, getActiveGroups, whats
 import { Property } from './services/sheets';
 import { loadCatalogFromDisk, saveCatalogToDisk, processExcelBuffer } from './services/excel';
 import { coordinator } from './services/coordinator';
+import { messageQueue } from './utils/queue';
 
 // In-memory property catalog
 let propertyCatalog: Property[] = [];
@@ -207,7 +208,9 @@ async function main() {
   // Iniciar cliente de WhatsApp
   startWhatsAppClient({
     onMessage: async (message, senderName, groupName, senderPhone) => {
-      await coordinator.handleIncomingMessage(message.body, senderName, groupName, senderPhone, message.id);
+      messageQueue.enqueue(async () => {
+        await coordinator.handleIncomingMessage(message.body, senderName, groupName, senderPhone, message.id);
+      });
     }
   });
 
