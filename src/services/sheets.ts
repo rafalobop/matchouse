@@ -352,7 +352,7 @@ export async function syncPropertiesToDatabase(properties: Property[]): Promise<
     // 1. Obtener todas las propiedades actuales de Supabase
     const { data: dbProps, error: fetchErr } = await supabase
       .from('Property')
-      .select('id, domicilio, pisoLote, sheetName');
+      .select('id, domicilio, pisoLote, precio, contacto, sheetName');
 
     if (fetchErr) {
       throw fetchErr;
@@ -360,10 +360,10 @@ export async function syncPropertiesToDatabase(properties: Property[]): Promise<
 
     const dbProperties = dbProps || [];
 
-    // 2. Mapear en memoria los registros actuales usando la clave compuesta: (domicilio + '_' + pisoLote + '_' + sheetName)
+    // 2. Mapear en memoria los registros actuales usando la clave compuesta: (domicilio + '_' + pisoLote + '_' + precio + '_' + contacto + '_' + sheetName)
     const dbPropsMap = new Map<string, string>(); // clave -> id
     dbProperties.forEach((p: any) => {
-      const key = `${p.domicilio}_${p.pisoLote || ''}_${p.sheetName}`.toLowerCase().trim();
+      const key = `${p.domicilio}_${p.pisoLote || ''}_${p.precio}_${p.contacto || ''}_${p.sheetName}`.toLowerCase().trim();
       dbPropsMap.set(key, p.id);
     });
 
@@ -372,7 +372,7 @@ export async function syncPropertiesToDatabase(properties: Property[]): Promise<
     const matchedIds = new Set<string>();
 
     properties.forEach(p => {
-      const key = `${p.domicilio}_${p.pisoLote || ''}_${p.sheetName}`.toLowerCase().trim();
+      const key = `${p.domicilio}_${p.pisoLote || ''}_${p.precio}_${p.contacto || ''}_${p.sheetName}`.toLowerCase().trim();
       const existingId = dbPropsMap.get(key);
       
       const propertyPayload = {
