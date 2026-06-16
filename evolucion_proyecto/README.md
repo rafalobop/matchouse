@@ -10,9 +10,10 @@ Este directorio contiene la trazabilidad de las decisiones de arquitectura, dise
 *   [spec_0004_migracion_supabase_sdk.md](file:///c:/Users/NoxiePC/Desktop/Software/housematch/evolucion_proyecto/spec_0004_migracion_supabase_sdk.md): Migración de Prisma a Supabase JS SDK.
 *   [spec_0005_robustez_e_idempotencia.md](file:///c:/Users/NoxiePC/Desktop/Software/housematch/evolucion_proyecto/spec_0005_robustez_e_idempotencia.md): Idempotencia de mensajes de WhatsApp y sincronización de cartera por Upsert atómico.
 *   [spec_0006_cola_y_base_de_datos.md](file:///c:/Users/NoxiePC/Desktop/Software/housematch/evolucion_proyecto/spec_0006_cola_y_base_de_datos.md): Sistema de colas y rate limiter para Gemini, y establecimiento de Supabase como única fuente de verdad.
+*   [spec_0007_curacion_de_matches.md](file:///c:/Users/NoxiePC/Desktop/Software/housematch/evolucion_proyecto/spec_0007_curacion_de_matches.md): Curación de matches sugeridos desde el dashboard y registro de feedback para entrenamiento.
 
 ## Estado del Arte Actual
-- **Agente Coordinador**: Definido (Orquestador principal con cola asíncrona, rate limiting, logs JSON y control de idempotencia).
+- **Agente Coordinador**: Definido (Orquestador principal con cola asíncrona, rate limiting, logs JSON, control de idempotencia y feedback de curación).
 - **Sub-Agentes**:
   - [extractor.md](file:///c:/Users/NoxiePC/Desktop/Software/housematch/.agents/extractor.md) (Agente 1: Extractor de Entidades).
   - [geolocator.md](file:///c:/Users/NoxiePC/Desktop/Software/housematch/.agents/geolocator.md) (Agente 2: Geolocalizador y Normalizador de Zona).

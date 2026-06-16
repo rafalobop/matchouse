@@ -117,6 +117,7 @@ app.get('/api/matches', async (req, res) => {
     if (error) throw error;
 
     const mappedMatches = dbMatches.map((m: any) => ({
+      id: m.id,
       fecha: new Date(m.fecha).toLocaleString('es-AR', { timeZone: 'America/Argentina/Tucuman' }),
       originalText: m.message.body,
       contactSender: m.message.sender,
@@ -135,13 +136,42 @@ app.get('/api/matches', async (req, res) => {
         tipo_propiedad: m.property.tipoPropiedad,
         sheetName: m.property.sheetName
       },
-      matchDetails: m.matchDetails
+      matchDetails: m.matchDetails,
+      userReviewStatus: m.userReviewStatus || 'PENDING',
+      feedbackReason: m.feedbackReason || null
     }));
 
     res.json({ matches: mappedMatches });
   } catch (error: any) {
     console.error('Error al recuperar matches de la base de datos:', error);
     res.json({ matches: coordinator.getRecentMatches() });
+  }
+});
+
+app.post('/api/matches/:id/feedback', async (req, res) => {
+  const { id } = req.params;
+  const { status, reason } = req.body;
+  const { supabase } = require('./services/supabase');
+
+  if (!status || !['ACCEPTED', 'REJECTED'].includes(status)) {
+    return res.status(400).json({ error: 'El estado debe ser ACCEPTED o REJECTED' });
+  }
+
+  try {
+    const { error } = await supabase
+      .from('Match')
+      .update({
+        userReviewStatus: status,
+        feedbackReason: status === 'REJECTED' ? (reason || 'No especificado') : null
+      })
+      .eq('id', id);
+
+    if (error) throw error;
+
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error('Error al actualizar el feedback de match:', error);
+    res.status(500).json({ error: error.message || 'Error interno al guardar feedback.' });
   }
 });
 
