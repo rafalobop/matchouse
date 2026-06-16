@@ -1,5 +1,5 @@
 import { extractRealEstateRequest, extractZoneIntent, ExtractedRealEstateRequest, ZoneIntentRequest, validateMatch } from './gemini';
-import { Property, saveMatch } from './sheets';
+import { Property } from './sheets';
 import { checkMatch } from '../utils/matcher';
 import { sendWhatsAppNotification } from './whatsapp';
 import { randomUUID } from 'crypto';
@@ -69,6 +69,7 @@ export class CoordinatorAgent {
 
     if (messageId) {
       try {
+        // 1. Verificar idempotencia por ID de mensaje único de WhatsApp
         const { data: existingMsg, error: checkErr } = await supabase
           .from('Message')
           .select('id')
@@ -78,13 +79,36 @@ export class CoordinatorAgent {
         if (checkErr) throw checkErr;
 
         if (existingMsg) {
-          logger.info({ messageId }, '[COORDINADOR] Mensaje ya procesado (idempotencia). Omitiendo pipeline.');
+          logger.info({ messageId }, '[COORDINADOR] Mensaje ya procesado (idempotencia por ID). Omitiendo pipeline.');
           context.status = 'MATCHED';
           return context;
         }
       } catch (checkErr: any) {
-        logger.warn({ error: checkErr.message || checkErr, messageId }, '[COORDINADOR] Error al comprobar idempotencia del mensaje');
+        logger.warn({ error: checkErr.message || checkErr, messageId }, '[COORDINADOR] Error al comprobar idempotencia del mensaje por ID');
       }
+    }
+
+    try {
+      // 2. Deduplicación temporal: mismo remitente y contenido en las últimas 24 horas
+      const aDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const { data: duplicateMsg, error: checkDupErr } = await supabase
+        .from('Message')
+        .select('id')
+        .eq('body', body)
+        .eq('senderPhone', senderPhone)
+        .gt('timestamp', aDayAgo)
+        .limit(1)
+        .maybeSingle();
+
+      if (checkDupErr) throw checkDupErr;
+
+      if (duplicateMsg) {
+        logger.info({ messageId, duplicateOf: duplicateMsg.id }, '[COORDINADOR] Mensaje idéntico ya procesado en las últimas 24 horas. Omitiendo pipeline.');
+        context.status = 'MATCHED';
+        return context;
+      }
+    } catch (checkDupErr: any) {
+      logger.warn({ error: checkDupErr.message || checkDupErr, messageId }, '[COORDINADOR] Error al comprobar deduplicación temporal de mensaje');
     }
 
     let dbMessage: any = null;
@@ -196,9 +220,6 @@ export class CoordinatorAgent {
               precio: `${property.moneda} ${property.precio}`, 
               score: validation.score 
             }, '[COORDINADOR - MATCH APROBADO]');
-
-            // Guardar coincidencia en Google Sheets
-            await saveMatch(body, sender, property, matchDetailsText);
 
             // Registrar en memoria local del coordinador
             const matchFecha = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Tucuman' });
