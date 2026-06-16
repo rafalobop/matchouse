@@ -585,11 +585,38 @@ async function loadMatches() {
       divDetails.innerText = m.matchDetails;
       tdDetalles.appendChild(divDetails);
 
+      const tdCuracion = document.createElement('td');
+      if (m.userReviewStatus === 'ACCEPTED') {
+        tr.className = 'match-accepted';
+        tdCuracion.innerHTML = `<span class="curation-badge accepted">✅ Aceptado</span>`;
+      } else if (m.userReviewStatus === 'REJECTED') {
+        tr.className = 'match-rejected';
+        tdCuracion.innerHTML = `<span class="curation-badge rejected">❌ Rechazado</span><span class="curation-reason-text" title="${m.feedbackReason || ''}">${m.feedbackReason || 'No especificado'}</span>`;
+      } else {
+        const actionsDiv = document.createElement('div');
+        actionsDiv.className = 'curation-actions-container';
+
+        const acceptBtn = document.createElement('button');
+        acceptBtn.className = 'btn btn-success btn-small';
+        acceptBtn.innerText = 'Aceptar';
+        acceptBtn.addEventListener('click', () => sendFeedback(m.id, 'ACCEPTED'));
+
+        const rejectBtn = document.createElement('button');
+        rejectBtn.className = 'btn btn-danger btn-small';
+        rejectBtn.innerText = 'Rechazar';
+        rejectBtn.addEventListener('click', () => openRejectionModal(m.id));
+
+        actionsDiv.appendChild(acceptBtn);
+        actionsDiv.appendChild(rejectBtn);
+        tdCuracion.appendChild(actionsDiv);
+      }
+
       tr.appendChild(tdFecha);
       tr.appendChild(tdProp);
       tr.appendChild(tdPedido);
       tr.appendChild(tdSolicitante);
       tr.appendChild(tdDetalles);
+      tr.appendChild(tdCuracion);
 
       matchesTbody.appendChild(tr);
     });
@@ -615,6 +642,70 @@ document.getElementById('prev-page-btn').addEventListener('click', () => {
 document.getElementById('next-page-btn').addEventListener('click', () => {
   currentPage++;
   loadMatches();
+});
+
+// Variables de Modal de Rechazo
+let currentCurationMatchId = null;
+const rejectionModal = document.getElementById('rejection-modal');
+const confirmRejectBtn = document.getElementById('confirm-reject-btn');
+const cancelRejectBtn = document.getElementById('cancel-reject-btn');
+const manualReasonContainer = document.getElementById('manual-reason-container');
+const manualReasonInput = document.getElementById('manual-reason-input');
+
+// Detectar cambio en opciones de radio para mostrar input manual
+document.querySelectorAll('input[name="rejection-reason"]').forEach(radio => {
+  radio.addEventListener('change', (e) => {
+    if (e.target.value === 'otro') {
+      manualReasonContainer.classList.remove('hidden');
+    } else {
+      manualReasonContainer.classList.add('hidden');
+    }
+  });
+});
+
+async function sendFeedback(matchId, status, reason = null) {
+  try {
+    const res = await fetch(`/api/matches/${matchId}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, reason })
+    });
+    if (res.ok) {
+      loadMatches(); // Recargar de inmediato
+    } else {
+      alert('Error al guardar feedback del match.');
+    }
+  } catch (error) {
+    console.error('Error al enviar feedback:', error);
+  }
+}
+
+function openRejectionModal(matchId) {
+  currentCurationMatchId = matchId;
+  manualReasonInput.value = '';
+  manualReasonContainer.classList.add('hidden');
+  document.querySelector('input[name="rejection-reason"][value="mal_filtrado"]').checked = true;
+  rejectionModal.classList.remove('hidden');
+}
+
+cancelRejectBtn.addEventListener('click', () => {
+  rejectionModal.classList.add('hidden');
+  currentCurationMatchId = null;
+});
+
+confirmRejectBtn.addEventListener('click', async () => {
+  if (!currentCurationMatchId) return;
+  const selectedRadio = document.querySelector('input[name="rejection-reason"]:checked');
+  let reason = '';
+  if (selectedRadio.value === 'otro') {
+    reason = manualReasonInput.value.trim() || 'Otro motivo';
+  } else {
+    reason = selectedRadio.nextElementSibling.innerText;
+  }
+  
+  rejectionModal.classList.add('hidden');
+  await sendFeedback(currentCurationMatchId, 'REJECTED', reason);
+  currentCurationMatchId = null;
 });
 
 // Inicialización de Polling
