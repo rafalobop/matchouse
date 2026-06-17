@@ -344,15 +344,16 @@ export async function saveMatch(
   }
 }
 
-export async function syncPropertiesToDatabase(properties: Property[]): Promise<void> {
+export async function syncPropertiesToDatabase(properties: Property[], tenantId: string): Promise<void> {
   const { supabase } = require('./supabase');
   try {
-    logger.info({ propertiesCount: properties.length }, '[SUPABASE] Iniciando sincronización de propiedades...');
+    logger.info({ propertiesCount: properties.length, tenantId }, '[SUPABASE] Iniciando sincronización de propiedades...');
     
-    // 1. Obtener todas las propiedades actuales de Supabase
+    // 1. Obtener todas las propiedades actuales de Supabase filtradas por tenant_id
     const { data: dbProps, error: fetchErr } = await supabase
       .from('Property')
-      .select('id, domicilio, pisoLote, precio, contacto, sheetName');
+      .select('id, domicilio, pisoLote, precio, contacto, sheetName')
+      .eq('tenant_id', tenantId);
 
     if (fetchErr) {
       throw fetchErr;
@@ -360,7 +361,7 @@ export async function syncPropertiesToDatabase(properties: Property[]): Promise<
 
     const dbProperties = dbProps || [];
 
-    // 2. Mapear en memoria los registros actuales usando la clave compuesta: (domicilio + '_' + pisoLote + '_' + precio + '_' + contacto + '_' + sheetName)
+    // 2. Mapear en memoria los registros actuales
     const dbPropsMap = new Map<string, string>(); // clave -> id
     dbProperties.forEach((p: any) => {
       const key = `${p.domicilio}_${p.pisoLote || ''}_${p.precio}_${p.contacto || ''}_${p.sheetName}`.toLowerCase().trim();
@@ -390,7 +391,8 @@ export async function syncPropertiesToDatabase(properties: Property[]): Promise<
         tipoPropiedad: p.tipo_propiedad,
         sheetName: p.sheetName,
         latitud: p.latitud || null,
-        longitud: p.longitud || null
+        longitud: p.longitud || null,
+        tenant_id: tenantId
       };
 
       if (existingId) {
@@ -422,7 +424,8 @@ export async function syncPropertiesToDatabase(properties: Property[]): Promise<
       const { error: deleteErr } = await supabase
         .from('Property')
         .delete()
-        .in('id', deleteList);
+        .in('id', deleteList)
+        .eq('tenant_id', tenantId);
 
       if (deleteErr) {
         throw deleteErr;
@@ -431,10 +434,11 @@ export async function syncPropertiesToDatabase(properties: Property[]): Promise<
     
     logger.info({ 
       upsertedCount: upsertList.length, 
-      deletedCount: deleteList.length 
+      deletedCount: deleteList.length,
+      tenantId
     }, '[SUPABASE] Sincronización de propiedades finalizada con éxito.');
   } catch (error: any) {
-    logger.error({ error: error.message || error }, '[SUPABASE] Error al sincronizar propiedades');
+    logger.error({ error: error.message || error, tenantId }, '[SUPABASE] Error al sincronizar propiedades');
   }
 }
 

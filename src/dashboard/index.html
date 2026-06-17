@@ -237,6 +237,53 @@
     </div>
   </div>
 
+  <!-- Overlay de Autenticación OTP y Registro de Bot -->
+  <div id="auth-overlay" class="modal-overlay hidden">
+    <div class="overlay-card" id="auth-card-step1">
+      <div class="logo-area" style="justify-content: center; margin-bottom: 1.5rem; width: 100%;">
+        <span class="logo-icon">🏠</span>
+        <div>
+          <h1 style="font-size: 2rem;">HouseMatch</h1>
+          <p class="tagline" style="text-align: center;">WhatsApp Real Estate Pipeline</p>
+        </div>
+      </div>
+      <h3 style="margin-bottom: 0.5rem; font-size: 1.25rem; text-align: center;">Acceso al Dashboard</h3>
+      <p class="section-desc" style="text-align: center; margin-bottom: 1.5rem;">
+        Ingresa tu número de WhatsApp vinculado para recibir un código de acceso temporal.
+      </p>
+      
+      <div style="margin-bottom: 1.25rem; width: 100%;">
+        <input type="tel" id="auth-phone-input" placeholder="Ej: 5493814590816" style="width: 100%; padding: 0.75rem; background: rgba(255,255,255,0.05); border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-primary); outline: none; font-size: 1rem; text-align: center; box-sizing: border-box;">
+      </div>
+      
+      <button id="auth-send-otp-btn" class="btn btn-primary" style="width: 100%; margin-bottom: 1rem; padding: 0.75rem;">Enviar Código por WhatsApp</button>
+      
+      <div style="text-align: center; margin: 0.5rem 0;">
+        <span style="color: var(--text-secondary); font-size: 0.85rem;">¿No tienes un bot conectado?</span>
+      </div>
+      
+      <button id="auth-register-new-btn" class="btn btn-secondary" style="width: 100%; padding: 0.75rem;">Conectar Nuevo Bot (Máx. 10)</button>
+      
+      <p id="auth-step1-error" style="color: #ef4444; font-size: 0.85rem; margin-top: 1rem; text-align: center; display: none;"></p>
+    </div>
+
+    <div class="overlay-card hidden" id="auth-card-step2">
+      <h3 style="margin-bottom: 0.5rem; font-size: 1.25rem; text-align: center;">Ingresa el Código</h3>
+      <p class="section-desc" style="text-align: center; margin-bottom: 1.5rem;">
+        Hemos enviado un código OTP de 6 dígitos a tu WhatsApp privado.
+      </p>
+      
+      <div style="margin-bottom: 1.25rem; width: 100%;">
+        <input type="text" id="auth-otp-input" placeholder="Código de 6 dígitos" maxlength="6" style="width: 100%; padding: 0.75rem; background: rgba(255,255,255,0.05); border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-primary); outline: none; font-size: 1.25rem; text-align: center; letter-spacing: 0.15rem; box-sizing: border-box;">
+      </div>
+      
+      <button id="auth-verify-otp-btn" class="btn btn-primary" style="width: 100%; margin-bottom: 1rem; padding: 0.75rem;">Validar Código</button>
+      <button id="auth-back-btn" class="btn btn-secondary" style="width: 100%; padding: 0.75rem;">Volver</button>
+      
+      <p id="auth-step2-error" style="color: #ef4444; font-size: 0.85rem; margin-top: 1rem; text-align: center; display: none;"></p>
+    </div>
+  </div>
+
   <script src="/app.js"></script>
 </body>
 

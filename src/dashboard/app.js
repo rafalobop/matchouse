@@ -3,7 +3,7 @@ let isConnected = false;
 let allGroups = [];
 let selectedGroups = [];
 
-// Estado de reconexión automática
+// Estado de reconexión automática de WhatsApp
 let isCountingDown = false;
 let countdownInterval = null;
 let countdownSeconds = 15;
@@ -42,7 +42,193 @@ const saveStatus = document.getElementById('save-status');
 
 const matchesTbody = document.getElementById('matches-tbody');
 
-// Polling de Estado de WhatsApp
+// Elementos del DOM - Auth OTP
+const authOverlay = document.getElementById('auth-overlay');
+const authCardStep1 = document.getElementById('auth-card-step1');
+const authCardStep2 = document.getElementById('auth-card-step2');
+const authPhoneInput = document.getElementById('auth-phone-input');
+const authOtpInput = document.getElementById('auth-otp-input');
+const authSendOtpBtn = document.getElementById('auth-send-otp-btn');
+const authVerifyOtpBtn = document.getElementById('auth-verify-otp-btn');
+const authRegisterNewBtn = document.getElementById('auth-register-new-btn');
+const authBackBtn = document.getElementById('auth-back-btn');
+const authStep1Error = document.getElementById('auth-step1-error');
+const authStep2Error = document.getElementById('auth-step2-error');
+
+// Estado de Autenticación
+let authCheckInterval = null;
+let statusInterval = null;
+let matchesInterval = null;
+let catalogInterval = null;
+let isUserAuthenticated = false;
+
+// ==========================================
+// CONTROL DE POLLES Y SESIÓN (AUTH)
+// ==========================================
+
+async function checkAuthSession() {
+  try {
+    const res = await fetch('/api/auth/session');
+    const data = await res.json();
+    
+    if (data.authenticated) {
+      if (!isUserAuthenticated) {
+        isUserAuthenticated = true;
+        authOverlay.classList.add('hidden');
+        
+        // Resetear inputs de login
+        authPhoneInput.value = '';
+        authOtpInput.value = '';
+        
+        // Arrancar pollings del dashboard
+        startDashboardPolling();
+      }
+    } else {
+      isUserAuthenticated = false;
+      authOverlay.classList.remove('hidden');
+      stopDashboardPolling();
+    }
+  } catch (error) {
+    console.error('Error al comprobar sesión auth:', error);
+  }
+}
+
+function startDashboardPolling() {
+  if (statusInterval) return; // Ya está corriendo
+  
+  checkStatus();
+  loadCatalogInfo();
+  loadMatches();
+  
+  statusInterval = setInterval(checkStatus, 1500);
+  matchesInterval = setInterval(loadMatches, 2000);
+  catalogInterval = setInterval(loadCatalogInfo, 5000);
+}
+
+function stopDashboardPolling() {
+  if (statusInterval) {
+    clearInterval(statusInterval);
+    statusInterval = null;
+  }
+  if (matchesInterval) {
+    clearInterval(matchesInterval);
+    matchesInterval = null;
+  }
+  if (catalogInterval) {
+    clearInterval(catalogInterval);
+    catalogInterval = null;
+  }
+  cancelCountdown();
+}
+
+// Handlers de los botones de Auth
+authSendOtpBtn.addEventListener('click', async () => {
+  const phone = authPhoneInput.value.trim();
+  if (!phone) {
+    showAuthError(authStep1Error, 'Ingresa un número de teléfono válido.');
+    return;
+  }
+  
+  authSendOtpBtn.disabled = true;
+  authSendOtpBtn.innerText = 'Enviando código...';
+  hideAuthError(authStep1Error);
+  
+  try {
+    const res = await fetch('/api/auth/request-otp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone })
+    });
+    
+    const data = await res.json();
+    if (res.ok) {
+      authCardStep1.classList.add('hidden');
+      authCardStep2.classList.remove('hidden');
+    } else {
+      showAuthError(authStep1Error, data.error || 'Error al solicitar código.');
+    }
+  } catch (error) {
+    showAuthError(authStep1Error, 'Error de red al conectar con el servidor.');
+  } finally {
+    authSendOtpBtn.disabled = false;
+    authSendOtpBtn.innerText = 'Enviar Código por WhatsApp';
+  }
+});
+
+authVerifyOtpBtn.addEventListener('click', async () => {
+  const phone = authPhoneInput.value.trim();
+  const otp = authOtpInput.value.trim();
+  if (!otp || otp.length !== 6) {
+    showAuthError(authStep2Error, 'Ingresa un código OTP de 6 dígitos.');
+    return;
+  }
+  
+  authVerifyOtpBtn.disabled = true;
+  authVerifyOtpBtn.innerText = 'Verificando...';
+  hideAuthError(authStep2Error);
+  
+  try {
+    const res = await fetch('/api/auth/verify-otp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone, otp })
+    });
+    
+    const data = await res.json();
+    if (res.ok) {
+      await checkAuthSession();
+    } else {
+      showAuthError(authStep2Error, data.error || 'Código incorrecto o vencido.');
+    }
+  } catch (error) {
+    showAuthError(authStep2Error, 'Error de red al conectar con el servidor.');
+  } finally {
+    authVerifyOtpBtn.disabled = false;
+    authVerifyOtpBtn.innerText = 'Validar Código';
+  }
+});
+
+authRegisterNewBtn.addEventListener('click', async () => {
+  authRegisterNewBtn.disabled = true;
+  authRegisterNewBtn.innerText = 'Preparando bot...';
+  hideAuthError(authStep1Error);
+  
+  try {
+    const res = await fetch('/api/auth/register-new', { method: 'POST' });
+    const data = await res.json();
+    
+    if (res.ok) {
+      await checkAuthSession();
+    } else {
+      showAuthError(authStep1Error, data.error || 'Error al conectar nuevo bot.');
+    }
+  } catch (error) {
+    showAuthError(authStep1Error, 'Error de red al conectar con el servidor.');
+  } finally {
+    authRegisterNewBtn.disabled = false;
+    authRegisterNewBtn.innerText = 'Conectar Nuevo Bot (Máx. 10)';
+  }
+});
+
+authBackBtn.addEventListener('click', () => {
+  authCardStep2.classList.add('hidden');
+  authCardStep1.classList.remove('hidden');
+  hideAuthError(authStep2Error);
+});
+
+function showAuthError(element, msg) {
+  element.innerText = msg;
+  element.style.display = 'block';
+}
+
+function hideAuthError(element) {
+  element.style.display = 'none';
+}
+
+// ==========================================
+// POLLING DE WHATSAPP (LOGUEADO)
+// ==========================================
+
 async function checkStatus() {
   try {
     const res = await fetch('/api/status');
@@ -58,17 +244,14 @@ async function checkStatus() {
 }
 
 function updateStatusUI(data) {
-  // Manejo del contador de reconexión
   if (data.status !== 'DISCONNECTED') {
     cancelCountdown();
   }
 
-  // Ocultar pantalla de carga completa si no estamos en estado de autenticación/sincronización
   if (data.status !== 'AUTHENTICATED') {
     loadingOverlay.classList.add('hidden');
   }
 
-  // Configurar insignia de estado
   if (data.status === 'CONNECTED') {
     systemBadge.className = 'system-badge connected';
     statusText.innerText = 'Conectado';
@@ -78,17 +261,14 @@ function updateStatusUI(data) {
 
     if (!isConnected) {
       isConnected = true;
-      // Mostrar info de usuario
       userInfo.classList.remove('hidden');
       userName.innerText = data.user.name;
       userPhone.innerText = `+${data.user.number}`;
 
-      // Ocultar QR y mostrar éxito (sin spinner)
       qrContainer.innerHTML = '<div class="qr-success-icon">✅</div><p class="qr-placeholder-text" style="color: var(--success); font-weight: 600;">¡WhatsApp Conectado y Activo!</p>';
       qrContainer.style.background = 'rgba(16, 185, 129, 0.03)';
       qrContainer.style.borderColor = 'rgba(16, 185, 129, 0.2)';
 
-      // Cargar lista de grupos e inicializar vistas
       loadGroups();
     }
   } else if (data.status === 'AUTHENTICATED') {
@@ -102,13 +282,11 @@ function updateStatusUI(data) {
     qrContainer.style.background = 'rgba(255, 255, 255, 0.03)';
     qrContainer.style.borderColor = 'var(--card-border)';
 
-    // Mostrar loader en tarjeta de grupos
     const summaryBox = document.getElementById('selected-groups-summary');
     if (summaryBox) summaryBox.classList.add('hidden');
     noGroupsSelectedMsg.classList.remove('hidden');
     noGroupsSelectedMsg.innerHTML = '<div class="spinner" style="width: 25px; height: 25px; margin: 0 auto 0.5rem;"></div>Sincronizando grupos desde WhatsApp...';
 
-    // Mostrar overlay de carga en pantalla completa con porcentaje en tiempo real
     loadingOverlay.classList.remove('hidden');
     const percent = data.syncPercentage || 0;
     progressBar.style.width = percent + '%';
@@ -119,7 +297,6 @@ function updateStatusUI(data) {
     userInfo.classList.add('hidden');
     toggleEditGroupsBtn.disabled = true;
 
-    // Si no está conectado, forzar el cierre de la pantalla de edición y ocultar resumen de grupos
     groupsEditSection.classList.add('hidden');
     groupsViewSection.classList.remove('hidden');
 
@@ -149,7 +326,6 @@ function updateStatusUI(data) {
       qrContainer.innerHTML = '<div class="spinner"></div><p class="qr-placeholder-text">Desconectado. Reintentando...</p>';
       noGroupsSelectedMsg.innerText = 'WhatsApp desconectado. Esperando conexión...';
 
-      // Iniciar reconexión automática si no está corriendo
       if (!isCountingDown) {
         startAutomaticReconnectCountdown();
       }
@@ -157,7 +333,6 @@ function updateStatusUI(data) {
   }
 }
 
-// Iniciar contador para reconexión automática
 function startAutomaticReconnectCountdown() {
   isCountingDown = true;
   countdownSeconds = 15;
@@ -192,7 +367,6 @@ function cancelCountdown() {
   }
 }
 
-// Ejecutar reinicio del cliente en el backend
 async function triggerRestart() {
   cancelCountdown();
   restartWhatsappBtn.disabled = true;
@@ -219,10 +393,8 @@ async function triggerRestart() {
   }
 }
 
-// Forzar reinicio de WhatsApp manual
 restartWhatsappBtn.addEventListener('click', async () => {
   if (isCountingDown) {
-    // Si estaba contando, forzar de inmediato sin alert
     await triggerRestart();
     return;
   }
@@ -232,7 +404,10 @@ restartWhatsappBtn.addEventListener('click', async () => {
   }
 });
 
-// Cargar catálogo info
+// ==========================================
+// LOGS Y CATÁLOGO DEL DASHBOARD
+// ==========================================
+
 async function loadCatalogInfo() {
   try {
     const res = await fetch('/api/catalog');
@@ -243,7 +418,6 @@ async function loadCatalogInfo() {
   }
 }
 
-// Cargar Grupos de WhatsApp
 async function loadGroups() {
   try {
     const res = await fetch('/api/groups');
@@ -260,7 +434,6 @@ async function loadGroups() {
   }
 }
 
-// Actualizar resumen visual de grupos escuchados
 function updateSelectedGroupsSummary() {
   const summaryBox = document.getElementById('selected-groups-summary');
   const tagsContainer = document.getElementById('selected-groups-tags');
@@ -278,7 +451,6 @@ function updateSelectedGroupsSummary() {
   tagsContainer.innerHTML = '';
 
   selectedGroups.forEach(id => {
-    // Buscar el nombre del grupo a partir del ID
     const group = allGroups.find(g => g.id === id);
     const name = group ? group.name : id;
 
@@ -289,16 +461,12 @@ function updateSelectedGroupsSummary() {
   });
 }
 
-// Manejo de Edición de Grupos
 toggleEditGroupsBtn.addEventListener('click', async () => {
   groupsViewSection.classList.add('hidden');
   groupsEditSection.classList.remove('hidden');
   groupsList.innerHTML = '<div class="spinner" style="width: 25px; height: 25px; margin: 2rem auto 0.5rem;"></div>Sincronizando grupos desde WhatsApp...';
 
-  // Re-cargar grupos del backend en tiempo real
   await loadGroups();
-
-  // Rellenar el textarea manual con aquellos grupos seleccionados que no estén en la lista de checkboxes
   populateManualGroupsInput();
 });
 
@@ -319,10 +487,9 @@ function populateManualGroupsInput() {
 cancelEditGroupsBtn.addEventListener('click', () => {
   groupsEditSection.classList.add('hidden');
   groupsViewSection.classList.remove('hidden');
-  loadGroups(); // Recargar de base
+  loadGroups();
 });
 
-// Renderizar la lista de grupos con filtro en la vista de edición
 function renderGroups() {
   const query = groupSearch.value.toLowerCase();
   const filtered = allGroups.filter(g => g.name.toLowerCase().includes(query));
@@ -345,7 +512,6 @@ function renderGroups() {
     checkbox.value = group.id;
     checkbox.checked = isChecked;
 
-    // Cambiar estado en memoria al tildar/destildar
     checkbox.addEventListener('change', (e) => {
       if (e.target.checked) {
         if (!selectedGroups.includes(group.id)) selectedGroups.push(group.id);
@@ -365,19 +531,16 @@ function renderGroups() {
   });
 }
 
-// Guardar Configuración de Grupos
 saveGroupsBtn.addEventListener('click', async () => {
   saveGroupsBtn.disabled = true;
   saveStatus.innerText = 'Guardando...';
   saveStatus.style.color = 'var(--text-secondary)';
 
-  // Leer nombres ingresados manualmente del textarea
   const manualInput = document.getElementById('manual-groups-input');
   const manualNames = manualInput
     ? manualInput.value.split('\n').map(line => line.trim()).filter(line => line.length > 0)
     : [];
 
-  // Combinar los grupos seleccionados (que se actualizan en memoria al hacer click) con los ingresados manualmente
   const finalSelectedGroups = Array.from(new Set([...selectedGroups, ...manualNames]));
 
   try {
@@ -393,7 +556,6 @@ saveGroupsBtn.addEventListener('click', async () => {
       selectedGroups = finalSelectedGroups;
       updateSelectedGroupsSummary();
 
-      // Salir del modo edición automáticamente tras guardar
       setTimeout(() => {
         groupsEditSection.classList.add('hidden');
         groupsViewSection.classList.remove('hidden');
@@ -414,10 +576,7 @@ saveGroupsBtn.addEventListener('click', async () => {
   }
 });
 
-// Buscar grupos en tiempo real
 groupSearch.addEventListener('input', renderGroups);
-
-// Drag & Drop para el Excel
 dropzone.addEventListener('click', () => fileInput.click());
 
 dropzone.addEventListener('dragover', (e) => {
@@ -443,7 +602,6 @@ fileInput.addEventListener('change', () => {
   }
 });
 
-// Subida de Archivo Excel
 async function handleFileUpload(file) {
   if (!file.name.endsWith('.xlsx')) {
     showUploadStatus('Error: Solo se permiten archivos Excel (.xlsx)', 'error');
@@ -464,7 +622,7 @@ async function handleFileUpload(file) {
     const data = await res.json();
 
     if (res.ok) {
-      showUploadStatus(`¡Éxito! Se cargaron ${data.count} propiedades en memoria.`, 'success');
+      showUploadStatus(`¡Éxito! Se cargaron ${data.count} propiedades.`, 'success');
       loadCatalogInfo();
     } else {
       showUploadStatus(`Error: ${data.error || 'No se pudo procesar el archivo.'}`, 'error');
@@ -496,13 +654,11 @@ let currentPage = 1;
 const pageSize = 10;
 let sortOption = 'fecha-desc';
 
-// Helper para extraer el score desde matchDetails
 function getScore(match) {
   const m = match.matchDetails.match(/Score:\s*(\d+)%/i);
   return m ? parseInt(m[1], 10) : 0;
 }
 
-// Cargar Logs de Matches en tiempo real
 async function loadMatches() {
   try {
     const res = await fetch('/api/matches');
@@ -511,7 +667,7 @@ async function loadMatches() {
     const matches = data.matches || [];
 
     if (matches.length === 0) {
-      matchesTbody.innerHTML = '<tr><td colspan="5" class="table-placeholder">No se han registrado matches en esta sesión.</td></tr>';
+      matchesTbody.innerHTML = '<tr><td colspan="6" class="table-placeholder">No se han registrado matches en esta sesión.</td></tr>';
       document.getElementById('page-start').innerText = '0';
       document.getElementById('page-end').innerText = '0';
       document.getElementById('total-matches').innerText = '0';
@@ -521,12 +677,10 @@ async function loadMatches() {
       return;
     }
 
-    // Clonar para realizar ordenamiento local sin mutar el original
     let matchesList = [...matches];
 
-    // Aplicar ordenación
     if (sortOption === 'fecha-desc') {
-      // Orden nativo (más recientes primero)
+      // Orden nativo
     } else if (sortOption === 'fecha-asc') {
       matchesList.reverse();
     } else if (sortOption === 'score-desc') {
@@ -535,7 +689,6 @@ async function loadMatches() {
       matchesList.sort((a, b) => getScore(a) - getScore(b));
     }
 
-    // Aplicar paginación
     const totalMatches = matchesList.length;
     const totalPages = Math.ceil(totalMatches / pageSize) || 1;
     if (currentPage > totalPages) currentPage = totalPages;
@@ -545,7 +698,6 @@ async function loadMatches() {
     const endIndex = Math.min(startIndex + pageSize, totalMatches);
     const paginatedMatches = matchesList.slice(startIndex, endIndex);
 
-    // Actualizar UI de paginación
     document.getElementById('page-start').innerText = totalMatches > 0 ? startIndex + 1 : 0;
     document.getElementById('page-end').innerText = endIndex;
     document.getElementById('total-matches').innerText = totalMatches;
@@ -574,8 +726,8 @@ async function loadMatches() {
         const name = m.contactSender.replace(`@${phone}`, '').replace(/[()]/g, '').trim();
         contactHtml = `<a href="https://wa.me/${phone}" target="_blank" class="contact-link" title="Contactar por WhatsApp" style="color: #25d366; text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; gap: 4px;">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="display: inline-block; vertical-align: middle;"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946C.06 5.348 5.397.01 12.008.01c3.202.001 6.212 1.246 8.477 3.514 2.266 2.268 3.507 5.28 3.505 8.484-.004 6.657-5.34 11.997-11.953 11.997-2.005-.001-3.973-.502-5.724-1.455L0 24zm6.59-4.846c1.6.95 3.488 1.459 5.407 1.461 5.485.002 9.948-4.41 9.952-9.863.002-2.643-1.027-5.127-2.9-7c-1.873-1.873-4.365-2.905-7.008-2.906-5.485 0-9.94 4.41-9.947 9.86-.002 1.964.512 3.88 1.49 5.59L1.657 21.8l6.088-1.597c.001-.001.001-.001.002-.001zm10.182-7.872c-.299-.149-1.771-.875-2.045-.974-.275-.098-.476-.149-.675.149-.199.299-.771.974-.946 1.173-.174.199-.349.224-.648.075-1.137-.57-1.9-.943-2.654-2.24-.199-.349-.199-.567-.05-.716.134-.134.299-.349.448-.523.149-.174.199-.299.299-.497.099-.199.049-.373-.025-.522-.075-.149-.675-1.628-.925-2.227-.243-.584-.489-.505-.675-.514-.175-.008-.375-.01-.575-.01-.199 0-.523.075-.797.373-.274.299-1.047 1.022-1.047 2.49 0 1.468 1.069 2.887 1.219 3.086.149.199 2.099 3.205 5.087 4.496.71.307 1.265.49 1.696.627.713.227 1.362.195 1.875.118.571-.085 1.771-.724 2.02-1.42.249-.697.249-1.295.174-1.42-.075-.125-.274-.199-.573-.349z"/></svg>
-          @${phone}
-        </a> (${name})`;
+           @${phone}
+         </a> (${name})`;
       }
       tdSolicitante.innerHTML = `${contactHtml}<br><span class="match-group-tag">${m.groupName || 'Grupo Desconocido'}</span>`;
 
@@ -625,10 +777,9 @@ async function loadMatches() {
   }
 }
 
-// Configurar event listeners para ordenación y paginación
 document.getElementById('sort-select').addEventListener('change', (e) => {
   sortOption = e.target.value;
-  currentPage = 1; // reset a la primera página al ordenar
+  currentPage = 1;
   loadMatches();
 });
 
@@ -652,7 +803,6 @@ const cancelRejectBtn = document.getElementById('cancel-reject-btn');
 const manualReasonContainer = document.getElementById('manual-reason-container');
 const manualReasonInput = document.getElementById('manual-reason-input');
 
-// Detectar cambio en opciones de radio para mostrar input manual
 document.querySelectorAll('input[name="rejection-reason"]').forEach(radio => {
   radio.addEventListener('change', (e) => {
     if (e.target.value === 'otro') {
@@ -671,7 +821,7 @@ async function sendFeedback(matchId, status, reason = null) {
       body: JSON.stringify({ status, reason })
     });
     if (res.ok) {
-      loadMatches(); // Recargar de inmediato
+      loadMatches();
     } else {
       alert('Error al guardar feedback del match.');
     }
@@ -708,12 +858,6 @@ confirmRejectBtn.addEventListener('click', async () => {
   currentCurationMatchId = null;
 });
 
-// Inicialización de Polling
-checkStatus();
-loadCatalogInfo();
-loadMatches();
-
-// Acortamos los tiempos de polling para que sea más reactivo y cargue de inmediato
-setInterval(checkStatus, 1500);   // Consultar QR/Conexión cada 1.5 segundos
-setInterval(loadMatches, 2000);   // Consultar matches cada 2 segundos
-setInterval(loadCatalogInfo, 5000); // Consultar catálogo cada 5 segundos
+// Inicialización de Autenticación
+checkAuthSession();
+authCheckInterval = setInterval(checkAuthSession, 3000); // Revisar sesión cada 3s

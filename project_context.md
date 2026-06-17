@@ -1,72 +1,81 @@
-# Contexto del Proyecto: HouseMatch MVP
+# Contexto del Proyecto: HouseMatch MVP (Actualizado)
 
-Este documento proporciona una visión detallada y funcional de la estructura, arquitectura, flujos y tecnologías utilizadas en el MVP de **HouseMatch**.
+Este documento proporciona una visión detallada de la arquitectura, componentes, flujo de datos y modelo de agentes de **HouseMatch**, reflejando la evolución desde el MVP lineal inicial hacia el sistema actual modular y orquestado.
 
 ---
 
 ## 1. Propósito del Sistema
-**HouseMatch** es una herramienta automatizada diseñada para capturar pedidos de propiedades en grupos de WhatsApp de agentes inmobiliarios (Tucumán, Argentina), extraer sus intenciones y características de forma estructurada mediante modelos de lenguaje (LLM), y cruzarlos automáticamente con una cartera local de propiedades para notificar coincidencias (matches) de manera inmediata.
+**HouseMatch** es una herramienta automatizada diseñada para capturar pedidos de propiedades en grupos de WhatsApp de agentes inmobiliarios (Tucumán, Argentina), extraer sus intenciones y características mediante modelos de lenguaje (LLM), y cruzarlos inteligentemente con una cartera local de propiedades. Los matches calificados son notificados en tiempo real por WhatsApp y pueden ser auditados/curados desde un Dashboard interactivo.
 
 ---
 
-## 2. Diagrama de Flujo Funcional
-El procesamiento de un mensaje entrante sigue un pipeline lineal y desacoplado:
+## 2. Diagrama de Arquitectura y Flujo de Datos
+El sistema utiliza un **Agente Coordinador** central que orquesta un pipeline asíncrono y tolerante a fallos, utilizando **Supabase (PostgreSQL)** como única fuente de verdad:
 
 ```mermaid
 graph TD
-    WA[Mensaje de WhatsApp] -->|Baileys Listener| Filter{Pre-Filtro Local RegEx}
-    Filter -->|No califica| Skip[Ignorar Mensaje]
-    Filter -->|Califica como Pedido| Agent1[Agente 1: Extractor de Entidades <br> gemini-2.5-flash-lite]
+    WA[WhatsApp Listener <br> Baileys] -->|Nuevo Mensaje| Queue[Cola Asíncrona <br> AsyncMessageQueue / Rate Limiter]
+    Queue -->|Procesar Tarea| Coord[Agente Coordinador <br> coordinator.ts]
     
-    Agent1 -->|Deducción de Operación / Presupuesto| Agent2{¿Tiene Ubicación?}
-    Agent2 -->|No| Matcher[Motor de Match]
-    Agent2 -->|Sí| Agent2_Geo[Agente 2: Geolocalizador <br> Normalización de Zona]
+    Coord -->|1. Validar Idempotencia| DB_Check{¿Mensaje procesado <br> o duplicado?}
+    DB_Check -->|Sí| Skip[Omitir Mensaje]
     
-    Agent2_Geo -->|Zona ID Normalizada| Matcher
-    Matcher -->|Algoritmo de Coincidencias <br> Dólar Blue, Dormitorios, Zona, Country| Notify{¿Encontró Coincidencias?}
+    DB_Check -->|No| Store_Msg[Registrar Mensaje en DB]
+    Store_Msg -->|2. Extracción| Agent1[Agente 1: Extractor <br> gemini-2.5-flash-lite / fallback OpenAI]
     
-    Notify -->|Sí| Sheets[Google Sheets API <br> Registrar Match]
-    Notify -->|Sí| WA_Send[Notificación WhatsApp <br> Al celular del usuario]
-    Notify -->|No| Log[Registrar en Consola / Saltear]
+    Agent1 -->|3. Geolocalización si tiene zona| Agent2[Agente 2: Geolocalizador <br> Normalización de Zonas]
+    Agent2 -->|Datos Geográficos| Matcher[Algoritmo Matcher <br> Filtros Físicos y Country]
+    Agent1 -->|Si no tiene zona| Matcher
+    
+    Matcher -->|Match Físico Encontrado| Validator[Agente 3: Validador IA <br> Curación Cualitativa]
+    Validator -->|Registrar Match en DB| DB_Match[(Supabase DB)]
+    
+    DB_Match -->|Score >= 70% e isValid| Notify{Notificar}
+    Notify -->|Sí| WA_Send[Notificación WhatsApp <br> Celular del Captador / Canal]
+    Notify -->|No| Log[Registrar / Silenciar]
+    
+    DB_Match -->|Disponible para| Dash[Dashboard Express <br> Curación y Feedback del Usuario]
 ```
 
 ---
 
 ## 3. Arquitectura del Código y Estructura de Archivos
 
-El código está escrito en **TypeScript** y corre sobre **Node.js**. La estructura del directorio principal bajo `src` es:
+La aplicación está construida sobre **Node.js** y escrita en **TypeScript**. La estructura principal bajo `src` es:
 
-*   [`src/index.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/index.ts): Punto de entrada del servidor. Orquesta el cliente de WhatsApp, levanta el servidor Express del Dashboard y define la lógica del pipeline de procesamiento (`processIncomingMessage`).
-*   [`src/services/whatsapp.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/services/whatsapp.ts): Gestor de conexión con WhatsApp utilizando la biblioteca **Baileys**. Controla la autenticación, re-conexión automática, generación de códigos QR y lectura/escritura de notificaciones.
-*   [`src/services/gemini.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/services/gemini.ts): Implementa el patrón **Strategy** para la integración de Inteligencia Artificial. Maneja los prompts del Agente 1 (Extracción) y Agente 2 (Geolocalización), con soporte para **Google Gemini** y un fallback dinámico hacia **OpenAI**.
-*   [`src/services/sheets.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/services/sheets.ts): Adaptador para sincronizar la base de datos de Excel en la nube usando Google Sheets API. Permite leer la cartera de propiedades y registrar de forma persistente los matches generados.
-*   [`src/services/excel.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/services/excel.ts): Permite procesar archivos Excel subidos localmente a través del Dashboard y guardarlos en caché del servidor (`catalog.json`).
-*   [`src/utils/matcher.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/utils/matcher.ts): Algoritmo puro de negocio. Compara los campos del pedido (LLM) con las propiedades de la cartera. Resuelve la geolocalización basada en coordenadas espaciales (Polígonos Ray-casting) y filtra estrictamente por operación, tipo de propiedad, dormitorios, precios (con conversión Dólar Blue) y exclusión/inclusión de **countries** (barrios cerrados).
-*   [`src/utils/filter.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/utils/filter.ts): Filtro estático ultrarrápido basado en patrones Regex para clasificar si un texto entrante es una demanda (pedido comercial) y descartar ofertas o mensajes casuales sin gastar recursos de API.
-*   [`src/utils/constants/zones.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/utils/constants/zones.ts): Coordenadas y límites geográficos de las zonas del mercado inmobiliario (Tucumán).
-*   [`src/test-pipeline.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/test-pipeline.ts): Script ejecutable de simulación (*dry-run*) para probar la lógica completa sin consumir conexiones de WhatsApp reales.
-
----
-
-## 4. Gestión de Errores y Tolerancia a Fallos
-
-El sistema fue diseñado teniendo en cuenta la inestabilidad de las redes e interfaces de terceros:
-
-1.  **Resiliencia del Proceso (`process.on`)**:
-    En [`src/index.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/index.ts) se capturan los eventos `unhandledRejection` y `uncaughtException`. Esto previene que fallos internos en las conexiones websocket de Baileys o llamadas a APIs derrumben el servidor NodeJS.
-2.  **Fallback de IA (OpenAI / Gemini)**:
-    Si la API de Google Gemini excede su cuota de llamadas o falla por red, el administrador de estrategias (`AIExtractorContext` en `gemini.ts`) cambia de forma transparente a **OpenAI (gpt-4o-mini)** para no interrumpir el flujo.
-3.  **Normalización Seguro de Datos**:
-    Las funciones `normalizeAgent1` y `normalizeAgent2` aseguran que aunque la IA devuelva estructuras inconsistentes o nulas, estas sean saneadas a valores válidos por defecto (`indiferente`, `otro`, `desconocido`), evitando excepciones de tipo `undefined` en el comparador.
-4.  **WhatsApp Connection Recovery**:
-    El servicio de WhatsApp monitorea de forma proactiva la desconexión del socket (código 408 u otros) y limpia periódicamente referencias corruptas antes de intentar un reinicio en bucle.
+*   [`src/index.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/index.ts): Punto de entrada. Inicia el cliente de WhatsApp, levanta el servidor Express del Dashboard, carga el catálogo desde la base de datos (con fallback local) y encola los mensajes entrantes en la cola asíncrona.
+*   [`src/services/coordinator.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/services/coordinator.ts): **Orquestador Principal**. Implementa la lógica del `CoordinatorAgent`. Controla la idempotencia del mensaje, la deduplicación en las últimas 24 horas, la secuencia de ejecución de los sub-agentes, el almacenamiento de los matches en la base de datos y el envío de notificaciones.
+*   [`src/services/gemini.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/services/gemini.ts): Implementa la lógica de IA mediante el patrón **Strategy** (`AIStrategy`). Permite alternar de forma transparente entre **Google Gemini (`gemini-2.5-flash-lite`)** y **OpenAI (`gpt-4o-mini`)** ante fallos de cuota o caídas de red. Contiene las definiciones de:
+    - **Agente 1 (Extractor)**: Extrae operación, tipo de propiedad, presupuesto, moneda, dormitorios, características y restricción de countries.
+    - **Agente 2 (Geolocalizador)**: Asocia la ubicación del mensaje con un ID de zona normalizado definido en el sistema.
+    - **Agente 3 (Validador)**: Filtra falsos positivos analizando semánticamente si la propiedad coincide cualitativamente con el pedido (retorna un *score* y un booleano de validez).
+*   [`src/services/supabase.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/services/supabase.ts): Inicialización del cliente Supabase JS SDK utilizando las credenciales del rol de servicio para interactuar con la base de datos.
+*   [`src/services/whatsapp.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/services/whatsapp.ts): Gestor de conexión con la red de WhatsApp usando **Baileys**.
+*   [`src/services/sheets.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/services/sheets.ts): Sincronizador de la cartera de propiedades hacia Supabase (`syncPropertiesToDatabase`).
+*   [`src/services/excel.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/services/excel.ts): Parseador de archivos Excel subidos localmente a través del Dashboard.
+*   [`src/utils/queue.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/utils/queue.ts): Cola de procesamiento asíncrono (`AsyncMessageQueue`) con control de flujo (*rate limiting* de 4500ms por mensaje) para proteger las llamadas a las APIs de LLM.
+*   [`src/utils/matcher.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/utils/matcher.ts): Algoritmo de negocio que valida concordancia de operación, dormitorios mínimos, presupuesto (con tipo de cambio de Dólar Blue), exclusión/inclusión de countries y zonas mediante Ray-casting.
+*   [`src/utils/filter.ts`](file:///c:/Users/NoxiePC/Desktop/Software/housematch/src/utils/filter.ts): Expresiones regulares rápidas para pre-filtrar mensajes que no sean solicitudes de compra o alquiler en WhatsApp.
 
 ---
 
-## 5. APIs y Librerías Utilizadas
+## 4. Robustez, Tolerancia a Fallos e Idempotencia
 
-*   **`@google/genai`**: Cliente SDK para conectarse a Google Gemini. Se usa el modelo súper rápido y de bajo costo `gemini-2.5-flash-lite` con esquemas JSON estructurados estrictos.
-*   **`@whiskeysockets/baileys`**: API liviana y de bajo nivel para interactuar con la red de WhatsApp simulando la app móvil, ideal para despliegues ligeros sin depender de navegadores pesados como Puppeteer/Chromium.
-*   **`googleapis`**: Utilizada para acceder de forma segura mediante *Service Account* a las hojas de cálculo compartidas en Google Sheets.
-*   **`express`**: Servidor Web para disponibilizar la API REST y servir la interfaz interactiva del Dashboard.
-*   **`xlsx` (SheetJS)**: Procesador eficiente en memoria para parsear archivos binarios `.xlsx` cargados por el usuario.
+1.  **Garantía de Idempotencia**:
+    - **Por ID**: Cada mensaje de WhatsApp posee un ID único. El Coordinador comprueba en la tabla `Message` de Supabase si el ID ya existe antes de procesarlo.
+    - **Temporal (Deduplicación)**: Si el mismo remitente envía un mensaje con idéntico contenido en un intervalo de 24 horas, el Coordinador lo descarta automáticamente para evitar spam o reprocesamientos innecesarios.
+2.  **Rate Limiting y Colas**:
+    - La clase `AsyncMessageQueue` serializa el procesamiento de mensajes aplicando un delay de seguridad de 4.5 segundos entre llamadas, garantizando que el sistema no exceda los límites de tasa de las APIs externas.
+3.  **Fallback Dinámico de Proveedor de IA**:
+    - Si la llamada a la API de Google Gemini falla por exceder la cuota (Rate Limit) o problemas de red, el sistema escala automáticamente la llamada al modelo de OpenAI (`gpt-4o-mini`) definido como estrategia de respaldo.
+4.  **Saneamiento y Valores por Defecto**:
+    - Las funciones de normalización en `gemini.ts` aseguran que la respuesta del LLM (aunque tenga inconsistencias) siempre se adapte a un tipo de dato esperado (`desconocido`, `indiferente`, `otro`), evitando fallos en tiempo de ejecución.
+
+---
+
+## 5. Panel de Control y Retroalimentación (Feedback Loop)
+
+El sistema incluye una interfaz web (Dashboard Express) que conecta directamente con la base de datos de Supabase para ofrecer las siguientes funcionalidades:
+- **Carga de Catálogo**: Subida de archivos Excel y sincronización inmediata a la base de datos PostgreSQL.
+- **Auditoría de Matches**: Visualización en tiempo real de los matches generados por el Coordinador, mostrando tanto el texto original del chat como los detalles físicos y el razonamiento del Agente Validador.
+- **Curación y Cierre de Loop**: Permite al usuario aprobar (`ACCEPTED`) o rechazar (`REJECTED` indicando un motivo) los matches desde el panel, lo cual actualiza el estado en Supabase para el registro histórico y la mejora futura de los prompts de los agentes.

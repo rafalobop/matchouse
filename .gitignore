@@ -14,3 +14,9 @@ settings.json
 .baileys_auth/
 .agents/
 /src/generated/prisma
+
+# Archivos dinámicos de Tenants (Caché, Configuración y Sesiones)
+catalog_*.json
+settings_*.json
+groups_cache_*.json
+sessions/
