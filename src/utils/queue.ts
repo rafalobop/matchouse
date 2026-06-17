@@ -11,9 +11,9 @@ export class AsyncMessageQueue {
     this.delayMs = delayMs;
   }
 
-  enqueue(task: QueueTask) {
+  enqueue(task: QueueTask, tenantId?: string) {
     this.queue.push(task);
-    logger.info({ queueLength: this.queue.length }, '[QUEUE] Nuevo mensaje encolado');
+    logger.info({ queueLength: this.queue.length, tenantId }, '[QUEUE] Nuevo mensaje encolado');
     this.processNext();
   }
 
