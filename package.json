@@ -17,9 +17,11 @@
     "@google/genai": "^2.8.0",
     "@supabase/supabase-js": "^2.108.2",
     "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "cookie-parser": "^1.4.7",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "googleapis": "^173.0.0",
+    "jsonwebtoken": "^9.0.3",
     "multer": "^2.1.1",
     "openai": "^6.42.0",
     "pino": "^10.3.1",
@@ -29,7 +31,9 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.1.0",
     "@types/node": "^25.9.1",
     "@types/qrcode": "^1.5.6",

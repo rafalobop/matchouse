@@ -1,5 +1,4 @@
 import makeWASocket, {
-  useMultiFileAuthState,
   DisconnectReason,
   WASocket,
   fetchLatestBaileysVersion
@@ -9,6 +8,7 @@ import * as QRCode from 'qrcode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isRealEstateRequest } from '../utils/filter';
+import { useSupabaseAuthState, clearSupabaseSession } from './supabaseAuth';
 
 export interface Settings {
   selectedGroups: string[];
@@ -73,6 +73,7 @@ export interface WhatsAppStatus {
 // Mapas para almacenar sesiones y estados activos por tenant_id
 export const activeSessions = new Map<string, WASocket>();
 export const sessionStatuses = new Map<string, WhatsAppStatus>();
+export const tenantRedirects = new Map<string, string>(); // tempId -> consolidatedId
 let savedOptions: WhatsAppClientOptions | null = null;
 
 export interface WhatsAppClientOptions {
@@ -142,18 +143,12 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
     throw new Error('Límite máximo de 10 sesiones de WhatsApp activas alcanzado.');
   }
 
-  // Asegurar que la carpeta de sesiones exista
-  const sessionsDir = path.join(process.cwd(), 'sessions');
-  if (!fs.existsSync(sessionsDir)) {
-    fs.mkdirSync(sessionsDir, { recursive: true });
-  }
-
   const tenantStatus: WhatsAppStatus = { status: 'INITIALIZING' };
   sessionStatuses.set(tenantId, tenantStatus);
   savedOptions = options;
 
-  const authPath = path.join(sessionsDir, `tenant_${tenantId}`);
-  const { state, saveCreds } = await useMultiFileAuthState(authPath);
+  // Cargar estado de autenticación desde Supabase
+  const { state, saveCreds } = await useSupabaseAuthState(tenantId);
 
   // Obtener la versión de WhatsApp Web más reciente
   let version: any = [2, 3000, 1017531287];
@@ -219,6 +214,15 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
           activeSessions.delete(tenantId);
           sessionStatuses.delete(tenantId);
         }
+        // Limpiar sesión en Supabase si se deslogueó o venció el QR
+        if (statusCode === DisconnectReason.loggedOut || isQrTimeout) {
+          try {
+            await clearSupabaseSession(tenantId);
+            console.log(`[WHATSAPP] Sesión eliminada en Supabase para tenant ${tenantId} debido a logout o expiración.`);
+          } catch (err) {
+            console.warn(`[WHATSAPP] No se pudo borrar la sesión en Supabase del tenant ${tenantId}:`, err);
+          }
+        }
       }
     } else if (connection === 'open') {
       if (activeSessions.get(tenantId) !== sock) {
@@ -255,6 +259,8 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
 
         if (selectErr) throw selectErr;
 
+        const targetTenantId = existingTenant ? existingTenant.id : tenantId;
+
         if (existingTenant && existingTenant.id !== tenantId) {
           // El número de teléfono ya está registrado bajo otro tenantId (por ejemplo de un reinicio anterior).
           // Re-asociamos la sesión activa en memoria al ID consolidado de la base de datos para evitar duplicados.
@@ -264,12 +270,14 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
           
           activeSessions.set(existingTenant.id, sock);
           sessionStatuses.set(existingTenant.id, tenantStatus);
+
+          // Registrar la redirección para que el index.ts del api pueda actualizar la cookie del navegador
+          tenantRedirects.set(tenantId, existingTenant.id);
           
           await supabase
             .from('Tenant')
             .update({
-              name: sock.user?.name || 'Inmobiliaria',
-              last_active: new Date().toISOString()
+              name: sock.user?.name || 'Inmobiliaria'
             })
             .eq('id', existingTenant.id);
         } else {
@@ -279,9 +287,36 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
             .upsert({
               id: tenantId,
               name: sock.user?.name || 'Inmobiliaria',
-              phone_number: jidFormatted,
-              last_active: new Date().toISOString()
+              phone_number: jidFormatted
             });
+        }
+
+        // Cargar catálogo de Supabase en memoria del coordinador inmediatamente al conectar
+        const { coordinator } = require('./coordinator');
+        const { data: dbProps } = await supabase
+          .from('Property')
+          .select('*')
+          .eq('tenant_id', targetTenantId);
+
+        if (dbProps && dbProps.length > 0) {
+          const propertyCatalog = dbProps.map((p: any) => ({
+            domicilio: p.domicilio,
+            pisoLote: p.pisoLote || '',
+            precio: p.precio,
+            moneda: p.moneda,
+            expensas: p.expensas,
+            dormitorios: p.dormitorios,
+            caracteristicas: p.caracteristicas || '',
+            contacto: p.contacto || '',
+            zona: p.zona,
+            operacion: p.operacion,
+            tipo_propiedad: p.tipoPropiedad,
+            sheetName: p.sheetName
+          }));
+          coordinator.setCatalog(targetTenantId, propertyCatalog);
+          console.log(`[WHATSAPP - CATALOG] Catálogo de ${propertyCatalog.length} propiedades cargado en coordinador para tenant ${targetTenantId}`);
+        } else {
+          console.log(`[WHATSAPP - CATALOG] Sin propiedades cargadas en base de datos para tenant ${targetTenantId}`);
         }
       } catch (dbErr) {
         console.error(`[WHATSAPP - SUPABASE] Error al registrar sesión del tenant ${tenantId}:`, dbErr);
@@ -368,7 +403,7 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
 }
 
 /**
- * Cierra la sesión activa de un Tenant en memoria
+ * Cierra la sesión activa de un Tenant en memoria y limpia la base de datos
  */
 export async function logoutTenantSession(tenantId: string): Promise<void> {
   const sock = activeSessions.get(tenantId);
@@ -383,14 +418,11 @@ export async function logoutTenantSession(tenantId: string): Promise<void> {
     }
   }
 
-  // Eliminar su caché y settings
-  const authDir = path.join(process.cwd(), 'sessions', `tenant_${tenantId}`);
-  if (fs.existsSync(authDir)) {
-    try {
-      fs.rmSync(authDir, { recursive: true, force: true });
-    } catch (err) {
-      console.warn(`[WHATSAPP] No se pudo borrar archivos de sesión de tenant ${tenantId}:`, err);
-    }
+  // Eliminar la sesión en Supabase
+  try {
+    await clearSupabaseSession(tenantId);
+  } catch (err) {
+    console.warn(`[WHATSAPP] No se pudo borrar la sesión en Supabase del tenant ${tenantId}:`, err);
   }
 }
 
