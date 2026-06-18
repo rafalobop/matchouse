@@ -14,8 +14,16 @@ export interface Settings {
   selectedGroups: string[];
 }
 
+function getCacheFilePath(filename: string): string {
+  const cacheDir = path.join(process.cwd(), 'cache');
+  if (!fs.existsSync(cacheDir)) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+  }
+  return path.join(cacheDir, filename);
+}
+
 export function loadSettings(tenantId: string): Settings {
-  const settingsPath = path.join(process.cwd(), `settings_${tenantId}.json`);
+  const settingsPath = getCacheFilePath(`settings_${tenantId}.json`);
   if (fs.existsSync(settingsPath)) {
     try {
       return JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
@@ -27,7 +35,7 @@ export function loadSettings(tenantId: string): Settings {
 }
 
 export function saveSettings(tenantId: string, settings: Settings): void {
-  const settingsPath = path.join(process.cwd(), `settings_${tenantId}.json`);
+  const settingsPath = getCacheFilePath(`settings_${tenantId}.json`);
   try {
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
   } catch (e) {
@@ -36,7 +44,7 @@ export function saveSettings(tenantId: string, settings: Settings): void {
 }
 
 function getGroupsCachePath(tenantId: string): string {
-  return path.join(process.cwd(), `groups_cache_${tenantId}.json`);
+  return getCacheFilePath(`groups_cache_${tenantId}.json`);
 }
 
 function loadGroupsCache(tenantId: string): { id: string; name: string }[] {

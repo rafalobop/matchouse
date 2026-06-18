@@ -1,8 +1,9 @@
-import { extractRealEstateRequest, extractZoneIntent, ExtractedRealEstateRequest, ZoneIntentRequest, validateMatch } from './gemini';
+import { extractRealEstateRequest, extractZoneIntent, ExtractedRealEstateRequest, ZoneIntentRequest, validateMatch } from './ai';
 import { Property } from './sheets';
 import { checkMatch } from '../utils/matcher';
 import { randomUUID } from 'crypto';
 import { logger } from './logger';
+import { supabase } from './supabase';
 
 export interface PipelineContext {
   messageId?: string;
@@ -73,7 +74,6 @@ export class CoordinatorAgent {
 
     logger.info({ sender, groupName, bodySnippet: body.substring(0, 100), messageId, tenantId }, '[COORDINADOR] Iniciando orquestación de pedido multi-tenant');
 
-    const { supabase } = require('./supabase');
 
     // 1. Verificar idempotencia por (ID de mensaje, tenantId)
     if (messageId) {
