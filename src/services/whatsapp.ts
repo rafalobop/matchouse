@@ -5,66 +5,58 @@ import makeWASocket, {
   fetchLatestBaileysVersion
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
-import * as qrcodeTerminal from 'qrcode-terminal';
 import * as QRCode from 'qrcode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isRealEstateRequest } from '../utils/filter';
 
-const SETTINGS_PATH = path.join(process.cwd(), 'settings.json');
-
 export interface Settings {
-  selectedGroups: string[]; // Puede ser ID de grupo o nombre
+  selectedGroups: string[];
 }
 
-export function loadSettings(): Settings {
-  if (fs.existsSync(SETTINGS_PATH)) {
+function getCacheFilePath(filename: string): string {
+  const cacheDir = path.join(process.cwd(), 'cache');
+  if (!fs.existsSync(cacheDir)) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+  }
+  return path.join(cacheDir, filename);
+}
+
+export function loadSettings(tenantId: string): Settings {
+  const settingsPath = getCacheFilePath(`settings_${tenantId}.json`);
+  if (fs.existsSync(settingsPath)) {
     try {
-      return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8'));
+      return JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
     } catch (e) {
-      console.error('Error al cargar configuración:', e);
+      console.error(`Error al cargar configuración del tenant ${tenantId}:`, e);
     }
   }
   return { selectedGroups: [] };
 }
 
-export function saveSettings(settings: Settings): void {
+export function saveSettings(tenantId: string, settings: Settings): void {
+  const settingsPath = getCacheFilePath(`settings_${tenantId}.json`);
   try {
-    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf-8');
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
   } catch (e) {
-    console.error('Error al guardar configuración:', e);
+    console.error(`Error al guardar configuración del tenant ${tenantId}:`, e);
   }
 }
 
-// Caché de grupos persistente
-const GROUPS_CACHE_PATH = path.join(process.cwd(), 'groups_cache.json');
-let cachedGroups: { id: string; name: string }[] = [];
+function getGroupsCachePath(tenantId: string): string {
+  return getCacheFilePath(`groups_cache_${tenantId}.json`);
+}
 
-function loadGroupsCache() {
-  if (fs.existsSync(GROUPS_CACHE_PATH)) {
+function loadGroupsCache(tenantId: string): { id: string; name: string }[] {
+  const cachePath = getGroupsCachePath(tenantId);
+  if (fs.existsSync(cachePath)) {
     try {
-      cachedGroups = JSON.parse(fs.readFileSync(GROUPS_CACHE_PATH, 'utf-8'));
-      console.log(`[WHATSAPP] Caché de grupos cargada: ${cachedGroups.length} grupos registrados.`);
+      return JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
     } catch (e) {
-      console.error('Error al cargar caché de grupos:', e);
+      console.error(`Error al cargar caché de grupos del tenant ${tenantId}:`, e);
     }
   }
-}
-
-function saveGroupsCache() {
-  try {
-    fs.writeFileSync(GROUPS_CACHE_PATH, JSON.stringify(cachedGroups, null, 2), 'utf-8');
-  } catch (e) {
-    console.error('Error al guardar caché de grupos:', e);
-  }
-}
-
-export function registerGroupFromMessage(id: string, name: string) {
-  if (!cachedGroups.some(g => g.id === id)) {
-    cachedGroups.push({ id, name });
-    saveGroupsCache();
-    console.log(`[WHATSAPP PASIVO] Nuevo grupo registrado: "${name}" (${id})`);
-  }
+  return [];
 }
 
 export interface WhatsAppStatus {
@@ -78,49 +70,98 @@ export interface WhatsAppStatus {
   };
 }
 
-export let whatsappStatus: WhatsAppStatus = {
-  status: 'INITIALIZING'
-};
-
-let sockInstance: WASocket | null = null;
+// Mapas para almacenar sesiones y estados activos por tenant_id
+export const activeSessions = new Map<string, WASocket>();
+export const sessionStatuses = new Map<string, WhatsAppStatus>();
 let savedOptions: WhatsAppClientOptions | null = null;
 
 export interface WhatsAppClientOptions {
-  onMessage: (message: { id?: string; body: string }, senderName: string, groupName: string, senderPhone: string) => Promise<void>;
+  onMessage: (
+    message: { id?: string; body: string },
+    senderName: string,
+    groupName: string,
+    senderPhone: string,
+    tenantId: string
+  ) => Promise<void>;
 }
 
-export async function sendWhatsAppNotification(message: string): Promise<void> {
-  if (whatsappStatus.status !== 'CONNECTED' || !sockInstance || !sockInstance.user?.id) {
-    console.warn('[WHATSAPP] No se puede enviar notificación: Cliente no conectado.');
+/**
+ * Envía una notificación de match consolidada al chat propio del tenant
+ */
+export async function sendWhatsAppNotification(tenantId: string, message: string): Promise<void> {
+  const sock = activeSessions.get(tenantId);
+  const status = sessionStatuses.get(tenantId);
+  if (!sock || !sock.user?.id || status?.status !== 'CONNECTED') {
+    console.warn(`[WHATSAPP] No se puede enviar notificación para el tenant ${tenantId}: Cliente no conectado.`);
     return;
   }
   try {
-    const selfJid = sockInstance.user.id.split(':')[0] + '@s.whatsapp.net';
-    await sockInstance.sendMessage(selfJid, { text: message });
-    console.log(`[WHATSAPP] Notificación enviada al usuario conectado (${selfJid}).`);
+    const selfJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    await sock.sendMessage(selfJid, { text: message });
+    console.log(`[WHATSAPP] Notificación enviada al usuario conectado del tenant ${tenantId} (${selfJid}).`);
   } catch (error) {
-    console.error('[WHATSAPP] Error al enviar notificación de match:', error);
+    console.error(`[WHATSAPP] Error al enviar notificación de match para tenant ${tenantId}:`, error);
   }
 }
 
-export async function startWhatsAppClient(options: WhatsAppClientOptions): Promise<WASocket> {
-  console.log('Iniciando cliente de WhatsApp Baileys...');
-  loadGroupsCache();
-  whatsappStatus.status = 'INITIALIZING';
-  whatsappStatus.syncPercentage = 0;
-  whatsappStatus.syncMessage = 'Inicializando...';
+/**
+ * Envía un mensaje directo (ej. código OTP de verificación) a un teléfono
+ */
+export async function sendWhatsAppMessage(tenantId: string, toPhone: string, message: string): Promise<boolean> {
+  const sock = activeSessions.get(tenantId);
+  if (!sock || !sock.user?.id) {
+    console.warn(`[WHATSAPP] No se puede enviar mensaje OTP para tenant ${tenantId}: Socket no disponible.`);
+    return false;
+  }
+  try {
+    // Asegurar formato JID de WhatsApp
+    const cleanPhone = toPhone.replace(/\D/g, '');
+    const jid = cleanPhone.includes('@s.whatsapp.net') ? cleanPhone : `${cleanPhone}@s.whatsapp.net`;
+    await sock.sendMessage(jid, { text: message });
+    console.log(`[WHATSAPP] Mensaje directo enviado desde tenant ${tenantId} a ${jid}.`);
+    return true;
+  } catch (error) {
+    console.error(`[WHATSAPP] Error al enviar mensaje directo desde tenant ${tenantId}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Inicializa la sesión de WhatsApp de un Tenant de forma dinámica
+ */
+export async function initTenantSession(tenantId: string, options: WhatsAppClientOptions): Promise<WASocket> {
+  if (tenantId === '00000000-0000-0000-0000-000000000000') {
+    console.log('[WHATSAPP] Omitiendo inicialización de sesión para el Tenant por Defecto del sistema.');
+    return null as any;
+  }
+
+  console.log(`[WHATSAPP] Inicializando sesión dinámica para Tenant: ${tenantId}...`);
+  
+  // Límite estricto de 10 Tenants / Sesiones activas
+  if (activeSessions.size >= 10 && !activeSessions.has(tenantId)) {
+    throw new Error('Límite máximo de 10 sesiones de WhatsApp activas alcanzado.');
+  }
+
+  // Asegurar que la carpeta de sesiones exista
+  const sessionsDir = path.join(process.cwd(), 'sessions');
+  if (!fs.existsSync(sessionsDir)) {
+    fs.mkdirSync(sessionsDir, { recursive: true });
+  }
+
+  const tenantStatus: WhatsAppStatus = { status: 'INITIALIZING' };
+  sessionStatuses.set(tenantId, tenantStatus);
   savedOptions = options;
 
-  const { state, saveCreds } = await useMultiFileAuthState('./.baileys_auth');
+  const authPath = path.join(sessionsDir, `tenant_${tenantId}`);
+  const { state, saveCreds } = await useMultiFileAuthState(authPath);
 
-  // Obtener la versión de WhatsApp Web más reciente para evitar desconexiones por versión desactualizada
-  let version: any = [2, 3000, 1017531287]; // Fallback por defecto si falla la petición
+  // Obtener la versión de WhatsApp Web más reciente
+  let version: any = [2, 3000, 1017531287];
   try {
     const latest = await fetchLatestBaileysVersion();
     version = latest.version;
-    console.log(`[WHATSAPP] Usando versión de WhatsApp Web v${version.join('.')}, última versión: ${latest.isLatest}`);
   } catch (err) {
-    console.warn('[WHATSAPP] No se pudo obtener la última versión de WhatsApp Web. Usando fallback:', err);
+    console.warn('[WHATSAPP] Error al recuperar versión de Baileys, usando fallback.');
   }
 
   const sock = makeWASocket({
@@ -130,7 +171,7 @@ export async function startWhatsAppClient(options: WhatsAppClientOptions): Promi
     logger: pino({ level: 'error' }),
   });
 
-  sockInstance = sock;
+  activeSessions.set(tenantId, sock);
 
   sock.ev.on('creds.update', saveCreds);
 
@@ -138,67 +179,113 @@ export async function startWhatsAppClient(options: WhatsAppClientOptions): Promi
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      whatsappStatus.status = 'QR_RECEIVED';
-      console.log('\n=========================================');
-      console.log('ESCANEÁ EL CÓDIGO QR CON WHATSAPP PARA LOGUEARTE:');
-      console.log('=========================================\n');
-      qrcodeTerminal.generate(qr, { small: true });
-
+      tenantStatus.status = 'QR_RECEIVED';
       try {
-        whatsappStatus.qrDataUrl = await QRCode.toDataURL(qr);
+        tenantStatus.qrDataUrl = await QRCode.toDataURL(qr);
       } catch (err) {
-        console.error('Error al generar QR DataURL:', err);
+        console.error(`Error al generar QR DataURL para tenant ${tenantId}:`, err);
       }
     }
 
     if (connection === 'close') {
       const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      console.log('Conexión cerrada debido a:', lastDisconnect?.error, ', reconectando:', shouldReconnect);
+      const isQrTimeout = statusCode === 408 || lastDisconnect?.error?.message?.includes('QR refs attempts ended');
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut && !isQrTimeout;
 
-      // Solo actualizar el estado global si esta es la instancia activa
-      if (sock === sockInstance) {
-        whatsappStatus.status = 'DISCONNECTED';
-        whatsappStatus.user = undefined;
+      if (isQrTimeout) {
+        console.log(`[WHATSAPP] Expiró el tiempo límite para escanear el QR del tenant ${tenantId}. Se detiene reconexión automática.`);
+      } else {
+        console.log(`Conexión cerrada del tenant ${tenantId}. Razón:`, lastDisconnect?.error, `, reconectando:`, shouldReconnect);
+      }
+
+      if (activeSessions.get(tenantId) === sock) {
+        tenantStatus.status = 'DISCONNECTED';
+        tenantStatus.user = undefined;
       }
 
       if (shouldReconnect) {
-        if (sock === sockInstance) {
-          console.log('[WHATSAPP] Reintentando conexión en 3 segundos...');
+        if (activeSessions.get(tenantId) === sock) {
+          console.log(`[WHATSAPP] Reintentando conexión del tenant ${tenantId} en 5 segundos...`);
           setTimeout(() => {
-            if (sock === sockInstance) {
-              startWhatsAppClient(options);
-            } else {
-              console.log('[WHATSAPP] Ignorando reconexión programada: la instancia de socket ya no es la activa.');
+            if (activeSessions.get(tenantId) === sock) {
+              initTenantSession(tenantId, options).catch(err => {
+                console.error(`Error al reconectar tenant ${tenantId}:`, err);
+              });
             }
-          }, 3000);
-        } else {
-          console.log('[WHATSAPP] Ignorando reconexión: la instancia de socket cerrada no es la activa.');
+          }, 5000);
         }
       } else {
-        if (sock === sockInstance) {
-          sockInstance = null;
+        if (activeSessions.get(tenantId) === sock) {
+          activeSessions.delete(tenantId);
+          sessionStatuses.delete(tenantId);
         }
       }
     } else if (connection === 'open') {
-      if (sock !== sockInstance) {
-        console.log('[WHATSAPP] Conexión abierta de una instancia no activa. Cerrándola.');
-        try { sock.end(undefined); } catch(e) {}
+      if (activeSessions.get(tenantId) !== sock) {
+        console.log(`[WHATSAPP] Conexión abierta detectada de socket inactivo para tenant ${tenantId}. Cerrándola.`);
+        try { sock.end(undefined); } catch (e) {}
         return;
       }
-      whatsappStatus.status = 'CONNECTED';
-      whatsappStatus.qrDataUrl = undefined;
+
+      tenantStatus.status = 'CONNECTED';
+      tenantStatus.qrDataUrl = undefined;
 
       const userJid = sock.user?.id;
       const userNumber = userJid ? userJid.split(':')[0] : 'Desconocido';
-      whatsappStatus.user = {
+      tenantStatus.user = {
         name: sock.user?.name || 'Usuario',
         number: userNumber
       };
 
-      console.log('\n=========================================');
-      console.log(`¡CLIENTE DE WHATSAPP CONECTADO COMO: ${whatsappStatus.user.name}!`);
-      console.log('=========================================\n');
+      console.log(`\n=========================================`);
+      console.log(`¡TENANT ${tenantId} CONECTADO COMO: ${tenantStatus.user.name} (${userNumber})!`);
+      console.log(`=========================================\n`);
+
+      // Registrar o sincronizar el Tenant en Supabase
+      const { supabase } = require('./supabase');
+      try {
+        const jidFormatted = userNumber + '@s.whatsapp.net';
+        
+        // Buscar si ya existe un Tenant registrado con este número de WhatsApp
+        const { data: existingTenant, error: selectErr } = await supabase
+          .from('Tenant')
+          .select('id')
+          .eq('phone_number', jidFormatted)
+          .maybeSingle();
+
+        if (selectErr) throw selectErr;
+
+        if (existingTenant && existingTenant.id !== tenantId) {
+          // El número de teléfono ya está registrado bajo otro tenantId (por ejemplo de un reinicio anterior).
+          // Re-asociamos la sesión activa en memoria al ID consolidado de la base de datos para evitar duplicados.
+          console.log(`[WHATSAPP] Mapeando tenant provisorio ${tenantId} -> consolidado ${existingTenant.id}`);
+          activeSessions.delete(tenantId);
+          sessionStatuses.delete(tenantId);
+          
+          activeSessions.set(existingTenant.id, sock);
+          sessionStatuses.set(existingTenant.id, tenantStatus);
+          
+          await supabase
+            .from('Tenant')
+            .update({
+              name: sock.user?.name || 'Inmobiliaria',
+              last_active: new Date().toISOString()
+            })
+            .eq('id', existingTenant.id);
+        } else {
+          // Es un tenant nuevo o los IDs coinciden
+          await supabase
+            .from('Tenant')
+            .upsert({
+              id: tenantId,
+              name: sock.user?.name || 'Inmobiliaria',
+              phone_number: jidFormatted,
+              last_active: new Date().toISOString()
+            });
+        }
+      } catch (dbErr) {
+        console.error(`[WHATSAPP - SUPABASE] Error al registrar sesión del tenant ${tenantId}:`, dbErr);
+      }
     }
   });
 
@@ -214,7 +301,6 @@ export async function startWhatsAppClient(options: WhatsAppClientOptions): Promi
 
         if (!isGroup) continue;
 
-        // Extraer cuerpo del mensaje
         const body = msg.message?.conversation ||
           msg.message?.extendedTextMessage?.text ||
           msg.message?.imageMessage?.caption ||
@@ -222,54 +308,58 @@ export async function startWhatsAppClient(options: WhatsAppClientOptions): Promi
 
         if (!body) continue;
 
-        // 1. Filtrado local por palabras clave comercial/pedido antes de procesar o loguear nada
+        // Pre-filtro Regex local
         if (!isRealEstateRequest(body)) continue;
 
-        // Obtener nombre del grupo (desde caché o fetching)
+        // Cargar nombres de grupos en caché del Tenant
         let chatName = 'Chat Grupo';
-        const cached = cachedGroups.find(g => g.id === from);
+        const tenantGroups = loadGroupsCache(tenantId);
+        const cached = tenantGroups.find(g => g.id === from);
+
         if (cached) {
           chatName = cached.name;
         } else {
           try {
             const metadata = await sock.groupMetadata(from);
             chatName = metadata.subject || 'Chat Grupo';
-            registerGroupFromMessage(from, chatName);
+            
+            // Guardar en caché del tenant
+            if (!tenantGroups.some(g => g.id === from)) {
+              tenantGroups.push({ id: from, name: chatName });
+              const cachePath = getGroupsCachePath(tenantId);
+              fs.writeFileSync(cachePath, JSON.stringify(tenantGroups, null, 2), 'utf-8');
+            }
           } catch (e) {
-            console.warn('[WHATSAPP] No se pudo obtener metadatos del grupo en upsert:', e);
+            console.warn(`[WHATSAPP] No se pudo obtener metadatos del grupo en upsert del tenant ${tenantId}:`, e);
           }
         }
 
-        // Filtrar por grupos seleccionados dinámicamente en settings.json
-        const settings = loadSettings();
+        // Filtrar por grupos seleccionados por el Tenant
+        const settings = loadSettings(tenantId);
         const isGroupSelected = settings.selectedGroups.some(groupId =>
           groupId === from ||
           groupId.toLowerCase() === chatName.toLowerCase()
         );
 
         if (!isGroupSelected) continue;
-        // Obtener el remitente (con soporte robusto para participantAlt de Baileys)
+
         const participantJid = (key as any).participantAlt || key.participant || (msg as any).participant || '';
-        
         let number = '';
         if (participantJid && !participantJid.endsWith('@lid')) {
           number = participantJid.split('@')[0];
         } else {
-          // Extraer número del creador/identificador del grupo desde key.remoteJid (e.g. 5493814590816-1580358193@g.us)
           number = from.split('@')[0].split('-')[0];
         }
         
         const senderName = msg.pushName || number || 'Remitente Anónimo';
         const senderContact = `@${number} (${senderName})`;
 
-        // LOG: Mostrar únicamente mensajes que son pedidos comerciales de interés
-        console.log(`[WhatsApp - Pedido Comercial] De: ${senderName} | Chat: "${chatName}"`);
+        console.log(`[WhatsApp - Tenant ${tenantId}] De: ${senderName} | Chat: "${chatName}"`);
         console.log(` > Mensaje: "${body.substring(0, 120)}${body.length > 120 ? '...' : ''}"`);
 
-        // Delegar al orquestador del pipeline
-        await options.onMessage({ id: msg.key.id || undefined, body }, senderContact, chatName, number);
+        await options.onMessage({ id: msg.key.id || undefined, body }, senderContact, chatName, number, tenantId);
       } catch (error) {
-        console.error('Error al procesar mensaje entrante de WhatsApp:', error);
+        console.error(`Error al procesar mensaje entrante de WhatsApp para tenant ${tenantId}:`, error);
       }
     }
   });
@@ -278,89 +368,69 @@ export async function startWhatsAppClient(options: WhatsAppClientOptions): Promi
 }
 
 /**
- * Limpia la configuración de grupos seleccionados y la caché en memoria y disco
+ * Cierra la sesión activa de un Tenant en memoria
  */
-export function clearSessionLocalData(): void {
-  cachedGroups = [];
-  saveSettings({ selectedGroups: [] });
-  try {
-    if (fs.existsSync(GROUPS_CACHE_PATH)) {
-      fs.unlinkSync(GROUPS_CACHE_PATH);
-      console.log('[WHATSAPP] Caché de grupos eliminada de disco.');
-    }
-  } catch (e) {
-    console.error('[WHATSAPP] Error al borrar archivo de caché de grupos:', e);
-  }
-}
-
-/**
- * Destruye la sesión actual de WhatsApp, limpia archivos temporales y reinicia el cliente
- */
-export async function restartWhatsAppClient(): Promise<void> {
-  console.log('[WHATSAPP] Iniciando proceso de reinicio forzado...');
-
-  if (sockInstance) {
-    const oldSock = sockInstance;
-    sockInstance = null; // Evitar que el handler 'close' intente reconectar
+export async function logoutTenantSession(tenantId: string): Promise<void> {
+  const sock = activeSessions.get(tenantId);
+  if (sock) {
+    activeSessions.delete(tenantId);
+    sessionStatuses.delete(tenantId);
     try {
-      oldSock.end(new Error('Reinicio manual solicitado'));
-      console.log('[WHATSAPP] Instancia anterior finalizada.');
+      sock.end(undefined);
+      console.log(`[WHATSAPP] Conexión de WhatsApp cerrada para tenant ${tenantId}.`);
     } catch (error) {
-      console.error('[WHATSAPP] Error al finalizar instancia de WhatsApp:', error);
+      console.error(`[WHATSAPP] Error al cerrar conexión del tenant ${tenantId}:`, error);
     }
   }
 
-  // Esperar un momento a que Windows libere los archivos
-  await new Promise(resolve => setTimeout(resolve, 2000));
-
-  const authDir = path.join(process.cwd(), '.baileys_auth');
+  // Eliminar su caché y settings
+  const authDir = path.join(process.cwd(), 'sessions', `tenant_${tenantId}`);
   if (fs.existsSync(authDir)) {
     try {
       fs.rmSync(authDir, { recursive: true, force: true });
-      console.log('[WHATSAPP] Carpeta de sesión eliminada para forzar re-logueo.');
     } catch (err) {
-      console.warn('[WHATSAPP] No se pudo borrar la carpeta de sesión (archivos bloqueados). Se continuará igualmente:', err);
+      console.warn(`[WHATSAPP] No se pudo borrar archivos de sesión de tenant ${tenantId}:`, err);
     }
-  }
-
-  if (savedOptions) {
-    await startWhatsAppClient(savedOptions);
-  } else {
-    console.error('[WHATSAPP] No se puede reiniciar: faltan opciones iniciales de configuración.');
   }
 }
 
 /**
- * Retorna todos los chats grupales del cliente actual
+ * Recupera todos los chats grupales del tenant actual
  */
-export async function getActiveGroups(): Promise<{ id: string; name: string }[]> {
-  if (whatsappStatus.status !== 'CONNECTED' || !sockInstance) {
-    return cachedGroups;
+export async function getActiveGroups(tenantId: string): Promise<{ id: string; name: string }[]> {
+  const sock = activeSessions.get(tenantId);
+  const status = sessionStatuses.get(tenantId);
+  const cached = loadGroupsCache(tenantId);
+
+  if (!sock || status?.status !== 'CONNECTED') {
+    return cached;
   }
 
   try {
-    console.log('[WHATSAPP] Recuperando lista de grupos en los que participa el cliente...');
-    const groupsMetadata = await sockInstance.groupFetchAllParticipating();
+    console.log(`[WHATSAPP] Recuperando grupos participantes para tenant ${tenantId}...`);
+    const groupsMetadata = await sock.groupFetchAllParticipating();
     const groups = Object.keys(groupsMetadata).map(jid => ({
       id: jid,
       name: groupsMetadata[jid].subject || 'Grupo sin nombre'
     }));
 
-    // Actualizar caché de grupos
+    // Sincronizar caché
+    const updatedCache = [...cached];
     for (const group of groups) {
-      if (!cachedGroups.some(g => g.id === group.id)) {
-        cachedGroups.push(group);
+      const idx = updatedCache.findIndex(g => g.id === group.id);
+      if (idx === -1) {
+        updatedCache.push(group);
       } else {
-        // Actualizar el nombre si cambió
-        const index = cachedGroups.findIndex(g => g.id === group.id);
-        cachedGroups[index].name = group.name;
+        updatedCache[idx].name = group.name;
       }
     }
-    saveGroupsCache();
+
+    const cachePath = getGroupsCachePath(tenantId);
+    fs.writeFileSync(cachePath, JSON.stringify(updatedCache, null, 2), 'utf-8');
 
     return groups;
   } catch (error) {
-    console.error('[WHATSAPP] Error al obtener grupos de WhatsApp:', error);
-    return cachedGroups;
+    console.error(`[WHATSAPP] Error al obtener grupos de WhatsApp para tenant ${tenantId}:`, error);
+    return cached;
   }
 }

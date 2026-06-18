@@ -1,0 +1,11 @@
+{
+  "id": "feat-0008",
+  "name": "Evolución Multi-Tenant, Seguridad Avanzada y Notificación Consolidada",
+  "status": "COMPLETED",
+  "description": "Habilitar soporte multi-tenant aislado para 10 bots, autenticación OTP por IP y notificaciones en background anti-ban.",
+  "created_at": "2026-06-16T10:00:00-03:00",
+  "updated_at": "2026-06-17T14:30:00-03:00",
+  "priority": "HIGH",
+  "assignee": "Antigravity",
+  "dependencies": ["feat-0007"]
+}

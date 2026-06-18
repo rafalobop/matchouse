@@ -1,11 +1,26 @@
-import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../services/gemini';
+import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../services/ai';
 import { Property } from '../services/sheets';
 import { zones } from './constants/zones';
 
 export interface MatchResult {
   isMatch: boolean;
-  score: number; // 0 a 100 indicando qué tan bueno es el match
+  score: number;
   reasons: string[];
+}
+
+export interface MatchingResult {
+  isMatch: boolean;
+  scoreDeduction: number;
+  reason?: string;
+}
+
+export interface IMatchingStrategy {
+  name: string;
+  evaluate(
+    request: ExtractedRealEstateRequest,
+    property: Property,
+    zoneIntent?: ZoneIntentRequest
+  ): MatchingResult;
 }
 
 const COTIZACION_DOLAR_BLUE = 1200;
@@ -20,9 +35,9 @@ function isPointInPolygon(latitude: number, longitude: number, polygon: number[]
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
     const xi = polygon[i][0], yi = polygon[i][1];
     const xj = polygon[j][0], yj = polygon[j][1];
-    
+
     const intersect = ((yi > y) !== (yj > y))
-        && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+      && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
     if (intersect) inside = !inside;
   }
   return inside;
@@ -32,7 +47,6 @@ function isPointInPolygon(latitude: number, longitude: number, polygon: number[]
  * Clasifica de manera local el domicilio y características de una propiedad en un zona_id
  */
 export function classifyPropertyZoneId(property: Property): string {
-  // 1. Si la propiedad tiene coordenadas, verificar si entra en el polígono de alguna zona
   if (property.latitud !== undefined && property.longitud !== undefined && property.latitud !== 0 && property.longitud !== 0) {
     for (const [zoneId, zoneData] of Object.entries(zones)) {
       if (zoneData.coordinates && isPointInPolygon(property.latitud, property.longitud, zoneData.coordinates)) {
@@ -41,7 +55,6 @@ export function classifyPropertyZoneId(property: Property): string {
     }
   }
 
-  // 2. Fallback: clasificar por palabras clave en dirección/descripción
   const text = `${property.domicilio} ${property.caracteristicas} ${property.sheetName} ${property.zona}`.toLowerCase();
 
   if (text.includes('mate de luna') || text.includes('parque avellaneda')) {
@@ -77,7 +90,6 @@ export function classifyPropertyZoneId(property: Property): string {
     return 'BARRIO_NORTE';
   }
 
-  // Calles céntricas y de Barrio Norte comunes en SMT
   const centroKeywords = [
     'santiago',
     'corrientes',
@@ -108,7 +120,7 @@ export function classifyPropertyZoneId(property: Property): string {
  */
 export function isPropertyInCountry(property: Property): boolean {
   const text = `${property.domicilio} ${property.caracteristicas} ${property.pisoLote} ${property.sheetName}`.toLowerCase();
-  
+
   const countryKeywords = [
     'country',
     'barrio cerrado',
@@ -117,17 +129,253 @@ export function isPropertyInCountry(property: Property): boolean {
     'b° privado',
     'club de campo',
     'las yungas',
-    'san patricio',
     'las cañas',
     'la arboleda',
     'alto verde',
     'valle escondido',
     'cerro azul',
-    'lomas de tafi' // a veces lomas es barrio abierto pero los countries sí
+    'lomas de tafi'
   ];
 
   return countryKeywords.some(keyword => text.includes(keyword));
 }
+
+// --- IMPLEMENTACIÓN DE ESTRATEGIAS DE MATCHING ---
+
+export class OperationMatchingStrategy implements IMatchingStrategy {
+  readonly name = 'Filtro de Operación';
+
+  evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
+    const operacionRequest = (zoneIntent && zoneIntent.operacion !== 'DESCONOCIDO')
+      ? (zoneIntent.operacion === 'COMPRA' ? 'venta' : 'alquiler')
+      : request.operacion;
+
+    if (operacionRequest !== 'desconocido' && operacionRequest !== property.operacion) {
+      return { isMatch: false, scoreDeduction: 0, reason: 'Diferente tipo de operación' };
+    }
+    return { isMatch: true, scoreDeduction: 0 };
+  }
+}
+
+export class PropertyTypeMatchingStrategy implements IMatchingStrategy {
+  readonly name = 'Filtro de Tipo de Propiedad';
+
+  evaluate(request: ExtractedRealEstateRequest, property: Property): MatchingResult {
+    if (request.tipo_propiedad !== 'otro' && request.tipo_propiedad !== property.tipo_propiedad) {
+      return { isMatch: false, scoreDeduction: 0, reason: 'Diferente tipo de propiedad' };
+    }
+    return { isMatch: true, scoreDeduction: 0 };
+  }
+}
+
+export class CountryMatchingStrategy implements IMatchingStrategy {
+  readonly name = 'Filtro de Country';
+
+  evaluate(request: ExtractedRealEstateRequest, property: Property): MatchingResult {
+    if (request.country && request.country !== 'indiferente') {
+      const propInCountry = isPropertyInCountry(property);
+      if (request.country === 'si' && !propInCountry) {
+        return { isMatch: false, scoreDeduction: 0, reason: 'El pedido requiere country/barrio cerrado y la propiedad no está en uno.' };
+      }
+      if (request.country === 'no' && propInCountry) {
+        return { isMatch: false, scoreDeduction: 0, reason: 'El pedido excluye countries/barrios cerrados y la propiedad está en uno.' };
+      }
+      return {
+        isMatch: true,
+        scoreDeduction: 0,
+        reason: request.country === 'si'
+          ? 'Propiedad en country/barrio cerrado como fue requerido'
+          : 'Propiedad fuera de country/barrio cerrado como fue requerido'
+      };
+    }
+    return { isMatch: true, scoreDeduction: 0 };
+  }
+}
+
+export class ZoneMatchingStrategy implements IMatchingStrategy {
+  readonly name = 'Filtro de Zona';
+
+  evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
+    // 1. Validar por el Agente 2 (Geolocalización Inexacta / Intenciones) si existe
+    if (zoneIntent && zoneIntent.zona_id !== 'DESCONOCIDO') {
+      const propZoneId = classifyPropertyZoneId(property);
+      if (propZoneId !== zoneIntent.zona_id) {
+        return {
+          isMatch: false,
+          scoreDeduction: 0,
+          reason: `Zona de la propiedad (${propZoneId}) no coincide con la zona del pedido (${zoneIntent.zona_id})`
+        };
+      }
+      return { isMatch: true, scoreDeduction: 0, reason: `Coincidencia de Zona Geográfica: ${zoneIntent.zona_id}` };
+    }
+
+    // 2. Zona de Ubicación General (Si no se usó el Agente 2 para geo-filtrado específico)
+    if (request.zonas.length > 0) {
+      const zoneMatch = request.zonas.some(zonaReq =>
+        zonaReq.toLowerCase() === property.zona.toLowerCase()
+      );
+      if (!zoneMatch) {
+        return {
+          isMatch: false,
+          scoreDeduction: 0,
+          reason: `Zona de la propiedad (${property.zona}) no solicitada en: ${request.zonas.join(', ')}`
+        };
+      }
+    }
+
+    return { isMatch: true, scoreDeduction: 0 };
+  }
+}
+
+export class BedroomsMatchingStrategy implements IMatchingStrategy {
+  readonly name = 'Filtro de Dormitorios';
+
+  evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
+    const bedroomsRequired = (zoneIntent && zoneIntent.dormitorios_min !== null)
+      ? zoneIntent.dormitorios_min
+      : request.dormitorios;
+
+    if (bedroomsRequired !== null) {
+      if (property.dormitorios < bedroomsRequired) {
+        return {
+          isMatch: false,
+          scoreDeduction: 0,
+          reason: `Faltan dormitorios (pide mínimo ${bedroomsRequired}, tiene ${property.dormitorios})`
+        };
+      }
+      if (property.dormitorios > bedroomsRequired) {
+        return {
+          isMatch: true,
+          scoreDeduction: 10,
+          reason: `Tiene más dormitorios de lo requerido (pide ${bedroomsRequired}, tiene ${property.dormitorios})`
+        };
+      }
+    }
+    return { isMatch: true, scoreDeduction: 0 };
+  }
+}
+
+export class BudgetMatchingStrategy implements IMatchingStrategy {
+  readonly name = 'Filtro de Presupuesto';
+
+  evaluate(request: ExtractedRealEstateRequest, property: Property): MatchingResult {
+    if (request.presupuesto_max !== null && property.precio > 0) {
+      let propertyPriceInReqCurrency = property.precio;
+      let conversionReason = '';
+
+      if (request.moneda !== 'desconocido' && request.moneda !== property.moneda) {
+        if (request.moneda === 'USD' && property.moneda === 'ARS') {
+          propertyPriceInReqCurrency = property.precio / COTIZACION_DOLAR_BLUE;
+          conversionReason = `Conversión de moneda: propiedad en ARS convertida a USD usando tasa ref $${COTIZACION_DOLAR_BLUE}`;
+        } else if (request.moneda === 'ARS' && property.moneda === 'USD') {
+          propertyPriceInReqCurrency = property.precio * COTIZACION_DOLAR_BLUE;
+          conversionReason = `Conversión de moneda: propiedad en USD convertida a ARS usando tasa ref $${COTIZACION_DOLAR_BLUE}`;
+        }
+      }
+
+      const toleranceLimit = request.presupuesto_max * 1.05;
+      if (propertyPriceInReqCurrency > toleranceLimit) {
+        return {
+          isMatch: false,
+          scoreDeduction: 0,
+          reason: `El precio (${property.moneda} ${property.precio}) excede el presupuesto máximo (${request.moneda} ${request.presupuesto_max})`
+        };
+      }
+
+      if (propertyPriceInReqCurrency > request.presupuesto_max) {
+        return {
+          isMatch: true,
+          scoreDeduction: 10,
+          reason: [
+            conversionReason,
+            'El precio excede levemente el presupuesto (dentro del 5% de margen de negociación)'
+          ].filter(Boolean).join('. ')
+        };
+      }
+
+      if (conversionReason) {
+        return { isMatch: true, scoreDeduction: 0, reason: conversionReason };
+      }
+    }
+    return { isMatch: true, scoreDeduction: 0 };
+  }
+}
+
+export class FeaturesMatchingStrategy implements IMatchingStrategy {
+  readonly name = 'Filtro de Características';
+
+  evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
+    const requiredFeatures = Array.from(new Set([
+      ...request.caracteristicas_clave,
+      ...(zoneIntent?.caracteristicas_claves || [])
+    ]));
+
+    if (requiredFeatures.length > 0 && property.caracteristicas) {
+      const descLower = property.caracteristicas.toLowerCase();
+      const matchingFeatures: string[] = [];
+      const missingFeatures: string[] = [];
+
+      requiredFeatures.forEach(feat => {
+        let matches = false;
+        const featLower = feat.toLowerCase();
+        if (featLower === 'cochera') {
+          matches = descLower.includes('cochera') || descLower.includes('coch') || descLower.includes('garaje') || descLower.includes('garage');
+        } else if (featLower === 'pileta') {
+          matches = descLower.includes('pileta') || descLower.includes('piscina') || descLower.includes('pisc');
+        } else if (featLower === 'jardin') {
+          matches = descLower.includes('jard') || descLower.includes('patio') || descLower.includes('verde');
+        } else {
+          matches = descLower.includes(featLower);
+        }
+
+        if (matches) {
+          matchingFeatures.push(feat);
+        } else {
+          missingFeatures.push(feat);
+        }
+      });
+
+      let scoreDeduction = 0;
+      const reasons: string[] = [];
+
+      if (matchingFeatures.length > 0) {
+        reasons.push(`Características que coinciden: ${matchingFeatures.join(', ')}`);
+        const ratio = matchingFeatures.length / requiredFeatures.length;
+        // La fórmula original era: score = Math.round(score * (0.8 + 0.2 * ratio))
+        // Esto equivale a una deducción proporcional sobre 100 puntos.
+        // Si score era 100: deduction = 100 - Math.round(100 * (0.8 + 0.2 * ratio))
+        scoreDeduction += (100 - Math.round(100 * (0.8 + 0.2 * ratio)));
+      } else {
+        // Si no coincide ninguna, score * 0.8
+        scoreDeduction += 20;
+      }
+
+      if (missingFeatures.length > 0) {
+        reasons.push(`Características faltantes: ${missingFeatures.join(', ')}`);
+        scoreDeduction += (missingFeatures.length * 5);
+      }
+
+      return {
+        isMatch: true,
+        scoreDeduction,
+        reason: reasons.join('. ')
+      };
+    }
+
+    return { isMatch: true, scoreDeduction: 0 };
+  }
+}
+
+// Registramos todas las estrategias que se ejecutarán en orden secuencial
+const matchingStrategies: IMatchingStrategy[] = [
+  new OperationMatchingStrategy(),
+  new PropertyTypeMatchingStrategy(),
+  new CountryMatchingStrategy(),
+  new ZoneMatchingStrategy(),
+  new BedroomsMatchingStrategy(),
+  new BudgetMatchingStrategy(),
+  new FeaturesMatchingStrategy()
+];
 
 /**
  * Compara un pedido de cliente con una propiedad de la cartera
@@ -140,147 +388,28 @@ export function checkMatch(
   const reasons: string[] = [];
   let score = 100;
 
-  // 1. Validar por el Agente 2 (Geolocalización Inexacta / Intenciones) si existe
-  if (zoneIntent && zoneIntent.zona_id !== 'DESCONOCIDO') {
-    const propZoneId = classifyPropertyZoneId(property);
-    if (propZoneId !== zoneIntent.zona_id) {
+  for (const strategy of matchingStrategies) {
+    const result = strategy.evaluate(request, property, zoneIntent);
+
+    if (!result.isMatch) {
       return {
         isMatch: false,
         score: 0,
-        reasons: [`Zona de la propiedad (${propZoneId}) no coincide con la zona del pedido (${zoneIntent.zona_id})`]
-      };
-    }
-    reasons.push(`Coincidencia de Zona Geográfica: ${zoneIntent.zona_id}`);
-  }
-
-  // 2. Filtrar por Operación (Venta / Alquiler)
-  const operacionRequest = (zoneIntent && zoneIntent.operacion !== 'DESCONOCIDO')
-    ? (zoneIntent.operacion === 'COMPRA' ? 'venta' : 'alquiler')
-    : request.operacion;
-
-  if (operacionRequest !== 'desconocido' && operacionRequest !== property.operacion) {
-    return { isMatch: false, score: 0, reasons: ['Diferente tipo de operación'] };
-  }
-
-  // 3. Tipo de Propiedad
-  if (request.tipo_propiedad !== 'otro' && request.tipo_propiedad !== property.tipo_propiedad) {
-    return { isMatch: false, score: 0, reasons: ['Diferente tipo de propiedad'] };
-  }
-
-  // 3.5. Filtrado por Country / Barrio Cerrado
-  if (request.country && request.country !== 'indiferente') {
-    const propInCountry = isPropertyInCountry(property);
-    if (request.country === 'si' && !propInCountry) {
-      return { isMatch: false, score: 0, reasons: ['El pedido requiere country/barrio cerrado y la propiedad no está en uno.'] };
-    }
-    if (request.country === 'no' && propInCountry) {
-      return { isMatch: false, score: 0, reasons: ['El pedido excluye countries/barrios cerrados y la propiedad está en uno.'] };
-    }
-    reasons.push(request.country === 'si' ? 'Propiedad en country/barrio cerrado como fue requerido' : 'Propiedad fuera de country/barrio cerrado como fue requerido');
-  }
-
-  // 4. Zona de Ubicación General (Si no se usó el Agente 2 para geo-filtrado específico)
-  if ((!zoneIntent || zoneIntent.zona_id === 'DESCONOCIDO') && request.zonas.length > 0) {
-    const zoneMatch = request.zonas.some(zonaReq =>
-      zonaReq.toLowerCase() === property.zona.toLowerCase()
-    );
-    if (!zoneMatch) {
-      return { isMatch: false, score: 0, reasons: [`Zona de la propiedad (${property.zona}) no solicitada en: ${request.zonas.join(', ')}`] };
-    }
-  }
-
-  // 5. Cantidad de Dormitorios (Validando mínimos del Agente 2 o valor del Agente 1)
-  const dormitoriosRequeridos = (zoneIntent && zoneIntent.dormitorios_min !== null)
-    ? zoneIntent.dormitorios_min
-    : request.dormitorios;
-
-  if (dormitoriosRequeridos !== null) {
-    if (property.dormitorios < dormitoriosRequeridos) {
-      return { isMatch: false, score: 0, reasons: [`Faltan dormitorios (pide mínimo ${dormitoriosRequeridos}, tiene ${property.dormitorios})`] };
-    }
-    if (property.dormitorios > dormitoriosRequeridos) {
-      score -= 10; // Penalización menor por tener más dormitorios de lo pedido
-      reasons.push(`Tiene más dormitorios de lo requerido (pide ${dormitoriosRequeridos}, tiene ${property.dormitorios})`);
-    }
-  }
-
-  // 6. Presupuesto Máximo y Precio
-  if (request.presupuesto_max !== null && property.precio > 0) {
-    let precioPropiedadEnMonedaReq = property.precio;
-
-    if (request.moneda !== 'desconocido' && request.moneda !== property.moneda) {
-      if (request.moneda === 'USD' && property.moneda === 'ARS') {
-        precioPropiedadEnMonedaReq = property.precio / COTIZACION_DOLAR_BLUE;
-        reasons.push(`Conversión de moneda: propiedad en ARS convertida a USD usando tasa ref $${COTIZACION_DOLAR_BLUE}`);
-      } else if (request.moneda === 'ARS' && property.moneda === 'USD') {
-        precioPropiedadEnMonedaReq = property.precio * COTIZACION_DOLAR_BLUE;
-        reasons.push(`Conversión de moneda: propiedad en USD convertida a ARS usando tasa ref $${COTIZACION_DOLAR_BLUE}`);
-      }
-    }
-
-    const margenTolerancia = request.presupuesto_max * 1.05;
-    if (precioPropiedadEnMonedaReq > margenTolerancia) {
-      return {
-        isMatch: false,
-        score: 0,
-        reasons: [`El precio (${property.moneda} ${property.precio}) excede el presupuesto máximo (${request.moneda} ${request.presupuesto_max})`]
+        reasons: [result.reason || `Descartado por ${strategy.name}`]
       };
     }
 
-    if (precioPropiedadEnMonedaReq > request.presupuesto_max) {
-      score -= 10;
-      reasons.push(`El precio excede levemente el presupuesto (dentro del 5% de margen de negociación)`);
+    if (result.scoreDeduction > 0) {
+      score -= result.scoreDeduction;
+    }
+    if (result.reason) {
+      reasons.push(result.reason);
     }
   }
-
-  // 7. Características Clave (Combinando listados de ambos agentes)
-  const featuresRequeridas = Array.from(new Set([
-    ...request.caracteristicas_clave,
-    ...(zoneIntent?.caracteristicas_claves || [])
-  ]));
-
-  if (featuresRequeridas.length > 0 && property.caracteristicas) {
-    const descLower = property.caracteristicas.toLowerCase();
-    const matchingFeatures: string[] = [];
-    const missingFeatures: string[] = [];
-
-    featuresRequeridas.forEach(feat => {
-      let matches = false;
-      const featLower = feat.toLowerCase();
-      if (featLower === 'cochera') {
-        matches = descLower.includes('cochera') || descLower.includes('coch') || descLower.includes('garaje') || descLower.includes('garage');
-      } else if (featLower === 'pileta') {
-        matches = descLower.includes('pileta') || descLower.includes('piscina') || descLower.includes('pisc');
-      } else if (featLower === 'jardin') {
-        matches = descLower.includes('jard') || descLower.includes('patio') || descLower.includes('verde');
-      } else {
-        matches = descLower.includes(featLower);
-      }
-
-      if (matches) {
-        matchingFeatures.push(feat);
-      } else {
-        missingFeatures.push(feat);
-      }
-    });
-
-    if (matchingFeatures.length > 0) {
-      reasons.push(`Características que coinciden: ${matchingFeatures.join(', ')}`);
-      const ratio = matchingFeatures.length / featuresRequeridas.length;
-      score = Math.round(score * (0.8 + 0.2 * ratio));
-    }
-
-    if (missingFeatures.length > 0) {
-      reasons.push(`Características faltantes: ${missingFeatures.join(', ')}`);
-      score -= (missingFeatures.length * 5);
-    }
-  }
-
-  score = Math.max(0, Math.min(100, score));
 
   return {
     isMatch: true,
-    score,
+    score: Math.max(0, Math.min(100, score)),
     reasons
   };
 }

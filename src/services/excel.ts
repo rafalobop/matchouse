@@ -3,33 +3,41 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Property, detectTipoPropiedad } from './sheets';
 
-const CATALOG_PATH = path.join(process.cwd(), 'catalog.json');
+function getCatalogPath(tenantId: string): string {
+  const cacheDir = path.join(process.cwd(), 'cache');
+  if (!fs.existsSync(cacheDir)) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+  }
+  return path.join(cacheDir, `catalog_${tenantId}.json`);
+}
 
 /**
- * Guarda el catálogo de propiedades en un archivo JSON local
+ * Guarda el catálogo de propiedades en un archivo JSON local por tenant
  */
-export function saveCatalogToDisk(catalog: Property[]): void {
+export function saveCatalogToDisk(catalog: Property[], tenantId: string): void {
   try {
-    fs.writeFileSync(CATALOG_PATH, JSON.stringify(catalog, null, 2), 'utf-8');
-    console.log(`[EXCEL] Catálogo guardado en disco (${catalog.length} propiedades).`);
+    const catalogPath = getCatalogPath(tenantId);
+    fs.writeFileSync(catalogPath, JSON.stringify(catalog, null, 2), 'utf-8');
+    console.log(`[EXCEL] Catálogo guardado en disco para tenant ${tenantId} (${catalog.length} propiedades).`);
   } catch (error) {
-    console.error('[EXCEL] Error al guardar catálogo en disco:', error);
+    console.error(`[EXCEL] Error al guardar catálogo en disco para tenant ${tenantId}:`, error);
   }
 }
 
 /**
- * Carga el catálogo de propiedades desde el archivo JSON local si existe
+ * Carga el catálogo de propiedades desde el archivo JSON local del tenant si existe
  */
-export function loadCatalogFromDisk(): Property[] {
+export function loadCatalogFromDisk(tenantId: string): Property[] {
   try {
-    if (fs.existsSync(CATALOG_PATH)) {
-      const data = fs.readFileSync(CATALOG_PATH, 'utf-8');
+    const catalogPath = getCatalogPath(tenantId);
+    if (fs.existsSync(catalogPath)) {
+      const data = fs.readFileSync(catalogPath, 'utf-8');
       const catalog = JSON.parse(data) as Property[];
-      console.log(`[EXCEL] Catálogo cargado desde disco (${catalog.length} propiedades).`);
+      console.log(`[EXCEL] Catálogo cargado desde disco para tenant ${tenantId} (${catalog.length} propiedades).`);
       return catalog;
     }
   } catch (error) {
-    console.error('[EXCEL] Error al cargar catálogo desde disco:', error);
+    console.error(`[EXCEL] Error al cargar catálogo desde disco para tenant ${tenantId}:`, error);
   }
   return [];
 }

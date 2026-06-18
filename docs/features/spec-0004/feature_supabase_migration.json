@@ -1,0 +1,11 @@
+{
+  "id": "feat-0004",
+  "name": "Migración de Prisma a Supabase JS SDK",
+  "status": "COMPLETED",
+  "description": "Reemplazar Prisma ORM por el SDK oficial de Supabase para evitar limitaciones de red de Railway.",
+  "created_at": "2026-06-13T10:00:00-03:00",
+  "updated_at": "2026-06-13T15:00:00-03:00",
+  "priority": "HIGH",
+  "assignee": "Antigravity",
+  "dependencies": ["feat-0001"]
+}
