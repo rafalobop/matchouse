@@ -178,12 +178,35 @@ class OpenAIStrategy implements AIStrategy {
       model: 'gpt-4o-mini',
       messages: [
         { role: 'system', content: systemInstruction },
-        { role: 'user', content: `Analiza el mensaje de WhatsApp provisto estrictamente dentro de las etiquetas <USER_CHAT> y </USER_CHAT>:
+        {
+          role: 'user', content: `Analiza el mensaje de WhatsApp provisto estrictamente dentro de las etiquetas <USER_CHAT> y </USER_CHAT>:
 <USER_CHAT>
 ${messageTexto}
-</USER_CHAT>` }
+</USER_CHAT>`
+        }
       ],
-      response_format: { type: 'json_object' }
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'extracted_real_estate_request',
+          strict: true,
+          schema: {
+            type: 'object',
+            properties: {
+              operacion: { type: 'string', enum: ['venta', 'alquiler', 'desconocido'] },
+              tipo_propiedad: { type: 'string', enum: ['departamento', 'casa', 'terreno', 'local', 'oficina', 'otro'] },
+              zonas: { type: 'array', items: { type: 'string' } },
+              presupuesto_max: { type: ['integer', 'null'] },
+              moneda: { type: 'string', enum: ['USD', 'ARS', 'desconocido'] },
+              dormitorios: { type: ['integer', 'null'] },
+              caracteristicas_clave: { type: 'array', items: { type: 'string' } },
+              country: { type: 'string', enum: ['si', 'no', 'indiferente'] }
+            },
+            required: ['operacion', 'tipo_propiedad', 'zonas', 'presupuesto_max', 'moneda', 'dormitorios', 'caracteristicas_clave', 'country'],
+            additionalProperties: false
+          }
+        }
+      }
     });
 
     const content = completion.choices[0]?.message?.content;
@@ -206,7 +229,25 @@ ${messageTexto}
         { role: 'system', content: systemInstruction },
         { role: 'user', content: userMsg }
       ],
-      response_format: { type: 'json_object' }
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'zone_intent_request',
+          strict: true,
+          schema: {
+            type: 'object',
+            properties: {
+              zona_id: { type: 'string', enum: ALLOWED_ZONE_IDS },
+              texto_ubicacion_original: { type: 'string' },
+              dormitorios_min: { type: ['integer', 'null'] },
+              caracteristicas_claves: { type: 'array', items: { type: 'string' } },
+              operacion: { type: 'string', enum: ['ALQUILER', 'COMPRA', 'DESCONOCIDO'] }
+            },
+            required: ['zona_id', 'texto_ubicacion_original', 'dormitorios_min', 'caracteristicas_claves', 'operacion'],
+            additionalProperties: false
+          }
+        }
+      }
     });
 
     const content = completion.choices[0]?.message?.content;
@@ -247,7 +288,23 @@ ${JSON.stringify(property)}
         { role: 'system', content: systemInstruction },
         { role: 'user', content: prompt }
       ],
-      response_format: { type: 'json_object' }
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'validation_result',
+          strict: true,
+          schema: {
+            type: 'object',
+            properties: {
+              score: { type: 'integer' },
+              isValid: { type: 'boolean' },
+              reasoning: { type: 'string' }
+            },
+            required: ['score', 'isValid', 'reasoning'],
+            additionalProperties: false
+          }
+        }
+      }
     });
 
     const content = completion.choices[0]?.message?.content;
@@ -258,11 +315,11 @@ ${JSON.stringify(property)}
 
 function logFallbackWarning(strategyName: string, error: any) {
   const errMsg = error?.message || String(error);
-  const isQuotaError = errMsg.includes('429') || 
-                       errMsg.toLowerCase().includes('quota') || 
-                       errMsg.includes('RESOURCE_EXHAUSTED') || 
-                       error?.status === 429 || 
-                       error?.statusCode === 429;
+  const isQuotaError = errMsg.includes('429') ||
+    errMsg.toLowerCase().includes('quota') ||
+    errMsg.includes('RESOURCE_EXHAUSTED') ||
+    error?.status === 429 ||
+    error?.statusCode === 429;
 
   if (isQuotaError) {
     console.warn(`[AI STRATEGY] Límite de cuota excedido (429/Resource Exhausted) en: ${strategyName}. Cambiando de modelo (ejecutando fallback)...`);
@@ -405,10 +462,10 @@ Sigue estrictamente estas reglas de negocio:
    - Extrae un array de strings en minúsculas con palabras clave relevantes:
      * "cochera", "garaje", "estacionamiento" -> "cochera"
      * "pileta", "piscina" -> "pileta"
-     * "jardín", "patio" -> "jardin"
+     * "jardín", "patio", "fondo" -> "jardin"
      * "seguridad", "guardia" -> "seguridad"
      * "apta crédito", "apto credito" -> "apto credito"
-     * "balcón", "balcon" -> "balcon"
+     * "balcón", "balcon", "terraza" -> "balcon"
      * "amenities", "sum" -> "amenities"
      * "amueblado", "amob" -> "amueblado"
 

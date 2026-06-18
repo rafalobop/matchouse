@@ -4,7 +4,11 @@ import * as path from 'path';
 import { Property, detectTipoPropiedad } from './sheets';
 
 function getCatalogPath(tenantId: string): string {
-  return path.join(process.cwd(), `catalog_${tenantId}.json`);
+  const cacheDir = path.join(process.cwd(), 'cache');
+  if (!fs.existsSync(cacheDir)) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+  }
+  return path.join(cacheDir, `catalog_${tenantId}.json`);
 }
 
 /**

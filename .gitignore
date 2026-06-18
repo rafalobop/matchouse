@@ -8,15 +8,13 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .DS_Store
-backlog.md
-catalog.json
-settings.json
+/backlog.md
+/catalog.json
+/settings.json
 .baileys_auth/
 .agents/
 /src/generated/prisma
 
 # Archivos dinámicos de Tenants (Caché, Configuración y Sesiones)
-catalog_*.json
-settings_*.json
-groups_cache_*.json
+cache/
 sessions/

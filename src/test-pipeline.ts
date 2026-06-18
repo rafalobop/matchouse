@@ -1,6 +1,6 @@
 import { isRealEstateRequest } from './utils/filter';
 import { checkMatch } from './utils/matcher';
-import { ExtractedRealEstateRequest, ZoneIntentRequest } from './services/gemini';
+import { ExtractedRealEstateRequest, ZoneIntentRequest } from './services/ai';
 import { Property } from './services/sheets';
 
 // ... (Rest of imports and mockCartera are preserved)
@@ -136,21 +136,21 @@ const mockExtractedEntities: Record<number, ExtractedRealEstateRequest> = {
 // 4. Intenciones de zonas simuladas para el Agente 2
 const mockZoneIntents: Record<number, ZoneIntentRequest> = {
   1: {
-    zona_id: 'ZONA_YERBA_BUENA',
+    zona_id: 'YERBA_BUENA',
     texto_ubicacion_original: 'Yerba Buena',
     dormitorios_min: 1,
     caracteristicas_claves: ['cochera'],
     operacion: 'ALQUILER'
   },
   3: {
-    zona_id: 'ZONA_YERBA_BUENA',
+    zona_id: 'YERBA_BUENA',
     texto_ubicacion_original: 'YB, zona Marcos Paz o Lomas',
     dormitorios_min: null,
     caracteristicas_claves: ['apto credito'],
     operacion: 'COMPRA'
   },
   5: {
-    zona_id: 'ZONA_CENTRO_BARRIO_NORTE',
+    zona_id: 'BARRIO_NORTE',
     texto_ubicacion_original: 'Barrio Norte o Centro',
     dormitorios_min: 2,
     caracteristicas_claves: ['pileta'],

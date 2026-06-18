@@ -1,0 +1,11 @@
+{
+  "id": "feat-0006",
+  "name": "Sistema de Colas (Rate Limiter) y Base de Datos como Fuente de la Verdad",
+  "status": "COMPLETED",
+  "description": "Evitar saturación de APIs de IA por picos de mensajes de WhatsApp y delegar persistencia de matches únicamente a Supabase.",
+  "created_at": "2026-06-14T10:00:00-03:00",
+  "updated_at": "2026-06-14T15:00:00-03:00",
+  "priority": "HIGH",
+  "assignee": "Antigravity",
+  "dependencies": ["feat-0005"]
+}
