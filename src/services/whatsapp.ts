@@ -74,6 +74,7 @@ export interface WhatsAppStatus {
 export const activeSessions = new Map<string, WASocket>();
 export const sessionStatuses = new Map<string, WhatsAppStatus>();
 export const tenantRedirects = new Map<string, string>(); // tempId -> consolidatedId
+export const reconnectTimeouts = new Map<string, NodeJS.Timeout>();
 let savedOptions: WhatsAppClientOptions | null = null;
 
 export interface WhatsAppClientOptions {
@@ -201,13 +202,19 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
       if (shouldReconnect) {
         if (activeSessions.get(tenantId) === sock) {
           console.log(`[WHATSAPP] Reintentando conexión del tenant ${tenantId} en 5 segundos...`);
-          setTimeout(() => {
+          
+          const existingTimeout = reconnectTimeouts.get(tenantId);
+          if (existingTimeout) clearTimeout(existingTimeout);
+
+          const timeout = setTimeout(() => {
+            reconnectTimeouts.delete(tenantId);
             if (activeSessions.get(tenantId) === sock) {
               initTenantSession(tenantId, options).catch(err => {
                 console.error(`Error al reconectar tenant ${tenantId}:`, err);
               });
             }
           }, 5000);
+          reconnectTimeouts.set(tenantId, timeout);
         }
       } else {
         if (activeSessions.get(tenantId) === sock) {
@@ -406,6 +413,12 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
  * Cierra la sesión activa de un Tenant en memoria y limpia la base de datos
  */
 export async function logoutTenantSession(tenantId: string): Promise<void> {
+  const timeout = reconnectTimeouts.get(tenantId);
+  if (timeout) {
+    clearTimeout(timeout);
+    reconnectTimeouts.delete(tenantId);
+  }
+
   const sock = activeSessions.get(tenantId);
   if (sock) {
     activeSessions.delete(tenantId);

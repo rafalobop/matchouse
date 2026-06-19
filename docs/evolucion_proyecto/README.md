@@ -22,3 +22,6 @@ Este directorio contiene la trazabilidad de las decisiones de arquitectura, dise
   - [version_manager.md](file:///c:/Users/NoxiePC/Desktop/Software/housematch/.agents/version_manager.md) (Agente Gestor de Versiones y Ramas).
 - **Notificador Consolidado**: Bucle en segundo plano asíncrono que consolida y rota plantillas de mensajes cada 10 minutos por tenant para mitigar baneo de WhatsApp.
 - **Bases de Datos**: PostgreSQL en Supabase gestionado vía REST SDK como única fuente de verdad con arquitectura multi-tenant aislada por IP de cliente ("Zero-Login OTP IP-Binding" de 12 horas).
+- **Orquestación:** Multi-tenant automatizado en NodeJS administrado por `src/services/coordinator.ts`.
+- **Ecosistema de Agentes de Desarrollo Local:** Configurado en la ruta `.agent/skills/` con roles asignados para `@product`, `@pm`, `@backend`, `@frontend`, `@qa` y `@git`.
+- **Registro Estructurado:** El historial detallado de estados de cada tarea e hito se encuentra disponible de forma síncrona en el archivo `.agent/evolution_log.json` para facilitar la lectura e indexación rápida de los agentes.

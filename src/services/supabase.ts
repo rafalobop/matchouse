@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { config } from '../config/env';
 import ws from 'ws';
 import jwt from 'jsonwebtoken';
@@ -34,23 +34,31 @@ export function generateTenantToken(tenantId: string, sessionToken: string): str
   return jwt.sign(payload, config.supabaseJwtSecret, { expiresIn: '7d' });
 }
 
+// Caché de clientes Supabase por token de Tenant para evitar fugas de memoria
+const tenantClientsCache = new Map<string, SupabaseClient>();
+
 /**
  * Retorna un cliente de Supabase configurado con la clave Anon y el JWT del Tenant.
  * Esto obliga a PostgREST a aplicar RLS en base al tenant.
  */
-export function getTenantClient(token: string) {
-  return createClient(
-    config.supabaseUrl || '',
-    config.supabaseAnonKey || '',
-    {
-      auth: {
-        persistSession: false
-      },
-      global: {
-        headers: {
-          Authorization: `Bearer ${token}`
+export function getTenantClient(token: string): SupabaseClient {
+  let client = tenantClientsCache.get(token);
+  if (!client) {
+    client = createClient(
+      config.supabaseUrl || '',
+      config.supabaseAnonKey || '',
+      {
+        auth: {
+          persistSession: false
+        },
+        global: {
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
         }
       }
-    }
-  );
+    );
+    tenantClientsCache.set(token, client);
+  }
+  return client;
 }

@@ -20,6 +20,7 @@ import { loadCatalogFromDisk, saveCatalogToDisk, processExcelBuffer } from './se
 import { coordinator } from './services/coordinator';
 import { messageQueue } from './utils/queue';
 import { startNotificationService } from './services/notifier';
+import { startDolarService } from './services/dolar';
 
 // Express Setup
 const app = express();
@@ -667,6 +668,9 @@ async function main() {
       console.error(`[ARRANQUE] Fallo de inicio de WhatsApp para tenant ${tenantId}:`, err);
     });
   }
+
+  // Iniciar servicio de cotización de Dólar Blue (dinámico y horaria)
+  startDolarService();
 
   // Iniciar servicio notificador consolidado (corre cada 10 min por defecto)
   startNotificationService();
