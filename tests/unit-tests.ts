@@ -94,7 +94,7 @@ test('Dolar Service - Debería retornar cotizaciones válidas y persistir caché
 
 // 4. Probar conversión dinámica en Matcher
 import { checkMatch } from '../src/utils/matcher';
-import { Property } from '../src/services/sheets';
+import { Property } from '../src/services/excel';
 import { ExtractedRealEstateRequest } from '../src/services/ai';
 
 test('Matcher - Conversión dinámica usando cotización dinámica de dólar', () => {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import { coordinator } from '../src/services/coordinator';
-import { Property } from '../src/services/sheets';
+import { Property } from '../src/services/excel';
 
 test('Coordinator Service - Debería guardar y recuperar catálogos en memoria por tenant', () => {
   const tenantId = 'test-tenant-coord';

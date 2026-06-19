@@ -1,7 +1,7 @@
 import { isRealEstateRequest } from './utils/filter';
 import { checkMatch } from './utils/matcher';
 import { ExtractedRealEstateRequest, ZoneIntentRequest } from './services/ai';
-import { Property } from './services/sheets';
+import { Property } from './services/excel';
 
 // ... (Rest of imports and mockCartera are preserved)
 
