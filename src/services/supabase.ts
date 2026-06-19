@@ -55,6 +55,9 @@ export function getTenantClient(token: string): SupabaseClient {
           headers: {
             Authorization: `Bearer ${token}`
           }
+        },
+        realtime: {
+          transport: ws as any
         }
       }
     );
