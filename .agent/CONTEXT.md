@@ -54,6 +54,7 @@ La aplicación está construida sobre **Node.js** utilizando **TypeScript** y el
 *(Esta sección es mantenida activamente por @pm, @product y @git)*
 
 ### Última Especificación Implementada
+* **SPEC-0011:** Arquitectura de propiedades centrada en base de datos (eliminación de Sheets y caché local en disco).
 * **SPEC-0010:** Mitigación de deuda técnica (colas de mensajes por tenant), fugas de memoria (Supabase, WhatsApp huerfan timeouts) y cotización dinámica del Dólar Blue (DolarAPI).
 * **SPEC-0009:** Refactorización de calidad, implementación del patrón Strategy en el Matcher, Structured Outputs en OpenAI y ordenamiento de directorios (`cache/`).
 
