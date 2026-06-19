@@ -1,5 +1,5 @@
 import { extractRealEstateRequest, extractZoneIntent, ExtractedRealEstateRequest, ZoneIntentRequest, validateMatch } from './ai';
-import { Property } from './sheets';
+import { Property } from './excel';
 import { checkMatch } from '../utils/matcher';
 import { randomUUID } from 'crypto';
 import { logger } from './logger';

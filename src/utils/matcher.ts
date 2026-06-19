@@ -1,5 +1,5 @@
 import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../services/ai';
-import { Property } from '../services/sheets';
+import { Property } from '../services/excel';
 import { zones } from './constants/zones';
 import { getDolarBlueRate } from '../services/dolar';
 

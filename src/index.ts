@@ -15,8 +15,7 @@ import {
   sessionStatuses,
   logoutTenantSession
 } from './services/whatsapp';
-import { Property } from './services/sheets';
-import { loadCatalogFromDisk, saveCatalogToDisk, processExcelBuffer } from './services/excel';
+import { Property, processExcelBuffer, syncPropertiesToDatabase } from './services/excel';
 import { coordinator } from './services/coordinator';
 import { messageQueue } from './utils/queue';
 import { startNotificationService } from './services/notifier';
@@ -490,10 +489,7 @@ app.post('/api/upload', tenantAuthMiddleware, upload.single('excelFile'), async 
     }
 
     // Aislamiento por tenant
-    saveCatalogToDisk(catalog, tenantId);
     coordinator.setCatalog(tenantId, catalog);
-
-    const { syncPropertiesToDatabase } = require('./services/sheets');
     await syncPropertiesToDatabase(catalog, tenantId);
 
     res.json({ success: true, count: catalog.length });
@@ -593,7 +589,6 @@ async function main() {
   console.log('Iniciando HouseMatch MVP Multi-Tenant con Dashboard...');
 
   const { supabase } = require('./services/supabase');
-  const { syncPropertiesToDatabase } = require('./services/sheets');
 
   let tenants: any[] = [];
   try {
@@ -644,16 +639,10 @@ async function main() {
           latitud: p.latitud || undefined,
           longitud: p.longitud || undefined
         }));
-      } else {
-        propertyCatalog = loadCatalogFromDisk(tenantId);
-        console.log(`[MAIN] Catálogo local cargado para tenant ${tenantId} (${propertyCatalog.length} propiedades).`);
-        if (propertyCatalog.length > 0) {
-          await syncPropertiesToDatabase(propertyCatalog, tenantId);
-        }
       }
     } catch (e) {
-      console.warn(`[ARRANQUE] Error al sincronizar catálogo del tenant ${tenantId}:`, e);
-    }
+        console.warn(`[ARRANQUE] Error al cargar catálogo de Supabase del tenant ${tenantId}:`, e);
+      }
 
     coordinator.setCatalog(tenantId, propertyCatalog);
 

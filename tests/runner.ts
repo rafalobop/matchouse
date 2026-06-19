@@ -6,7 +6,6 @@ import './dolar.test';
 import './excel.test';
 import './logger.test';
 import './notifier.test';
-import './sheets.test';
 import './supabase.test';
 import './supabaseAuth.test';
 import './whatsapp.test';

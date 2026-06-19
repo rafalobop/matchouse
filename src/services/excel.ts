@@ -1,45 +1,62 @@
 import * as xlsx from 'xlsx';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Property, detectTipoPropiedad } from './sheets';
-
-function getCatalogPath(tenantId: string): string {
-  const cacheDir = path.join(process.cwd(), 'cache');
-  if (!fs.existsSync(cacheDir)) {
-    fs.mkdirSync(cacheDir, { recursive: true });
-  }
-  return path.join(cacheDir, `catalog_${tenantId}.json`);
+import { randomUUID } from 'crypto';
+import { logger } from './logger';
+import { supabase } from './supabase';
+export interface Property {
+  domicilio: string;
+  pisoLote: string;
+  precio: number;
+  moneda: 'USD' | 'ARS';
+  expensas: number;
+  dormitorios: number;
+  caracteristicas: string;
+  contacto: string;
+  zona: string;        // "Yerba Buena" o "San Miguel de Tucumán"
+  operacion: 'venta' | 'alquiler'; // Deductible por la pestaña
+  tipo_propiedad: 'departamento' | 'casa' | 'terreno' | 'local' | 'oficina' | 'otro';
+  sheetName: string;   // Origen de los datos
+  latitud?: number;
+  longitud?: number;
 }
 
-/**
- * Guarda el catálogo de propiedades en un archivo JSON local por tenant
- */
-export function saveCatalogToDisk(catalog: Property[], tenantId: string): void {
-  try {
-    const catalogPath = getCatalogPath(tenantId);
-    fs.writeFileSync(catalogPath, JSON.stringify(catalog, null, 2), 'utf-8');
-    console.log(`[EXCEL] Catálogo guardado en disco para tenant ${tenantId} (${catalog.length} propiedades).`);
-  } catch (error) {
-    console.error(`[EXCEL] Error al guardar catálogo en disco para tenant ${tenantId}:`, error);
-  }
-}
+export function detectTipoPropiedad(
+  domicilio: string,
+  pisoLote: string,
+  caracteristicas: string
+): 'departamento' | 'casa' | 'terreno' | 'local' | 'oficina' | 'otro' {
+  const text = `${domicilio} ${pisoLote} ${caracteristicas}`.toLowerCase();
 
-/**
- * Carga el catálogo de propiedades desde el archivo JSON local del tenant si existe
- */
-export function loadCatalogFromDisk(tenantId: string): Property[] {
-  try {
-    const catalogPath = getCatalogPath(tenantId);
-    if (fs.existsSync(catalogPath)) {
-      const data = fs.readFileSync(catalogPath, 'utf-8');
-      const catalog = JSON.parse(data) as Property[];
-      console.log(`[EXCEL] Catálogo cargado desde disco para tenant ${tenantId} (${catalog.length} propiedades).`);
-      return catalog;
-    }
-  } catch (error) {
-    console.error(`[EXCEL] Error al cargar catálogo desde disco para tenant ${tenantId}:`, error);
+  if (text.includes('lote') || text.includes('terreno') || text.includes('tierra')) {
+    return 'terreno';
   }
-  return [];
+  if (text.includes('oficina') || text.includes('consultorio')) {
+    return 'oficina';
+  }
+  if (text.includes('local') || text.includes('negocio') || text.includes('salon comercial')) {
+    return 'local';
+  }
+  if (
+    text.includes('dpto') ||
+    text.includes('depto') ||
+    text.includes('departamento') ||
+    text.includes('piso') ||
+    text.includes('semipiso') ||
+    text.includes('monoambiente')
+  ) {
+    return 'departamento';
+  }
+  if (text.includes('casa') || text.includes('duplex') || text.includes('chalet') || text.includes('propiedad')) {
+    return 'casa';
+  }
+
+  // Heurística de respaldo basada en el número de departamento/piso
+  if (pisoLote && (pisoLote.toLowerCase().includes('piso') || pisoLote.toLowerCase().includes('dpto') || /[a-z]/i.test(pisoLote))) {
+    return 'departamento';
+  }
+
+  return 'casa'; // Valor por defecto
 }
 
 /**
@@ -258,4 +275,101 @@ export function processExcelBuffer(buffer: Buffer): Property[] {
   }
 
   return catalog;
+}
+
+export async function syncPropertiesToDatabase(properties: Property[], tenantId: string): Promise<void> {
+  try {
+    logger.info({ propertiesCount: properties.length, tenantId }, '[SUPABASE] Iniciando sincronización de propiedades...');
+    
+    // 1. Obtener todas las propiedades actuales de Supabase filtradas por tenant_id
+    const { data: dbProps, error: fetchErr } = await supabase
+      .from('Property')
+      .select('id, domicilio, pisoLote, precio, contacto, sheetName')
+      .eq('tenant_id', tenantId);
+
+    if (fetchErr) {
+      throw fetchErr;
+    }
+
+    const dbProperties = dbProps || [];
+
+    // 2. Mapear en memoria los registros actuales
+    const dbPropsMap = new Map<string, string>(); // clave -> id
+    dbProperties.forEach((p: any) => {
+      const key = `${p.domicilio}_${p.pisoLote || ''}_${p.precio}_${p.contacto || ''}_${p.sheetName}`.toLowerCase().trim();
+      dbPropsMap.set(key, p.id);
+    });
+
+    // 3. Iterar las propiedades frescas y clasificarlas
+    const upsertList: any[] = [];
+    const matchedIds = new Set<string>();
+
+    properties.forEach(p => {
+      const key = `${p.domicilio}_${p.pisoLote || ''}_${p.precio}_${p.contacto || ''}_${p.sheetName}`.toLowerCase().trim();
+      const existingId = dbPropsMap.get(key);
+      
+      const propertyPayload = {
+        id: existingId || randomUUID(),
+        domicilio: p.domicilio,
+        pisoLote: p.pisoLote || null,
+        precio: p.precio,
+        moneda: p.moneda,
+        expensas: p.expensas,
+        dormitorios: p.dormitorios,
+        caracteristicas: p.caracteristicas || null,
+        contacto: p.contacto || null,
+        zona: p.zona,
+        operacion: p.operacion,
+        tipoPropiedad: p.tipo_propiedad,
+        sheetName: p.sheetName,
+        latitud: p.latitud || null,
+        longitud: p.longitud || null,
+        tenant_id: tenantId
+      };
+
+      if (existingId) {
+        matchedIds.add(existingId);
+      }
+      upsertList.push(propertyPayload);
+    });
+
+    // 4. Generar lista de eliminaciones
+    const deleteList: string[] = [];
+    dbProperties.forEach((p: any) => {
+      if (!matchedIds.has(p.id)) {
+        deleteList.push(p.id);
+      }
+    });
+
+    // 5. Ejecutar operaciones
+    if (upsertList.length > 0) {
+      const { error: upsertErr } = await supabase
+        .from('Property')
+        .upsert(upsertList);
+
+      if (upsertErr) {
+        throw upsertErr;
+      }
+    }
+
+    if (deleteList.length > 0) {
+      const { error: deleteErr } = await supabase
+        .from('Property')
+        .delete()
+        .in('id', deleteList)
+        .eq('tenant_id', tenantId);
+
+      if (deleteErr) {
+        throw deleteErr;
+      }
+    }
+    
+    logger.info({ 
+      upsertedCount: upsertList.length, 
+      deletedCount: deleteList.length,
+      tenantId
+    }, '[SUPABASE] Sincronización de propiedades finalizada con éxito.');
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId }, '[SUPABASE] Error al sincronizar propiedades');
+  }
 }
