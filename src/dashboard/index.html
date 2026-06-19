@@ -65,15 +65,16 @@
           <p class="qr-placeholder-text">Cargando estado...</p>
         </div>
 
-        <div id="user-info" class="user-info-box hidden">
-          <div class="user-avatar">💬</div>
-          <div class="user-details">
-            <h3 id="user-name">Usuario Conectado</h3>
-            <p id="user-phone">+54 9 ...</p>
+        <div id="user-info" class="user-info-box hidden" style="flex-direction: column; align-items: stretch; gap: 1rem;">
+          <div style="display: flex; align-items: center; gap: 1rem; width: 100%;">
+            <div class="user-avatar">💬</div>
+            <div class="user-details" style="flex: 1;">
+              <h3 id="user-name">Usuario Conectado</h3>
+              <p id="user-phone">+54 9 ...</p>
+            </div>
           </div>
+          <button id="logout-btn" class="btn btn-danger btn-small" style="width: 100%; margin-top: 0.5rem; display: flex; align-items: center; justify-content: center; gap: 6px;">🚪 Cerrar Sesión</button>
         </div>
-
-        <button id="restart-whatsapp-btn" class="btn btn-danger btn-small">Forzar Reconexión (Borrar sesión)</button>
       </section>
 
       <!-- Sección central: Catálogo / Inventario -->
@@ -247,22 +248,26 @@
           <p class="tagline" style="text-align: center;">WhatsApp Real Estate Pipeline</p>
         </div>
       </div>
-      <h3 style="margin-bottom: 0.5rem; font-size: 1.25rem; text-align: center;">Acceso al Dashboard</h3>
-      <p class="section-desc" style="text-align: center; margin-bottom: 1.5rem;">
-        Ingresa tu número de WhatsApp vinculado para recibir un código de acceso temporal.
+      <h3 style="margin-bottom: 0.5rem; font-size: 1.25rem; text-align: center;">Vincula tu WhatsApp</h3>
+      <p class="section-desc" style="text-align: center; margin-bottom: 1rem;">
+        Escanea el código QR de abajo con tu celular para conectar tu bot de WhatsApp.
       </p>
+
+      <!-- Contenedor del QR de Autenticación -->
+      <div id="auth-qr-container" class="qr-container" style="background: white; border: 1px solid var(--card-border); border-radius: 12px; margin-bottom: 1.5rem; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 250px; padding: 1rem; box-sizing: border-box;">
+        <div class="spinner"></div>
+        <p class="qr-placeholder-text" style="color: var(--text-secondary); margin-top: 0.5rem; font-size: 0.9rem;">Cargando WhatsApp Web...</p>
+      </div>
       
-      <div style="margin-bottom: 1.25rem; width: 100%;">
+      <div style="text-align: center; margin: 1rem 0; border-top: 1px solid var(--card-border); padding-top: 1rem;">
+        <span style="color: var(--text-secondary); font-size: 0.85rem; font-weight: 500;">¿Tu bot ya está conectado en otro dispositivo?</span>
+      </div>
+
+      <div style="margin-bottom: 1rem; width: 100%;">
         <input type="tel" id="auth-phone-input" placeholder="Ej: 5493814590816" style="width: 100%; padding: 0.75rem; background: rgba(255,255,255,0.05); border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-primary); outline: none; font-size: 1rem; text-align: center; box-sizing: border-box;">
       </div>
       
-      <button id="auth-send-otp-btn" class="btn btn-primary" style="width: 100%; margin-bottom: 1rem; padding: 0.75rem;">Enviar Código por WhatsApp</button>
-      
-      <div style="text-align: center; margin: 0.5rem 0;">
-        <span style="color: var(--text-secondary); font-size: 0.85rem;">¿No tienes un bot conectado?</span>
-      </div>
-      
-      <button id="auth-register-new-btn" class="btn btn-secondary" style="width: 100%; padding: 0.75rem;">Conectar Nuevo Bot (Máx. 10)</button>
+      <button id="auth-send-otp-btn" class="btn btn-primary" style="width: 100%; padding: 0.75rem;">Enviar Código por WhatsApp</button>
       
       <p id="auth-step1-error" style="color: #ef4444; font-size: 0.85rem; margin-top: 1rem; text-align: center; display: none;"></p>
     </div>

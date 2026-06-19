@@ -1,6 +1,7 @@
 import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../services/ai';
 import { Property } from '../services/sheets';
 import { zones } from './constants/zones';
+import { getDolarBlueRate } from '../services/dolar';
 
 export interface MatchResult {
   isMatch: boolean;
@@ -23,7 +24,7 @@ export interface IMatchingStrategy {
   ): MatchingResult;
 }
 
-const COTIZACION_DOLAR_BLUE = 1200;
+
 
 /**
  * Ray-casting algorithm for Point-in-Polygon detection
@@ -264,12 +265,13 @@ export class BudgetMatchingStrategy implements IMatchingStrategy {
       let conversionReason = '';
 
       if (request.moneda !== 'desconocido' && request.moneda !== property.moneda) {
+        const dolarRate = getDolarBlueRate();
         if (request.moneda === 'USD' && property.moneda === 'ARS') {
-          propertyPriceInReqCurrency = property.precio / COTIZACION_DOLAR_BLUE;
-          conversionReason = `Conversión de moneda: propiedad en ARS convertida a USD usando tasa ref $${COTIZACION_DOLAR_BLUE}`;
+          propertyPriceInReqCurrency = property.precio / dolarRate;
+          conversionReason = `Conversión de moneda: propiedad en ARS convertida a USD usando tasa ref $${dolarRate}`;
         } else if (request.moneda === 'ARS' && property.moneda === 'USD') {
-          propertyPriceInReqCurrency = property.precio * COTIZACION_DOLAR_BLUE;
-          conversionReason = `Conversión de moneda: propiedad en USD convertida a ARS usando tasa ref $${COTIZACION_DOLAR_BLUE}`;
+          propertyPriceInReqCurrency = property.precio * dolarRate;
+          conversionReason = `Conversión de moneda: propiedad en USD convertida a ARS usando tasa ref $${dolarRate}`;
         }
       }
 

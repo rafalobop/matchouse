@@ -3,11 +3,6 @@ let isConnected = false;
 let allGroups = [];
 let selectedGroups = [];
 
-// Estado de reconexión automática de WhatsApp
-let isCountingDown = false;
-let countdownInterval = null;
-let countdownSeconds = 15;
-
 // Elementos del DOM
 const systemBadge = document.getElementById('system-badge');
 const statusText = document.getElementById('status-text');
@@ -15,7 +10,7 @@ const qrContainer = document.getElementById('qr-container');
 const userInfo = document.getElementById('user-info');
 const userName = document.getElementById('user-name');
 const userPhone = document.getElementById('user-phone');
-const restartWhatsappBtn = document.getElementById('restart-whatsapp-btn');
+const logoutBtn = document.getElementById('logout-btn');
 
 // Elementos del DOM - Pantalla de Carga
 const loadingOverlay = document.getElementById('loading-overlay');
@@ -50,10 +45,10 @@ const authPhoneInput = document.getElementById('auth-phone-input');
 const authOtpInput = document.getElementById('auth-otp-input');
 const authSendOtpBtn = document.getElementById('auth-send-otp-btn');
 const authVerifyOtpBtn = document.getElementById('auth-verify-otp-btn');
-const authRegisterNewBtn = document.getElementById('auth-register-new-btn');
 const authBackBtn = document.getElementById('auth-back-btn');
 const authStep1Error = document.getElementById('auth-step1-error');
 const authStep2Error = document.getElementById('auth-step2-error');
+const authQrContainer = document.getElementById('auth-qr-container');
 
 // Estado de Autenticación
 let authCheckInterval = null;
@@ -61,32 +56,88 @@ let statusInterval = null;
 let matchesInterval = null;
 let catalogInterval = null;
 let isUserAuthenticated = false;
+let currentTenantInfo = null;
+
+// Interceptor Global de Fetch para desloguear ante error 401 (Sesión Única Estricta)
+const originalFetch = window.fetch;
+window.fetch = async function (...args) {
+  const response = await originalFetch(...args);
+  if (response.status === 401) {
+    if (isUserAuthenticated) {
+      isUserAuthenticated = false;
+      authOverlay.classList.remove('hidden');
+      resetAuthCards();
+      stopDashboardPolling();
+      // Registrar una nueva sesión provisoria automáticamente para mostrar un nuevo QR
+      registerProvisionalSession();
+    }
+  }
+  return response;
+};
 
 // ==========================================
 // CONTROL DE POLLES Y SESIÓN (AUTH)
 // ==========================================
 
+function resetAuthCards() {
+  authCardStep2.classList.add('hidden');
+  authCardStep1.classList.remove('hidden');
+  hideAuthError(authStep1Error);
+  hideAuthError(authStep2Error);
+  authOtpInput.value = '';
+}
+
+let isRegisteringProvisional = false;
+async function registerProvisionalSession() {
+  if (isRegisteringProvisional) return;
+  isRegisteringProvisional = true;
+  try {
+    const res = await fetch('/api/auth/register-new', { method: 'POST' });
+    if (res.ok) {
+      await checkAuthSession();
+    } else {
+      const data = await res.json();
+      authQrContainer.innerHTML = `<div class="qr-error-icon" style="font-size: 2.5rem; margin-bottom: 0.5rem;">❌</div><p class="qr-placeholder-text" style="color: var(--error); font-weight: 600; text-align: center;">${data.error || 'Error al iniciar sesión provisoria.'}</p>`;
+    }
+  } catch (error) {
+    console.error('Error al registrar sesión provisional para QR:', error);
+    authQrContainer.innerHTML = `<div class="qr-error-icon" style="font-size: 2.5rem; margin-bottom: 0.5rem;">❌</div><p class="qr-placeholder-text" style="color: var(--error); font-weight: 600; text-align: center;">Error de conexión con el servidor.</p>`;
+  } finally {
+    isRegisteringProvisional = false;
+  }
+}
+
 async function checkAuthSession() {
   try {
     const res = await fetch('/api/auth/session');
     const data = await res.json();
-    
+
     if (data.authenticated) {
-      if (!isUserAuthenticated) {
+      currentTenantInfo = data.tenant;
+
+      // Si el tenant ya es un bot registrado (nombre distinto a Provisional),
+      // le permitimos entrar al dashboard directamente.
+      if (data.tenant.name !== 'Provisional') {
         isUserAuthenticated = true;
         authOverlay.classList.add('hidden');
-        
-        // Resetear inputs de login
-        authPhoneInput.value = '';
-        authOtpInput.value = '';
-        
-        // Arrancar pollings del dashboard
-        startDashboardPolling();
+      } else {
+        isUserAuthenticated = false;
+        authOverlay.classList.remove('hidden');
+        resetAuthCards();
       }
+
+      isConnected = false; // Resetear bandera para obligar la carga de grupos/config al conectar
+      startDashboardPolling();
     } else {
       isUserAuthenticated = false;
+      currentTenantInfo = null;
       authOverlay.classList.remove('hidden');
+      resetAuthCards();
       stopDashboardPolling();
+
+      // Si no hay sesión activa en cookies, registrar una provisional automáticamente
+      console.log('[AUTH] No se encontró sesión. Iniciando sesión provisional para QR...');
+      await registerProvisionalSession();
     }
   } catch (error) {
     console.error('Error al comprobar sesión auth:', error);
@@ -95,11 +146,11 @@ async function checkAuthSession() {
 
 function startDashboardPolling() {
   if (statusInterval) return; // Ya está corriendo
-  
+
   checkStatus();
   loadCatalogInfo();
   loadMatches();
-  
+
   statusInterval = setInterval(checkStatus, 1500);
   matchesInterval = setInterval(loadMatches, 2000);
   catalogInterval = setInterval(loadCatalogInfo, 5000);
@@ -118,7 +169,6 @@ function stopDashboardPolling() {
     clearInterval(catalogInterval);
     catalogInterval = null;
   }
-  cancelCountdown();
 }
 
 // Handlers de los botones de Auth
@@ -128,22 +178,23 @@ authSendOtpBtn.addEventListener('click', async () => {
     showAuthError(authStep1Error, 'Ingresa un número de teléfono válido.');
     return;
   }
-  
+
   authSendOtpBtn.disabled = true;
   authSendOtpBtn.innerText = 'Enviando código...';
   hideAuthError(authStep1Error);
-  
+
   try {
     const res = await fetch('/api/auth/request-otp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone })
     });
-    
+
     const data = await res.json();
     if (res.ok) {
       authCardStep1.classList.add('hidden');
       authCardStep2.classList.remove('hidden');
+      authOtpInput.value = ''; // Limpiar campo OTP
     } else {
       showAuthError(authStep1Error, data.error || 'Error al solicitar código.');
     }
@@ -162,18 +213,18 @@ authVerifyOtpBtn.addEventListener('click', async () => {
     showAuthError(authStep2Error, 'Ingresa un código OTP de 6 dígitos.');
     return;
   }
-  
+
   authVerifyOtpBtn.disabled = true;
   authVerifyOtpBtn.innerText = 'Verificando...';
   hideAuthError(authStep2Error);
-  
+
   try {
     const res = await fetch('/api/auth/verify-otp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone, otp })
     });
-    
+
     const data = await res.json();
     if (res.ok) {
       await checkAuthSession();
@@ -185,28 +236,6 @@ authVerifyOtpBtn.addEventListener('click', async () => {
   } finally {
     authVerifyOtpBtn.disabled = false;
     authVerifyOtpBtn.innerText = 'Validar Código';
-  }
-});
-
-authRegisterNewBtn.addEventListener('click', async () => {
-  authRegisterNewBtn.disabled = true;
-  authRegisterNewBtn.innerText = 'Preparando bot...';
-  hideAuthError(authStep1Error);
-  
-  try {
-    const res = await fetch('/api/auth/register-new', { method: 'POST' });
-    const data = await res.json();
-    
-    if (res.ok) {
-      await checkAuthSession();
-    } else {
-      showAuthError(authStep1Error, data.error || 'Error al conectar nuevo bot.');
-    }
-  } catch (error) {
-    showAuthError(authStep1Error, 'Error de red al conectar con el servidor.');
-  } finally {
-    authRegisterNewBtn.disabled = false;
-    authRegisterNewBtn.innerText = 'Conectar Nuevo Bot (Máx. 10)';
   }
 });
 
@@ -234,6 +263,27 @@ async function checkStatus() {
     const res = await fetch('/api/status');
     const data = await res.json();
 
+    if (data.status === 'REDIRECT') {
+      console.log('[AUTH] Redirigiendo a tenant consolidado...');
+      stopDashboardPolling();
+      // Esperar 1 segundo para asegurar la correcta persistencia de la nueva cookie en el navegador
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      await checkAuthSession();
+      return;
+    }
+
+    if (data.status === 'REQUIRES_OTP') {
+      console.log('[AUTH] Se requiere verificación OTP para transferir sesión.');
+      authPhoneInput.value = data.phone;
+      authOtpInput.value = ''; // Limpiar campo OTP
+      authCardStep1.classList.add('hidden');
+      authCardStep2.classList.remove('hidden');
+      authOverlay.classList.remove('hidden');
+      stopDashboardPolling();
+      showAuthError(authStep2Error, 'Ingresa el código OTP enviado a tu WhatsApp para autorizar este dispositivo.');
+      return;
+    }
+
     updateStatusUI(data);
   } catch (error) {
     console.error('Error al consultar estado:', error);
@@ -244,10 +294,6 @@ async function checkStatus() {
 }
 
 function updateStatusUI(data) {
-  if (data.status !== 'DISCONNECTED') {
-    cancelCountdown();
-  }
-
   if (data.status !== 'AUTHENTICATED') {
     loadingOverlay.classList.add('hidden');
   }
@@ -256,8 +302,15 @@ function updateStatusUI(data) {
     systemBadge.className = 'system-badge connected';
     statusText.innerText = 'Conectado';
     toggleEditGroupsBtn.disabled = false;
-    restartWhatsappBtn.disabled = false;
-    restartWhatsappBtn.innerText = 'Forzar Reconexión (Borrar sesión)';
+
+    // Ocultar el overlay de vinculación/inicio si se conectó con éxito
+    if (!authOverlay.classList.contains('hidden')) {
+      authOverlay.classList.add('hidden');
+    }
+    // No marcamos isUserAuthenticated = true si seguimos siendo 'Provisional' en memoria
+    if (currentTenantInfo && currentTenantInfo.name !== 'Provisional') {
+      isUserAuthenticated = true;
+    }
 
     if (!isConnected) {
       isConnected = true;
@@ -278,7 +331,9 @@ function updateStatusUI(data) {
 
     systemBadge.className = 'system-badge connected';
     statusText.innerText = 'Autenticado';
-    qrContainer.innerHTML = '<div class="spinner"></div><p class="qr-placeholder-text" style="color: var(--warning); font-weight: 600;">¡Autenticado! Sincronizando chats de WhatsApp...</p>';
+    const authedHtml = '<div class="spinner"></div><p class="qr-placeholder-text" style="color: var(--warning); font-weight: 600;">¡Autenticado! Sincronizando chats de WhatsApp...</p>';
+    qrContainer.innerHTML = authedHtml;
+    authQrContainer.innerHTML = authedHtml;
     qrContainer.style.background = 'rgba(255, 255, 255, 0.03)';
     qrContainer.style.borderColor = 'var(--card-border)';
 
@@ -308,101 +363,34 @@ function updateStatusUI(data) {
     if (data.status === 'QR_RECEIVED' && data.qrDataUrl) {
       systemBadge.className = 'system-badge';
       statusText.innerText = 'Esperando Escaneo';
-      qrContainer.innerHTML = `<img src="${data.qrDataUrl}" alt="Escanea el QR" class="qr-image">`;
+
+      const qrImageHtml = `<img src="${data.qrDataUrl}" alt="Escanea el QR" class="qr-image" style="max-width: 100%; height: auto; display: block; margin: 0 auto;">`;
+      qrContainer.innerHTML = qrImageHtml;
       qrContainer.style.background = 'white';
       qrContainer.style.borderColor = 'var(--card-border)';
-      restartWhatsappBtn.disabled = false;
-      restartWhatsappBtn.innerText = 'Forzar Reconexión (Borrar sesión)';
+
+      authQrContainer.innerHTML = qrImageHtml;
+      authQrContainer.style.background = 'white';
+      authQrContainer.style.borderColor = 'var(--card-border)';
+
       noGroupsSelectedMsg.innerText = 'Conecta WhatsApp para ver tus grupos...';
     } else if (data.status === 'INITIALIZING') {
       systemBadge.className = 'system-badge';
       statusText.innerText = 'Inicializando...';
-      qrContainer.innerHTML = '<div class="spinner"></div><p class="qr-placeholder-text">Cargando WhatsApp Web...</p>';
-      restartWhatsappBtn.disabled = true;
+      const initHtml = '<div class="spinner"></div><p class="qr-placeholder-text">Cargando WhatsApp Web...</p>';
+      qrContainer.innerHTML = initHtml;
+      authQrContainer.innerHTML = initHtml;
       noGroupsSelectedMsg.innerHTML = '<div class="spinner" style="width: 25px; height: 25px; margin: 0 auto 0.5rem;"></div>Iniciando WhatsApp...';
     } else if (data.status === 'DISCONNECTED') {
       systemBadge.className = 'system-badge disconnected';
       statusText.innerText = 'Desconectado';
-      qrContainer.innerHTML = '<div class="spinner"></div><p class="qr-placeholder-text">Desconectado. Reintentando...</p>';
+      const discHtml = '<div class="spinner"></div><p class="qr-placeholder-text">Generando conexion...</p>';
+      qrContainer.innerHTML = discHtml;
+      authQrContainer.innerHTML = discHtml;
       noGroupsSelectedMsg.innerText = 'WhatsApp desconectado. Esperando conexión...';
-
-      if (!isCountingDown) {
-        startAutomaticReconnectCountdown();
-      }
     }
   }
 }
-
-function startAutomaticReconnectCountdown() {
-  isCountingDown = true;
-  countdownSeconds = 15;
-  restartWhatsappBtn.disabled = false;
-
-  updateCountdownUI();
-
-  countdownInterval = setInterval(async () => {
-    countdownSeconds--;
-    updateCountdownUI();
-
-    if (countdownSeconds <= 0) {
-      clearInterval(countdownInterval);
-      await triggerRestart();
-    }
-  }, 1000);
-}
-
-function updateCountdownUI() {
-  restartWhatsappBtn.innerText = `Reconectando en ${countdownSeconds}s... (o clic para forzar)`;
-  qrContainer.innerHTML = `<div class="spinner"></div><p class="qr-placeholder-text">Desconectado. Reconectando en ${countdownSeconds} segundos...</p>`;
-}
-
-function cancelCountdown() {
-  if (isCountingDown) {
-    isCountingDown = false;
-    if (countdownInterval) {
-      clearInterval(countdownInterval);
-      countdownInterval = null;
-    }
-    restartWhatsappBtn.innerText = 'Forzar Reconexión (Borrar sesión)';
-  }
-}
-
-async function triggerRestart() {
-  cancelCountdown();
-  restartWhatsappBtn.disabled = true;
-  restartWhatsappBtn.innerText = 'Reiniciando cliente...';
-
-  try {
-    const res = await fetch('/api/whatsapp/restart', { method: 'POST' });
-    if (res.ok) {
-      isConnected = false;
-      userInfo.classList.add('hidden');
-      qrContainer.innerHTML = '<div class="spinner"></div><p class="qr-placeholder-text">Reiniciando sesión y solicitando QR...</p>';
-      qrContainer.style.background = 'rgba(255, 255, 255, 0.03)';
-      qrContainer.style.borderColor = 'var(--card-border)';
-    } else {
-      console.error('Error al reiniciar en el servidor.');
-    }
-  } catch (error) {
-    console.error('Error al conectar con el servidor:', error);
-  } finally {
-    setTimeout(() => {
-      restartWhatsappBtn.disabled = false;
-      restartWhatsappBtn.innerText = 'Forzar Reconexión (Borrar sesión)';
-    }, 4000);
-  }
-}
-
-restartWhatsappBtn.addEventListener('click', async () => {
-  if (isCountingDown) {
-    await triggerRestart();
-    return;
-  }
-
-  if (confirm('¿Estás seguro de que quieres forzar la reconexión? Esto cerrará la sesión actual, borrará el caché de autenticación y generará un código QR nuevo.')) {
-    await triggerRestart();
-  }
-});
 
 // ==========================================
 // LOGS Y CATÁLOGO DEL DASHBOARD
@@ -852,7 +840,7 @@ confirmRejectBtn.addEventListener('click', async () => {
   } else {
     reason = selectedRadio.nextElementSibling.innerText;
   }
-  
+
   rejectionModal.classList.add('hidden');
   await sendFeedback(currentCurationMatchId, 'REJECTED', reason);
   currentCurationMatchId = null;
@@ -860,4 +848,36 @@ confirmRejectBtn.addEventListener('click', async () => {
 
 // Inicialización de Autenticación
 checkAuthSession();
-authCheckInterval = setInterval(checkAuthSession, 3000); // Revisar sesión cada 3s
+
+// Handler de Cierre de Sesión
+logoutBtn.addEventListener('click', async () => {
+  if (!confirm('¿Estás seguro de que deseas cerrar sesión y desconectar el bot de WhatsApp?')) {
+    return;
+  }
+
+  logoutBtn.disabled = true;
+  logoutBtn.innerText = 'Cerrando sesión...';
+
+  try {
+    const res = await fetch('/api/auth/logout', { method: 'POST' });
+    if (res.ok) {
+      isUserAuthenticated = false;
+      currentTenantInfo = null;
+      userInfo.classList.add('hidden');
+      authOverlay.classList.remove('hidden');
+      resetAuthCards();
+      stopDashboardPolling();
+
+      // Registrar sesión provisoria automáticamente para mostrar el código QR
+      await registerProvisionalSession();
+    } else {
+      alert('Error al cerrar sesión.');
+    }
+  } catch (error) {
+    console.error('Error al enviar petición de logout:', error);
+    alert('Error de red al intentar cerrar sesión.');
+  } finally {
+    logoutBtn.disabled = false;
+    logoutBtn.innerText = '🚪 Cerrar Sesión';
+  }
+});

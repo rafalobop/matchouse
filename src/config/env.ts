@@ -13,6 +13,8 @@ export interface Config {
   whatsappGroupName?: string;
   supabaseUrl?: string;
   supabaseServiceRoleKey?: string;
+  supabaseJwtSecret: string;
+  supabaseAnonKey: string;
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -29,6 +31,8 @@ export function validateConfig(): Config {
   const whatsappGroupName = cleanEnvVar(process.env.WHATSAPP_GROUP_NAME);
   const supabaseUrl = cleanEnvVar(process.env.SUPABASE_URL);
   const supabaseServiceRoleKey = cleanEnvVar(process.env.SUPABASE_SERVICE_ROLE_KEY);
+  const supabaseJwtSecret = cleanEnvVar(process.env.SUPABASE_JWT_SECRET);
+  const supabaseAnonKey = cleanEnvVar(process.env.SUPABASE_ANON_KEY);
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
@@ -36,6 +40,14 @@ export function validateConfig(): Config {
 
   if (!googleSheetId) {
     throw new Error('Falta la variable de entorno GOOGLE_SHEET_ID. Por favor, configúrala en el archivo .env.');
+  }
+
+  if (!supabaseJwtSecret) {
+    throw new Error('Falta la variable de entorno SUPABASE_JWT_SECRET. Por favor, configúrala en el archivo .env.');
+  }
+
+  if (!supabaseAnonKey) {
+    throw new Error('Falta la variable de entorno SUPABASE_ANON_KEY. Por favor, configúrala en el archivo .env.');
   }
 
   return {
@@ -47,6 +59,8 @@ export function validateConfig(): Config {
     whatsappGroupName,
     supabaseUrl,
     supabaseServiceRoleKey,
+    supabaseJwtSecret,
+    supabaseAnonKey,
   };
 }
 

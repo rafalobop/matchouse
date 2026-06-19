@@ -3,39 +3,46 @@ import { logger } from '../services/logger';
 type QueueTask = () => Promise<void>;
 
 export class AsyncMessageQueue {
-  private queue: QueueTask[] = [];
-  private isProcessing = false;
+  private queues = new Map<string, QueueTask[]>();
+  private processingStates = new Map<string, boolean>();
   private delayMs: number;
 
   constructor(delayMs = 4500) {
     this.delayMs = delayMs;
   }
 
-  enqueue(task: QueueTask, tenantId?: string) {
-    this.queue.push(task);
-    logger.info({ queueLength: this.queue.length, tenantId }, '[QUEUE] Nuevo mensaje encolado');
-    this.processNext();
+  enqueue(task: QueueTask, tenantId: string = 'default') {
+    if (!this.queues.has(tenantId)) {
+      this.queues.set(tenantId, []);
+    }
+    const q = this.queues.get(tenantId)!;
+    q.push(task);
+    
+    logger.info({ queueLength: q.length, tenantId }, '[QUEUE] Nuevo mensaje encolado para el tenant');
+    this.processNext(tenantId);
   }
 
-  private async processNext() {
-    if (this.isProcessing) return;
-    if (this.queue.length === 0) return;
+  private async processNext(tenantId: string) {
+    if (this.processingStates.get(tenantId)) return;
+    
+    const q = this.queues.get(tenantId) || [];
+    if (q.length === 0) return;
 
-    this.isProcessing = true;
-    const task = this.queue.shift();
+    this.processingStates.set(tenantId, true);
+    const task = q.shift();
 
     if (task) {
       try {
         await task();
       } catch (error: any) {
-        logger.error({ error: error.message || error }, '[QUEUE] Error al ejecutar tarea de la cola');
+        logger.error({ error: error.message || error, tenantId }, '[QUEUE] Error al ejecutar tarea de la cola para el tenant');
       }
     }
 
-    // Esperar el delay configurado antes de procesar el siguiente mensaje (Rate Limit protection)
+    // Esperar el delay configurado antes de procesar el siguiente mensaje para este tenant
     setTimeout(() => {
-      this.isProcessing = false;
-      this.processNext();
+      this.processingStates.set(tenantId, false);
+      this.processNext(tenantId);
     }, this.delayMs);
   }
 }

@@ -2,6 +2,7 @@ import dns from 'dns';
 dns.setDefaultResultOrder('ipv4first');
 
 import express from 'express';
+import cookieParser from 'cookie-parser';
 import multer from 'multer';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -19,6 +20,7 @@ import { loadCatalogFromDisk, saveCatalogToDisk, processExcelBuffer } from './se
 import { coordinator } from './services/coordinator';
 import { messageQueue } from './utils/queue';
 import { startNotificationService } from './services/notifier';
+import { startDolarService } from './services/dolar';
 
 // Express Setup
 const app = express();
@@ -34,6 +36,7 @@ process.on('uncaughtException', (error) => {
 });
 
 app.use(express.json());
+app.use(cookieParser());
 
 // Servir archivos estáticos del dashboard (soportando dev y prod)
 const dashboardPath = fs.existsSync(path.join(__dirname, 'dashboard'))
@@ -62,36 +65,44 @@ function getClientIp(req: express.Request): string {
 }
 
 /**
- * Middleware para autenticación silenciosa basada en IP (IP-to-Tenant Binding)
- * Valida la ventana de 12 horas desde la vinculación
+ * Middleware para autenticación basada en Cookie JWT (Single Session & RLS)
  */
 async function tenantAuthMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const ip = getClientIp(req);
-  const { supabase } = require('./services/supabase');
+  const token = req.cookies?.housematch_session;
+  if (!token) {
+    return res.status(401).json({ error: 'No autorizado: Sesión no encontrada' });
+  }
+
+  const { supabase, getTenantClient } = require('./services/supabase');
+  const jwt = require('jsonwebtoken');
+  const { config } = require('./config/env');
 
   try {
-    const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+    const decoded = jwt.verify(token, config.supabaseJwtSecret) as any;
+    const tenantId = decoded.sub;
+    const sessionToken = decoded.session_token;
 
-    // Buscar un Tenant cuya IP coincida y esté dentro del rango de las 12 horas
+    // Validar en base de datos maestra si el token de sesión sigue activo
     const { data: tenant, error } = await supabase
       .from('Tenant')
-      .select('id')
-      .eq('associated_ip', ip)
-      .gt('ip_bound_at', twelveHoursAgo)
+      .select('id, active_session_token')
+      .eq('id', tenantId)
       .maybeSingle();
 
     if (error) throw error;
 
-    if (!tenant) {
-      return res.status(401).json({ error: 'No autorizado o sesión expirada' });
+    if (!tenant || tenant.active_session_token !== sessionToken) {
+      res.clearCookie('housematch_session');
+      return res.status(401).json({ error: 'Sesión invalidada o iniciada en otro dispositivo' });
     }
 
-    // Inyectar tenantId en la petición para el uso de los endpoints subsecuentes
-    (req as any).tenantId = tenant.id;
+    (req as any).tenantId = tenantId;
+    (req as any).supabaseClient = getTenantClient(token);
     next();
   } catch (err: any) {
     console.error('Error en tenantAuthMiddleware:', err);
-    res.status(500).json({ error: 'Error interno de autenticación por IP.' });
+    res.clearCookie('housematch_session');
+    res.status(401).json({ error: 'Sesión expirada o inválida' });
   }
 }
 
@@ -100,25 +111,32 @@ async function tenantAuthMiddleware(req: express.Request, res: express.Response,
 // ==========================================
 
 /**
- * Consulta el estado de sesión actual para la IP solicitante
+ * Consulta el estado de sesión actual para el token provisto por cookie
  */
 app.get('/api/auth/session', async (req, res) => {
-  const ip = getClientIp(req);
+  const token = req.cookies?.housematch_session;
+  if (!token) {
+    return res.json({ authenticated: false });
+  }
+
   const { supabase } = require('./services/supabase');
+  const jwt = require('jsonwebtoken');
+  const { config } = require('./config/env');
 
   try {
-    const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+    const decoded = jwt.verify(token, config.supabaseJwtSecret) as any;
+    const tenantId = decoded.sub;
+    const sessionToken = decoded.session_token;
 
     const { data: tenant, error } = await supabase
       .from('Tenant')
-      .select('id, name, phone_number, ip_bound_at')
-      .eq('associated_ip', ip)
-      .gt('ip_bound_at', twelveHoursAgo)
+      .select('id, name, phone_number, active_session_token')
+      .eq('id', tenantId)
       .maybeSingle();
 
     if (error) throw error;
 
-    if (tenant) {
+    if (tenant && tenant.active_session_token === sessionToken) {
       res.json({
         authenticated: true,
         tenant: {
@@ -128,10 +146,12 @@ app.get('/api/auth/session', async (req, res) => {
         }
       });
     } else {
+      res.clearCookie('housematch_session');
       res.json({ authenticated: false });
     }
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Error de base de datos' });
+    res.clearCookie('housematch_session');
+    res.json({ authenticated: false });
   }
 });
 
@@ -187,7 +207,7 @@ app.post('/api/auth/request-otp', async (req, res) => {
 });
 
 /**
- * Verifica el código OTP y vincula la IP actual del cliente al Tenant
+ * Verifica el código OTP y vincula la sesión actual mediante cookie HttpOnly
  */
 app.post('/api/auth/verify-otp', async (req, res) => {
   const { phone, otp } = req.body;
@@ -195,9 +215,8 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 
   const cleanPhone = phone.replace(/\D/g, '');
   const jid = cleanPhone + '@s.whatsapp.net';
-  const ip = getClientIp(req);
 
-  const { supabase } = require('./services/supabase');
+  const { supabase, generateTenantToken } = require('./services/supabase');
 
   try {
     const { data: tenant, error } = await supabase
@@ -217,22 +236,28 @@ app.post('/api/auth/verify-otp', async (req, res) => {
       return res.status(400).json({ error: 'Código OTP expirado.' });
     }
 
-    // 1. Quitar la vinculación previa de esta IP si estaba en uso por otro Tenant
-    await supabase
-      .from('Tenant')
-      .update({ associated_ip: null })
-      .eq('associated_ip', ip);
+    // Generar nuevo active_session_token (single session enforcement)
+    const newSessionToken = randomUUID();
 
-    // 2. Vincular IP al tenant actual y resetear OTP
+    // Actualizar tenant en la base de datos
     await supabase
       .from('Tenant')
       .update({
-        associated_ip: ip,
-        ip_bound_at: new Date().toISOString(),
+        active_session_token: newSessionToken,
         otp_code: null,
         otp_expires_at: null
       })
       .eq('id', tenant.id);
+
+    // Firmar JWT
+    const token = generateTenantToken(tenant.id, newSessionToken);
+
+    // Enviar cookie HttpOnly y Secure
+    res.cookie('housematch_session', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 días
+    });
 
     res.json({ success: true });
   } catch (err: any) {
@@ -241,13 +266,35 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 });
 
 /**
- * Registra un Tenant provisional y crea una sesión de WhatsApp para escaneo
+ * Registra un Tenant provisional, configura su sesión y devuelve el token mediante cookie
  */
 app.post('/api/auth/register-new', async (req, res) => {
-  const ip = getClientIp(req);
-  const { supabase } = require('./services/supabase');
+  const { supabase, generateTenantToken } = require('./services/supabase');
 
   try {
+    // Autolimpiar provisionales inactivos de más de 1 hora para evitar colmatar el límite de 10
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    try {
+      const { data: oldProv } = await supabase
+        .from('Tenant')
+        .select('id')
+        .eq('name', 'Provisional')
+        .is('phone_number', null)
+        .lt('created_at', oneHourAgo);
+
+      if (oldProv && oldProv.length > 0) {
+        const oldIds = oldProv.map((t: any) => t.id);
+        await supabase.from('Match').delete().in('tenant_id', oldIds);
+        await supabase.from('Message').delete().in('tenant_id', oldIds);
+        await supabase.from('Property').delete().in('tenant_id', oldIds);
+        await supabase.from('WhatsappSession').delete().in('tenant_id', oldIds);
+        await supabase.from('Tenant').delete().in('id', oldIds);
+        console.log(`[CLEANUP] Limpiados ${oldIds.length} tenants provisionales inactivos.`);
+      }
+    } catch (cleanErr) {
+      console.error('[CLEANUP] Error al autolimpiar provisionales:', cleanErr);
+    }
+
     // Validar límite estricto de 10 Tenants
     const { count, error: countErr } = await supabase
       .from('Tenant')
@@ -259,21 +306,16 @@ app.post('/api/auth/register-new', async (req, res) => {
       return res.status(400).json({ error: 'Límite de 10 licencias activas alcanzado en el sistema.' });
     }
 
-    // Desvincular esta IP si estuviera en uso
-    await supabase
-      .from('Tenant')
-      .update({ associated_ip: null })
-      .eq('associated_ip', ip);
+    const tempId = randomUUID();
+    const newSessionToken = randomUUID();
 
     // Crear un Tenant provisional
-    const tempId = randomUUID();
     await supabase
       .from('Tenant')
       .insert({
         id: tempId,
         name: 'Provisional',
-        associated_ip: ip,
-        ip_bound_at: new Date().toISOString()
+        active_session_token: newSessionToken
       });
 
     // Inicializar sesión de WhatsApp provisional
@@ -287,9 +329,32 @@ app.post('/api/auth/register-new', async (req, res) => {
       console.error(`[MAIN] Fallo inicialización provisional tenant ${tempId}:`, err);
     });
 
+    // Firmar JWT y establecer cookie
+    const token = generateTenantToken(tempId, newSessionToken);
+    res.cookie('housematch_session', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 días
+    });
+
     res.json({ success: true, tenantId: tempId });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Error interno al crear bot.' });
+  }
+});
+
+/**
+ * Cierra la sesión activa en el frontend, limpia la cookie y desconecta WhatsApp
+ */
+app.post('/api/auth/logout', tenantAuthMiddleware, async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const { logoutTenantSession } = require('./services/whatsapp');
+  try {
+    await logoutTenantSession(tenantId);
+    res.clearCookie('housematch_session');
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Error al desconectar sesión.' });
   }
 });
 
@@ -297,33 +362,96 @@ app.post('/api/auth/register-new', async (req, res) => {
 // ENDPOINTS DE API PROTEGIDOS POR IP (TENANT)
 // ==========================================
 
-app.get('/api/status', tenantAuthMiddleware, (req, res) => {
+app.get('/api/status', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
-  const status = sessionStatuses.get(tenantId) || { status: 'DISCONNECTED' };
-  res.json(status);
-});
+  const { tenantRedirects, initTenantSession } = require('./services/whatsapp');
+  const { supabase, generateTenantToken } = require('./services/supabase');
 
-app.post('/api/whatsapp/restart', tenantAuthMiddleware, async (req, res) => {
-  const tenantId = (req as any).tenantId;
-  try {
-    await logoutTenantSession(tenantId);
+  // 1. Validar si existe una redirección porque este tenant provisorio escaneó un QR de un número ya registrado
+  const redirectId = tenantRedirects.get(tenantId);
+  if (redirectId) {
+    try {
+      const { data: extTenant } = await supabase
+        .from('Tenant')
+        .select('active_session_token, phone_number')
+        .eq('id', redirectId)
+        .maybeSingle();
 
-    // Volver a inicializar
+      if (extTenant) {
+        if (extTenant.active_session_token) {
+          // Ya tiene una sesión web activa en otro dispositivo -> Forzar OTP
+          tenantRedirects.delete(tenantId);
+
+          const otp = Math.floor(100000 + Math.random() * 900000).toString();
+          const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+          await supabase
+            .from('Tenant')
+            .update({ otp_code: otp, otp_expires_at: expiresAt })
+            .eq('id', redirectId);
+
+          const { sendWhatsAppMessage } = require('./services/whatsapp');
+          const cleanPhone = extTenant.phone_number.split('@')[0];
+          await sendWhatsAppMessage(redirectId, cleanPhone, `🔐 Código de verificación HouseMatch: *${otp}*\n\nEste código es de un solo uso y expira en 5 minutos.`);
+
+          // Limpiar la sesión provisoria de la base de datos
+          await supabase.from('Tenant').delete().eq('id', tenantId);
+
+          return res.json({
+            status: 'REQUIRES_OTP',
+            phone: cleanPhone
+          });
+        } else {
+          // No tiene sesión web activa -> Redirigir/iniciar sesión automáticamente
+          tenantRedirects.delete(tenantId);
+          const newSessionToken = randomUUID();
+          await supabase
+            .from('Tenant')
+            .update({ active_session_token: newSessionToken })
+            .eq('id', redirectId);
+
+          const token = generateTenantToken(redirectId, newSessionToken);
+          res.cookie('housematch_session', token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            maxAge: 7 * 24 * 60 * 60 * 1000
+          });
+
+          await supabase.from('Tenant').delete().eq('id', tenantId);
+
+          return res.json({
+            status: 'REDIRECT',
+            tenantId: redirectId
+          });
+        }
+      }
+    } catch (err) {
+      console.error('[STATUS] Error al procesar redirección de tenant:', err);
+    }
+  }
+
+  // 2. Si no hay redirección, comprobar el estado de sesión de WhatsApp
+  const { activeSessions, sessionStatuses } = require('./services/whatsapp');
+  let tenantStatus = sessionStatuses.get(tenantId);
+
+  // Auto-sanado: Si el tenant no está en activeSessions, volver a iniciarlo
+  if (!activeSessions.has(tenantId)) {
+    console.log(`[STATUS] Inicializando sesión de WhatsApp (provisional o caída) para tenant ${tenantId}...`);
     initTenantSession(tenantId, {
-      onMessage: async (message, senderName, groupName, senderPhone, tId) => {
+      onMessage: async (message: any, senderName: any, groupName: any, senderPhone: any, tId: any) => {
         messageQueue.enqueue(async () => {
           await coordinator.handleIncomingMessage(message.body, senderName, groupName, senderPhone, message.id, tId);
         }, tId);
       }
-    }).catch(err => {
-      console.error(`Error al reiniciar tenant ${tenantId}:`, err);
+    }).catch((err: any) => {
+      console.error(`[STATUS] Fallo de inicio automático de WhatsApp para tenant ${tenantId}:`, err);
     });
 
-    res.json({ success: true });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Error al reiniciar cliente.' });
+    tenantStatus = { status: 'INITIALIZING' };
   }
+
+  res.json(tenantStatus || { status: 'DISCONNECTED' });
 });
+
 
 app.get('/api/groups', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
@@ -383,7 +511,7 @@ app.get('/api/catalog', tenantAuthMiddleware, (req, res) => {
 
 app.get('/api/matches', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
-  const { supabase } = require('./services/supabase');
+  const supabase = (req as any).supabaseClient;
   try {
     const { data: dbMatches, error } = await supabase
       .from('Match')
@@ -392,7 +520,6 @@ app.get('/api/matches', tenantAuthMiddleware, async (req, res) => {
         property:Property(*),
         message:Message(*)
       `)
-      .eq('tenant_id', tenantId)
       .order('fecha', { ascending: false })
       .limit(50);
 
@@ -434,7 +561,7 @@ app.post('/api/matches/:id/feedback', tenantAuthMiddleware, async (req, res) => 
   const tenantId = (req as any).tenantId;
   const { id } = req.params;
   const { status, reason } = req.body;
-  const { supabase } = require('./services/supabase');
+  const supabase = (req as any).supabaseClient;
 
   if (!status || !['ACCEPTED', 'REJECTED'].includes(status)) {
     return res.status(400).json({ error: 'El estado debe ser ACCEPTED o REJECTED' });
@@ -447,8 +574,7 @@ app.post('/api/matches/:id/feedback', tenantAuthMiddleware, async (req, res) => 
         userReviewStatus: status,
         feedbackReason: status === 'REJECTED' ? (reason || 'No especificado') : null
       })
-      .eq('id', id)
-      .eq('tenant_id', tenantId);
+      .eq('id', id);
 
     if (error) throw error;
 
@@ -465,9 +591,6 @@ app.post('/api/matches/:id/feedback', tenantAuthMiddleware, async (req, res) => 
 
 async function main() {
   console.log('Iniciando HouseMatch MVP Multi-Tenant con Dashboard...');
-
-  // Diagnóstico de entorno
-  console.log('[DIAGNOSTIC] PUPPETEER_EXECUTABLE_PATH:', process.env.PUPPETEER_EXECUTABLE_PATH);
 
   const { supabase } = require('./services/supabase');
   const { syncPropertiesToDatabase } = require('./services/sheets');
@@ -488,10 +611,11 @@ async function main() {
   for (const tenant of tenants) {
     const tenantId = tenant.id;
     if (tenantId === '00000000-0000-0000-0000-000000000000') {
-      console.log(`[ARRANQUE] Omitiendo inicialización del Tenant por Defecto del sistema (${tenantId})`);
       continue;
     }
-    console.log(`[ARRANQUE] Inicializando datos y WhatsApp para Tenant: ${tenant.name} (${tenantId})`);
+    if (!tenant.phone_number) {
+      continue;
+    }
 
     let propertyCatalog: Property[] = [];
     try {
@@ -544,6 +668,9 @@ async function main() {
       console.error(`[ARRANQUE] Fallo de inicio de WhatsApp para tenant ${tenantId}:`, err);
     });
   }
+
+  // Iniciar servicio de cotización de Dólar Blue (dinámico y horaria)
+  startDolarService();
 
   // Iniciar servicio notificador consolidado (corre cada 10 min por defecto)
   startNotificationService();
