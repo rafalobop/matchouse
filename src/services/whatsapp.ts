@@ -98,7 +98,8 @@ export async function sendWhatsAppNotification(tenantId: string, message: string
     return;
   }
   try {
-    const selfJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    const cleanNumber = sock.user.id.split('@')[0].split(':')[0];
+    const selfJid = `${cleanNumber}@s.whatsapp.net`;
     await sock.sendMessage(selfJid, { text: message });
     console.log(`[WHATSAPP] Notificación enviada al usuario conectado del tenant ${tenantId} (${selfJid}).`);
   } catch (error) {
@@ -242,7 +243,7 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
       tenantStatus.qrDataUrl = undefined;
 
       const userJid = sock.user?.id;
-      const userNumber = userJid ? userJid.split(':')[0] : 'Desconocido';
+      const userNumber = userJid ? userJid.split('@')[0].split(':')[0] : 'Desconocido';
       tenantStatus.user = {
         name: sock.user?.name || 'Usuario',
         number: userNumber
