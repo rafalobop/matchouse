@@ -1,6 +1,15 @@
 import { supabase } from './supabase';
 import { activeSessions, sendWhatsAppMessage } from './whatsapp';
 import { logger } from './logger';
+import webpush from 'web-push';
+import { config } from '../config/env';
+
+// Configurar Web Push
+webpush.setVapidDetails(
+  config.vapidEmail,
+  config.vapidPublicKey,
+  config.vapidPrivateKey
+);
 
 // Historial para evitar repeticiones consecutivas de plantillas por Tenant
 const lastTemplateIndex = new Map<string, number>();
@@ -184,6 +193,45 @@ export async function sendConsolidatedNotifications() {
           await sock.sendMessage(selfJid, { text: consolidatedMessage });
           logger.info({ tenantId, messageId, matchCount: matchGroup.length }, '[NOTIFIER] Mensaje consolidado enviado con éxito.');
           
+          // Enviar Web Push Notification
+          try {
+            const { data: subs, error: subsError } = await supabase
+              .from('WebPushSubscription')
+              .select('id, subscription')
+              .eq('tenant_id', tenantId);
+
+            if (subsError) throw subsError;
+
+            if (subs && subs.length > 0) {
+              const payload = JSON.stringify({
+                title: `🏠 Match Detectado - ${groupName}`,
+                body: `Se encontraron propiedades coincidentes para el pedido de ${sender}.`,
+                tag: `match-${messageId}`,
+                data: {
+                  url: '/'
+                }
+              });
+
+              for (const sub of subs) {
+                try {
+                  await webpush.sendNotification(sub.subscription as any, payload);
+                } catch (pushErr: any) {
+                  if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
+                    logger.info({ subId: sub.id, statusCode: pushErr.statusCode }, '[NOTIFIER] Eliminando suscripción web push expirada/inválida.');
+                    await supabase
+                      .from('WebPushSubscription')
+                      .delete()
+                      .eq('id', sub.id);
+                  } else {
+                    logger.error({ error: pushErr.message || pushErr, subId: sub.id }, '[NOTIFIER] Error al enviar notificación web push individual.');
+                  }
+                }
+              }
+            }
+          } catch (pushGeneralErr: any) {
+            logger.error({ error: pushGeneralErr.message || pushGeneralErr, tenantId }, '[NOTIFIER] Error al procesar notificaciones web push.');
+          }
+
           // Registrar IDs para actualización de estado
           matchGroup.forEach(m => processedMatchIds.push(m.id));
         } catch (sendErr) {
