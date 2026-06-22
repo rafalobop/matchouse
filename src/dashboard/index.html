@@ -9,6 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
+  <link rel="manifest" href="/manifest.json">
 </head>
 
 <body>
@@ -48,9 +49,12 @@
           <p class="tagline">WhatsApp Real Estate Pipeline</p>
         </div>
       </div>
-      <div class="system-badge" id="system-badge">
-        <span class="badge-dot"></span>
-        <span class="badge-text" id="status-text">Conectando...</span>
+      <div style="display: flex; align-items: center; gap: 0.75rem;">
+        <button id="btn-push-subscribe" class="btn btn-secondary btn-small hidden" style="display: flex; align-items: center; gap: 6px; font-weight: 600; padding: 0.4rem 0.8rem; border-radius: 8px;">🔔 Activar Notificaciones</button>
+        <div class="system-badge" id="system-badge">
+          <span class="badge-dot"></span>
+          <span class="badge-text" id="status-text">Conectando...</span>
+        </div>
       </div>
     </header>
 

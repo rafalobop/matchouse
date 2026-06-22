@@ -98,7 +98,8 @@ export async function sendWhatsAppNotification(tenantId: string, message: string
     return;
   }
   try {
-    const selfJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    const cleanNumber = sock.user.id.split('@')[0].split(':')[0];
+    const selfJid = `${cleanNumber}@s.whatsapp.net`;
     await sock.sendMessage(selfJid, { text: message });
     console.log(`[WHATSAPP] Notificación enviada al usuario conectado del tenant ${tenantId} (${selfJid}).`);
   } catch (error) {
@@ -242,7 +243,7 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
       tenantStatus.qrDataUrl = undefined;
 
       const userJid = sock.user?.id;
-      const userNumber = userJid ? userJid.split(':')[0] : 'Desconocido';
+      const userNumber = userJid ? userJid.split('@')[0].split(':')[0] : 'Desconocido';
       tenantStatus.user = {
         name: sock.user?.name || 'Usuario',
         number: userNumber
@@ -269,14 +270,29 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
         const targetTenantId = existingTenant ? existingTenant.id : tenantId;
 
         if (existingTenant && existingTenant.id !== tenantId) {
-          // El número de teléfono ya está registrado bajo otro tenantId (por ejemplo de un reinicio anterior).
-          // Re-asociamos la sesión activa en memoria al ID consolidado de la base de datos para evitar duplicados.
-          console.log(`[WHATSAPP] Mapeando tenant provisorio ${tenantId} -> consolidado ${existingTenant.id}`);
-          activeSessions.delete(tenantId);
-          sessionStatuses.delete(tenantId);
-          
-          activeSessions.set(existingTenant.id, sock);
-          sessionStatuses.set(existingTenant.id, tenantStatus);
+          console.log(`[WHATSAPP] Migrando sesión de tenant provisorio ${tenantId} a consolidado ${existingTenant.id}...`);
+
+          // 1. Obtener todas las claves del provisorio de la base de datos
+          const { data: sessionRows } = await supabase
+            .from('WhatsappSession')
+            .select('*')
+            .eq('tenant_id', tenantId);
+
+          if (sessionRows && sessionRows.length > 0) {
+            // 2. Insertar/actualizar en el consolidado
+            const upsertData = sessionRows.map((row: any) => ({
+              tenant_id: existingTenant.id,
+              key: row.key,
+              value: row.value
+            }));
+            await supabase.from('WhatsappSession').upsert(upsertData);
+            
+            // 3. Borrar del provisorio en la base de datos
+            await supabase
+              .from('WhatsappSession')
+              .delete()
+              .eq('tenant_id', tenantId);
+          }
 
           // Registrar la redirección para que el index.ts del api pueda actualizar la cookie del navegador
           tenantRedirects.set(tenantId, existingTenant.id);
@@ -287,6 +303,24 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
               name: sock.user?.name || 'Inmobiliaria'
             })
             .eq('id', existingTenant.id);
+
+          // 4. Cerrar el socket provisorio (para evitar que siga escribiendo con el tenant_id viejo)
+          activeSessions.delete(tenantId);
+          sessionStatuses.delete(tenantId);
+          try {
+            sock.ev.removeAllListeners('connection.update');
+            sock.ev.removeAllListeners('creds.update');
+            sock.ev.removeAllListeners('messages.upsert');
+            sock.end(undefined);
+          } catch (e) {}
+
+          // 5. Iniciar la sesión consolidada con el ID correcto
+          console.log(`[WHATSAPP] Inicializando sesión consolidada para tenant ${existingTenant.id}`);
+          initTenantSession(existingTenant.id, options).catch(err => {
+            console.error(`[WHATSAPP] Error al iniciar sesión consolidada ${existingTenant.id}:`, err);
+          });
+
+          return;
         } else {
           // Es un tenant nuevo o los IDs coinciden
           await supabase
