@@ -65,6 +65,8 @@ window.fetch = async function (...args) {
   if (response.status === 401) {
     if (isUserAuthenticated) {
       isUserAuthenticated = false;
+      const btnPushSubscribe = document.getElementById('btn-push-subscribe');
+      if (btnPushSubscribe) btnPushSubscribe.classList.add('hidden');
       authOverlay.classList.remove('hidden');
       resetAuthCards();
       stopDashboardPolling();
@@ -310,6 +312,11 @@ function updateStatusUI(data) {
     // No marcamos isUserAuthenticated = true si seguimos siendo 'Provisional' en memoria
     if (currentTenantInfo && currentTenantInfo.name !== 'Provisional') {
       isUserAuthenticated = true;
+      const btnPushSubscribe = document.getElementById('btn-push-subscribe');
+      if (btnPushSubscribe && typeof swRegistration !== 'undefined' && swRegistration) {
+        btnPushSubscribe.classList.remove('hidden');
+        updatePushButton();
+      }
     }
 
     if (!isConnected) {
@@ -351,6 +358,8 @@ function updateStatusUI(data) {
     isConnected = false;
     userInfo.classList.add('hidden');
     toggleEditGroupsBtn.disabled = true;
+    const btnPushSubscribe = document.getElementById('btn-push-subscribe');
+    if (btnPushSubscribe) btnPushSubscribe.classList.add('hidden');
 
     groupsEditSection.classList.add('hidden');
     groupsViewSection.classList.remove('hidden');
@@ -846,8 +855,124 @@ confirmRejectBtn.addEventListener('click', async () => {
   currentCurationMatchId = null;
 });
 
-// Inicialización de Autenticación
-checkAuthSession();
+// ==========================================
+// NOTIFICACIONES WEB PUSH
+// ==========================================
+
+const btnPushSubscribe = document.getElementById('btn-push-subscribe');
+let swRegistration = null;
+
+async function initPushNotifications() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    console.warn('Las notificaciones Web Push no son soportadas en este navegador o entorno.');
+    return;
+  }
+
+  try {
+    // Registrar el Service Worker
+    swRegistration = await navigator.serviceWorker.register('/sw.js');
+    console.log('Service Worker registrado correctamente.');
+
+    // Mostrar el botón si estamos autenticados
+    if (isUserAuthenticated && currentTenantInfo && currentTenantInfo.name !== 'Provisional') {
+      btnPushSubscribe.classList.remove('hidden');
+      updatePushButton();
+    }
+  } catch (error) {
+    console.error('Error al registrar el Service Worker:', error);
+  }
+}
+
+// Convertir clave VAPID base64url a Uint8Array
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding)
+    .replace(/\-/g, '+')
+    .replace(/_/g, '/');
+
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+async function updatePushButton() {
+  if (!swRegistration || !btnPushSubscribe) return;
+  
+  if (Notification.permission === 'denied') {
+    btnPushSubscribe.innerText = '🔔 Bloqueado';
+    btnPushSubscribe.disabled = true;
+    return;
+  }
+
+  try {
+    const subscription = await swRegistration.pushManager.getSubscription();
+    if (subscription) {
+      btnPushSubscribe.innerText = '✅ Notificaciones Activas';
+      btnPushSubscribe.disabled = true;
+      btnPushSubscribe.style.opacity = '0.7';
+    } else {
+      btnPushSubscribe.innerText = '🔔 Activar Notificaciones';
+      btnPushSubscribe.disabled = false;
+      btnPushSubscribe.style.opacity = '1';
+    }
+  } catch (err) {
+    console.error('Error al obtener suscripción de push:', err);
+  }
+}
+
+if (btnPushSubscribe) {
+  btnPushSubscribe.addEventListener('click', async () => {
+    btnPushSubscribe.disabled = true;
+    btnPushSubscribe.innerText = 'Solicitando permiso...';
+
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        alert('Se requieren permisos de notificación para recibir alertas en tiempo real.');
+        updatePushButton();
+        return;
+      }
+
+      // Obtener la clave pública VAPID del servidor
+      const keyRes = await fetch('/api/notifications/vapid-public-key');
+      if (!keyRes.ok) throw new Error('No se pudo obtener la clave VAPID pública.');
+      const { publicKey } = await keyRes.json();
+
+      const applicationServerKey = urlBase64ToUint8Array(publicKey);
+      const subscription = await swRegistration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: applicationServerKey
+      });
+
+      // Enviar suscripción al backend
+      const subRes = await fetch('/api/notifications/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subscription })
+      });
+
+      if (subRes.ok) {
+        console.log('Suscripción Web Push registrada con éxito.');
+      } else {
+        console.error('Error al guardar la suscripción en el backend.');
+      }
+    } catch (error) {
+      console.error('Error al suscribirse a Web Push:', error);
+      alert('Ocurrió un error al activar las notificaciones.');
+    } finally {
+      updatePushButton();
+    }
+  });
+}
+
+// Inicialización de Autenticación y Notificaciones
+checkAuthSession().then(() => {
+  initPushNotifications();
+});
 
 // Handler de Cierre de Sesión
 logoutBtn.addEventListener('click', async () => {
@@ -863,6 +988,7 @@ logoutBtn.addEventListener('click', async () => {
     if (res.ok) {
       isUserAuthenticated = false;
       currentTenantInfo = null;
+      if (btnPushSubscribe) btnPushSubscribe.classList.add('hidden');
       userInfo.classList.add('hidden');
       authOverlay.classList.remove('hidden');
       resetAuthCards();
