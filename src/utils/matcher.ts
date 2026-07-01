@@ -44,19 +44,23 @@ function isPointInPolygon(latitude: number, longitude: number, polygon: number[]
   return inside;
 }
 
+function getPisoLoteText(p: Pick<Property, 'floor' | 'unit' | 'block' | 'lot'>): string {
+  return [p.floor, p.unit, p.block, p.lot].filter(Boolean).join(' ');
+}
+
 /**
  * Clasifica de manera local el domicilio y características de una propiedad en un zona_id
  */
 export function classifyPropertyZoneId(property: Property): string {
-  if (property.latitud !== undefined && property.longitud !== undefined && property.latitud !== 0 && property.longitud !== 0) {
+  if (property.latitude !== undefined && property.longitude !== undefined && property.latitude !== 0 && property.longitude !== 0) {
     for (const [zoneId, zoneData] of Object.entries(zones)) {
-      if (zoneData.coordinates && isPointInPolygon(property.latitud, property.longitud, zoneData.coordinates)) {
+      if (zoneData.coordinates && isPointInPolygon(property.latitude, property.longitude, zoneData.coordinates)) {
         return zoneId;
       }
     }
   }
 
-  const text = `${property.domicilio} ${property.caracteristicas} ${property.sheetName} ${property.zona}`.toLowerCase();
+  const text = `${property.address} ${property.features ?? ''} ${property.sheet_name} ${property.zone_display_name ?? ''}`.toLowerCase();
 
   if (text.includes('mate de luna') || text.includes('parque avellaneda')) {
     return 'ZONA_MATE_DE_LUNA';
@@ -120,7 +124,7 @@ export function classifyPropertyZoneId(property: Property): string {
  * Determina si una propiedad está ubicada dentro de un country o barrio cerrado/privado
  */
 export function isPropertyInCountry(property: Property): boolean {
-  const text = `${property.domicilio} ${property.caracteristicas} ${property.pisoLote} ${property.sheetName}`.toLowerCase();
+  const text = `${property.address} ${property.features ?? ''} ${getPisoLoteText(property)} ${property.sheet_name}`.toLowerCase();
 
   const countryKeywords = [
     'country',
@@ -151,7 +155,7 @@ export class OperationMatchingStrategy implements IMatchingStrategy {
       ? (zoneIntent.operacion === 'COMPRA' ? 'venta' : 'alquiler')
       : request.operacion;
 
-    if (operacionRequest !== 'desconocido' && operacionRequest !== property.operacion) {
+    if (operacionRequest !== 'desconocido' && operacionRequest !== property.operation) {
       return { isMatch: false, scoreDeduction: 0, reason: 'Diferente tipo de operación' };
     }
     return { isMatch: true, scoreDeduction: 0 };
@@ -162,7 +166,7 @@ export class PropertyTypeMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Tipo de Propiedad';
 
   evaluate(request: ExtractedRealEstateRequest, property: Property): MatchingResult {
-    if (request.tipo_propiedad !== 'otro' && request.tipo_propiedad !== property.tipo_propiedad) {
+    if (request.tipo_propiedad !== 'otro' && request.tipo_propiedad !== property.property_type) {
       return { isMatch: false, scoreDeduction: 0, reason: 'Diferente tipo de propiedad' };
     }
     return { isMatch: true, scoreDeduction: 0 };
@@ -193,13 +197,21 @@ export class CountryMatchingStrategy implements IMatchingStrategy {
   }
 }
 
+/**
+ * Extension point for spatial zone matching.
+ * TODO(spatial): Replace with PostGIS centroid+radius lookup when available.
+ */
+export function resolvePropertyZoneId(property: Property): string {
+  return classifyPropertyZoneId(property);
+}
+
 export class ZoneMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Zona';
 
   evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
     // 1. Validar por el Agente 2 (Geolocalización Inexacta / Intenciones) si existe
     if (zoneIntent && zoneIntent.zona_id !== 'DESCONOCIDO') {
-      const propZoneId = classifyPropertyZoneId(property);
+      const propZoneId = resolvePropertyZoneId(property);
       if (propZoneId !== zoneIntent.zona_id) {
         return {
           isMatch: false,
@@ -213,13 +225,13 @@ export class ZoneMatchingStrategy implements IMatchingStrategy {
     // 2. Zona de Ubicación General (Si no se usó el Agente 2 para geo-filtrado específico)
     if (request.zonas.length > 0) {
       const zoneMatch = request.zonas.some(zonaReq =>
-        zonaReq.toLowerCase() === property.zona.toLowerCase()
+        zonaReq.toLowerCase() === (property.zone_display_name ?? '').toLowerCase()
       );
       if (!zoneMatch) {
         return {
           isMatch: false,
           scoreDeduction: 0,
-          reason: `Zona de la propiedad (${property.zona}) no solicitada en: ${request.zonas.join(', ')}`
+          reason: `Zona de la propiedad (${property.zone_display_name ?? ''}) no solicitada en: ${request.zonas.join(', ')}`
         };
       }
     }
@@ -237,18 +249,18 @@ export class BedroomsMatchingStrategy implements IMatchingStrategy {
       : request.dormitorios;
 
     if (bedroomsRequired !== null) {
-      if (property.dormitorios < bedroomsRequired) {
+      if (property.bedrooms < bedroomsRequired) {
         return {
           isMatch: false,
           scoreDeduction: 0,
-          reason: `Faltan dormitorios (pide mínimo ${bedroomsRequired}, tiene ${property.dormitorios})`
+          reason: `Faltan dormitorios (pide mínimo ${bedroomsRequired}, tiene ${property.bedrooms})`
         };
       }
-      if (property.dormitorios > bedroomsRequired) {
+      if (property.bedrooms > bedroomsRequired) {
         return {
           isMatch: true,
           scoreDeduction: 10,
-          reason: `Tiene más dormitorios de lo requerido (pide ${bedroomsRequired}, tiene ${property.dormitorios})`
+          reason: `Tiene más dormitorios de lo requerido (pide ${bedroomsRequired}, tiene ${property.bedrooms})`
         };
       }
     }
@@ -260,17 +272,17 @@ export class BudgetMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Presupuesto';
 
   evaluate(request: ExtractedRealEstateRequest, property: Property): MatchingResult {
-    if (request.presupuesto_max !== null && property.precio > 0) {
-      let propertyPriceInReqCurrency = property.precio;
+    if (request.presupuesto_max !== null && property.price > 0) {
+      let propertyPriceInReqCurrency = property.price;
       let conversionReason = '';
 
-      if (request.moneda !== 'desconocido' && request.moneda !== property.moneda) {
+      if (request.moneda !== 'desconocido' && request.moneda !== property.currency) {
         const dolarRate = getDolarBlueRate();
-        if (request.moneda === 'USD' && property.moneda === 'ARS') {
-          propertyPriceInReqCurrency = property.precio / dolarRate;
+        if (request.moneda === 'USD' && property.currency === 'ARS') {
+          propertyPriceInReqCurrency = property.price / dolarRate;
           conversionReason = `Conversión de moneda: propiedad en ARS convertida a USD usando tasa ref $${dolarRate}`;
-        } else if (request.moneda === 'ARS' && property.moneda === 'USD') {
-          propertyPriceInReqCurrency = property.precio * dolarRate;
+        } else if (request.moneda === 'ARS' && property.currency === 'USD') {
+          propertyPriceInReqCurrency = property.price * dolarRate;
           conversionReason = `Conversión de moneda: propiedad en USD convertida a ARS usando tasa ref $${dolarRate}`;
         }
       }
@@ -280,7 +292,7 @@ export class BudgetMatchingStrategy implements IMatchingStrategy {
         return {
           isMatch: false,
           scoreDeduction: 0,
-          reason: `El precio (${property.moneda} ${property.precio}) excede el presupuesto máximo (${request.moneda} ${request.presupuesto_max})`
+          reason: `El precio (${property.currency} ${property.price}) excede el presupuesto máximo (${request.moneda} ${request.presupuesto_max})`
         };
       }
 
@@ -312,8 +324,8 @@ export class FeaturesMatchingStrategy implements IMatchingStrategy {
       ...(zoneIntent?.caracteristicas_claves || [])
     ]));
 
-    if (requiredFeatures.length > 0 && property.caracteristicas) {
-      const descLower = property.caracteristicas.toLowerCase();
+    if (requiredFeatures.length > 0 && property.features) {
+      const descLower = (property.features ?? '').toLowerCase();
       const matchingFeatures: string[] = [];
       const missingFeatures: string[] = [];
 
