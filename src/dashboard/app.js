@@ -37,18 +37,15 @@ const saveStatus = document.getElementById('save-status');
 
 const matchesTbody = document.getElementById('matches-tbody');
 
-// Elementos del DOM - Auth OTP
+// Elementos del DOM - Auth Magic Link
 const authOverlay = document.getElementById('auth-overlay');
 const authCardStep1 = document.getElementById('auth-card-step1');
 const authCardStep2 = document.getElementById('auth-card-step2');
-const authPhoneInput = document.getElementById('auth-phone-input');
-const authOtpInput = document.getElementById('auth-otp-input');
-const authSendOtpBtn = document.getElementById('auth-send-otp-btn');
-const authVerifyOtpBtn = document.getElementById('auth-verify-otp-btn');
+const authEmailInput = document.getElementById('auth-email-input');
+const authSendMagicLinkBtn = document.getElementById('auth-send-magic-link-btn');
 const authBackBtn = document.getElementById('auth-back-btn');
 const authStep1Error = document.getElementById('auth-step1-error');
 const authStep2Error = document.getElementById('auth-step2-error');
-const authQrContainer = document.getElementById('auth-qr-container');
 
 // Estado de Autenticación
 let authCheckInterval = null;
@@ -65,13 +62,12 @@ window.fetch = async function (...args) {
   if (response.status === 401) {
     if (isUserAuthenticated) {
       isUserAuthenticated = false;
+      currentTenantInfo = null;
       const btnPushSubscribe = document.getElementById('btn-push-subscribe');
       if (btnPushSubscribe) btnPushSubscribe.classList.add('hidden');
       authOverlay.classList.remove('hidden');
       resetAuthCards();
       stopDashboardPolling();
-      // Registrar una nueva sesión provisoria automáticamente para mostrar un nuevo QR
-      registerProvisionalSession();
     }
   }
   return response;
@@ -86,27 +82,7 @@ function resetAuthCards() {
   authCardStep1.classList.remove('hidden');
   hideAuthError(authStep1Error);
   hideAuthError(authStep2Error);
-  authOtpInput.value = '';
-}
-
-let isRegisteringProvisional = false;
-async function registerProvisionalSession() {
-  if (isRegisteringProvisional) return;
-  isRegisteringProvisional = true;
-  try {
-    const res = await fetch('/api/auth/register-new', { method: 'POST' });
-    if (res.ok) {
-      await checkAuthSession();
-    } else {
-      const data = await res.json();
-      authQrContainer.innerHTML = `<div class="qr-error-icon" style="font-size: 2.5rem; margin-bottom: 0.5rem;">❌</div><p class="qr-placeholder-text" style="color: var(--error); font-weight: 600; text-align: center;">${data.error || 'Error al iniciar sesión provisoria.'}</p>`;
-    }
-  } catch (error) {
-    console.error('Error al registrar sesión provisional para QR:', error);
-    authQrContainer.innerHTML = `<div class="qr-error-icon" style="font-size: 2.5rem; margin-bottom: 0.5rem;">❌</div><p class="qr-placeholder-text" style="color: var(--error); font-weight: 600; text-align: center;">Error de conexión con el servidor.</p>`;
-  } finally {
-    isRegisteringProvisional = false;
-  }
+  if (authEmailInput) authEmailInput.value = '';
 }
 
 async function checkAuthSession() {
@@ -116,19 +92,9 @@ async function checkAuthSession() {
 
     if (data.authenticated) {
       currentTenantInfo = data.tenant;
-
-      // Si el tenant ya es un bot registrado (nombre distinto a Provisional),
-      // le permitimos entrar al dashboard directamente.
-      if (data.tenant.name !== 'Provisional') {
-        isUserAuthenticated = true;
-        authOverlay.classList.add('hidden');
-      } else {
-        isUserAuthenticated = false;
-        authOverlay.classList.remove('hidden');
-        resetAuthCards();
-      }
-
-      isConnected = false; // Resetear bandera para obligar la carga de grupos/config al conectar
+      isUserAuthenticated = true;
+      authOverlay.classList.add('hidden');
+      isConnected = false;
       startDashboardPolling();
     } else {
       isUserAuthenticated = false;
@@ -136,14 +102,38 @@ async function checkAuthSession() {
       authOverlay.classList.remove('hidden');
       resetAuthCards();
       stopDashboardPolling();
-
-      // Si no hay sesión activa en cookies, registrar una provisional automáticamente
-      console.log('[AUTH] No se encontró sesión. Iniciando sesión provisional para QR...');
-      await registerProvisionalSession();
     }
   } catch (error) {
     console.error('Error al comprobar sesión auth:', error);
   }
+}
+
+// Detectar magic link en el hash de la URL al cargar la página
+async function handleMagicLinkCallback() {
+  const hash = window.location.hash;
+  if (!hash.includes('access_token=')) return false;
+
+  const params = new URLSearchParams(hash.substring(1));
+  const access_token = params.get('access_token');
+  if (!access_token) return false;
+
+  // Limpiar el hash de la URL sin recargar
+  history.replaceState(null, '', window.location.pathname);
+
+  try {
+    const res = await fetch('/api/auth/exchange-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_token })
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      console.error('[AUTH] Error al intercambiar token:', data.error);
+    }
+  } catch (error) {
+    console.error('[AUTH] Error de red al intercambiar token:', error);
+  }
+  return true;
 }
 
 function startDashboardPolling() {
@@ -173,71 +163,37 @@ function stopDashboardPolling() {
   }
 }
 
-// Handlers de los botones de Auth
-authSendOtpBtn.addEventListener('click', async () => {
-  const phone = authPhoneInput.value.trim();
-  if (!phone) {
-    showAuthError(authStep1Error, 'Ingresa un número de teléfono válido.');
+// Handlers de Auth Magic Link
+authSendMagicLinkBtn.addEventListener('click', async () => {
+  const email = authEmailInput.value.trim();
+  if (!email || !email.includes('@')) {
+    showAuthError(authStep1Error, 'Ingresá un email válido.');
     return;
   }
 
-  authSendOtpBtn.disabled = true;
-  authSendOtpBtn.innerText = 'Enviando código...';
+  authSendMagicLinkBtn.disabled = true;
+  authSendMagicLinkBtn.innerText = 'Enviando...';
   hideAuthError(authStep1Error);
 
   try {
-    const res = await fetch('/api/auth/request-otp', {
+    const res = await fetch('/api/auth/request-magic-link', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone })
+      body: JSON.stringify({ email })
     });
 
     const data = await res.json();
     if (res.ok) {
       authCardStep1.classList.add('hidden');
       authCardStep2.classList.remove('hidden');
-      authOtpInput.value = ''; // Limpiar campo OTP
     } else {
-      showAuthError(authStep1Error, data.error || 'Error al solicitar código.');
+      showAuthError(authStep1Error, data.error || 'Error al enviar el magic link.');
     }
   } catch (error) {
     showAuthError(authStep1Error, 'Error de red al conectar con el servidor.');
   } finally {
-    authSendOtpBtn.disabled = false;
-    authSendOtpBtn.innerText = 'Enviar Código por WhatsApp';
-  }
-});
-
-authVerifyOtpBtn.addEventListener('click', async () => {
-  const phone = authPhoneInput.value.trim();
-  const otp = authOtpInput.value.trim();
-  if (!otp || otp.length !== 6) {
-    showAuthError(authStep2Error, 'Ingresa un código OTP de 6 dígitos.');
-    return;
-  }
-
-  authVerifyOtpBtn.disabled = true;
-  authVerifyOtpBtn.innerText = 'Verificando...';
-  hideAuthError(authStep2Error);
-
-  try {
-    const res = await fetch('/api/auth/verify-otp', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, otp })
-    });
-
-    const data = await res.json();
-    if (res.ok) {
-      await checkAuthSession();
-    } else {
-      showAuthError(authStep2Error, data.error || 'Código incorrecto o vencido.');
-    }
-  } catch (error) {
-    showAuthError(authStep2Error, 'Error de red al conectar con el servidor.');
-  } finally {
-    authVerifyOtpBtn.disabled = false;
-    authVerifyOtpBtn.innerText = 'Validar Código';
+    authSendMagicLinkBtn.disabled = false;
+    authSendMagicLinkBtn.innerText = 'Enviar Magic Link';
   }
 });
 
@@ -265,27 +221,6 @@ async function checkStatus() {
     const res = await fetch('/api/status');
     const data = await res.json();
 
-    if (data.status === 'REDIRECT') {
-      console.log('[AUTH] Redirigiendo a tenant consolidado...');
-      stopDashboardPolling();
-      // Esperar 1 segundo para asegurar la correcta persistencia de la nueva cookie en el navegador
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      await checkAuthSession();
-      return;
-    }
-
-    if (data.status === 'REQUIRES_OTP') {
-      console.log('[AUTH] Se requiere verificación OTP para transferir sesión.');
-      authPhoneInput.value = data.phone;
-      authOtpInput.value = ''; // Limpiar campo OTP
-      authCardStep1.classList.add('hidden');
-      authCardStep2.classList.remove('hidden');
-      authOverlay.classList.remove('hidden');
-      stopDashboardPolling();
-      showAuthError(authStep2Error, 'Ingresa el código OTP enviado a tu WhatsApp para autorizar este dispositivo.');
-      return;
-    }
-
     updateStatusUI(data);
   } catch (error) {
     console.error('Error al consultar estado:', error);
@@ -309,8 +244,7 @@ function updateStatusUI(data) {
     if (!authOverlay.classList.contains('hidden')) {
       authOverlay.classList.add('hidden');
     }
-    // No marcamos isUserAuthenticated = true si seguimos siendo 'Provisional' en memoria
-    if (currentTenantInfo && currentTenantInfo.name !== 'Provisional') {
+    if (currentTenantInfo) {
       isUserAuthenticated = true;
       const btnPushSubscribe = document.getElementById('btn-push-subscribe');
       if (btnPushSubscribe && typeof swRegistration !== 'undefined' && swRegistration) {
@@ -340,7 +274,6 @@ function updateStatusUI(data) {
     statusText.innerText = 'Autenticado';
     const authedHtml = '<div class="spinner"></div><p class="qr-placeholder-text" style="color: var(--warning); font-weight: 600;">¡Autenticado! Sincronizando chats de WhatsApp...</p>';
     qrContainer.innerHTML = authedHtml;
-    authQrContainer.innerHTML = authedHtml;
     qrContainer.style.background = 'rgba(255, 255, 255, 0.03)';
     qrContainer.style.borderColor = 'var(--card-border)';
 
@@ -378,24 +311,18 @@ function updateStatusUI(data) {
       qrContainer.style.background = 'white';
       qrContainer.style.borderColor = 'var(--card-border)';
 
-      authQrContainer.innerHTML = qrImageHtml;
-      authQrContainer.style.background = 'white';
-      authQrContainer.style.borderColor = 'var(--card-border)';
-
       noGroupsSelectedMsg.innerText = 'Conecta WhatsApp para ver tus grupos...';
     } else if (data.status === 'INITIALIZING') {
       systemBadge.className = 'system-badge';
       statusText.innerText = 'Inicializando...';
       const initHtml = '<div class="spinner"></div><p class="qr-placeholder-text">Cargando WhatsApp Web...</p>';
       qrContainer.innerHTML = initHtml;
-      authQrContainer.innerHTML = initHtml;
       noGroupsSelectedMsg.innerHTML = '<div class="spinner" style="width: 25px; height: 25px; margin: 0 auto 0.5rem;"></div>Iniciando WhatsApp...';
     } else if (data.status === 'DISCONNECTED') {
       systemBadge.className = 'system-badge disconnected';
       statusText.innerText = 'Desconectado';
       const discHtml = '<div class="spinner"></div><p class="qr-placeholder-text">Generando conexion...</p>';
       qrContainer.innerHTML = discHtml;
-      authQrContainer.innerHTML = discHtml;
       noGroupsSelectedMsg.innerText = 'WhatsApp desconectado. Esperando conexión...';
     }
   }
@@ -873,8 +800,7 @@ async function initPushNotifications() {
     swRegistration = await navigator.serviceWorker.register('/sw.js');
     console.log('Service Worker registrado correctamente.');
 
-    // Mostrar el botón si estamos autenticados
-    if (isUserAuthenticated && currentTenantInfo && currentTenantInfo.name !== 'Provisional') {
+    if (isUserAuthenticated && currentTenantInfo) {
       btnPushSubscribe.classList.remove('hidden');
       updatePushButton();
     }
@@ -969,9 +895,11 @@ if (btnPushSubscribe) {
   });
 }
 
-// Inicialización de Autenticación y Notificaciones
-checkAuthSession().then(() => {
-  initPushNotifications();
+// Inicialización: detectar magic link callback en URL o verificar sesión normal
+handleMagicLinkCallback().then(() => {
+  checkAuthSession().then(() => {
+    initPushNotifications();
+  });
 });
 
 // Handler de Cierre de Sesión
@@ -993,9 +921,6 @@ logoutBtn.addEventListener('click', async () => {
       authOverlay.classList.remove('hidden');
       resetAuthCards();
       stopDashboardPolling();
-
-      // Registrar sesión provisoria automáticamente para mostrar el código QR
-      await registerProvisionalSession();
     } else {
       alert('Error al cerrar sesión.');
     }
