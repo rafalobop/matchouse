@@ -75,72 +75,28 @@ export class CoordinatorAgent {
     logger.info({ sender, groupName, bodySnippet: body.substring(0, 100), messageId, tenantId }, '[COORDINADOR] Iniciando orquestación de pedido multi-tenant');
 
 
-    // 1. Verificar idempotencia por (ID de mensaje, tenantId)
-    if (messageId) {
-      try {
-        const { data: existingMsg, error: checkErr } = await supabase
-          .from('Message')
-          .select('id')
-          .eq('id', messageId)
-          .eq('tenant_id', tenantId)
-          .maybeSingle();
-
-        if (checkErr) throw checkErr;
-
-        if (existingMsg) {
-          logger.info({ messageId, tenantId }, '[COORDINADOR] Mensaje ya procesado para este Tenant (idempotencia). Omitiendo.');
-          context.status = 'MATCHED';
-          return context;
-        }
-      } catch (checkErr: any) {
-        logger.warn({ error: checkErr.message || checkErr, messageId, tenantId }, '[COORDINADOR] Error al comprobar idempotencia por ID y Tenant');
-      }
-    }
-
     try {
-      // 2. Deduplicación temporal por tenantId: mismo remitente y contenido en las últimas 24 horas
+      // 1. Deduplicación: mismo remitente + mismo texto en las últimas 24 horas
       const aDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const { data: duplicateMsg, error: checkDupErr } = await supabase
-        .from('Message')
+      const { data: duplicateMatch, error: checkDupErr } = await supabase
+        .from('match_queue')
         .select('id')
-        .eq('body', body)
-        .eq('senderPhone', senderPhone)
+        .eq('raw_message_text', body)
+        .eq('whatsapp_sender_phone', senderPhone)
         .eq('tenant_id', tenantId)
-        .gt('timestamp', aDayAgo)
+        .gte('created_at', aDayAgo)
         .limit(1)
         .maybeSingle();
 
       if (checkDupErr) throw checkDupErr;
 
-      if (duplicateMsg) {
-        logger.info({ messageId, tenantId, duplicateOf: duplicateMsg.id }, '[COORDINADOR] Mensaje idéntico procesado en últimas 24hs para este Tenant. Omitiendo.');
+      if (duplicateMatch) {
+        logger.info({ tenantId, duplicateOf: duplicateMatch.id }, '[COORDINADOR] Mensaje idéntico procesado en últimas 24hs para este Tenant. Omitiendo.');
         context.status = 'MATCHED';
         return context;
       }
     } catch (checkDupErr: any) {
-      logger.warn({ error: checkDupErr.message || checkDupErr, messageId, tenantId }, '[COORDINADOR] Error al comprobar deduplicación temporal');
-    }
-
-    // Registrar mensaje en la base de datos
-    let dbMessage: any = null;
-    try {
-      const { data, error } = await supabase
-        .from('Message')
-        .insert({
-          id: messageId || randomUUID(),
-          body,
-          sender,
-          groupName,
-          senderPhone,
-          tenant_id: tenantId
-        })
-        .select()
-        .single();
-        
-      if (error) throw error;
-      dbMessage = data;
-    } catch (e: any) {
-      logger.warn({ error: e.message || e, tenantId }, '[COORDINADOR - SUPABASE] No se pudo guardar el mensaje entrante');
+      logger.warn({ error: checkDupErr.message || checkDupErr, tenantId }, '[COORDINADOR] Error al comprobar deduplicación temporal');
     }
 
     try {
@@ -149,7 +105,7 @@ export class CoordinatorAgent {
       context.extractedData = await extractRealEstateRequest(body);
       logger.info({ extractedData: context.extractedData, tenantId }, '[COORDINADOR - AGENTE 1] Extracción completada');
 
-      if (context.extractedData.operacion === 'desconocido') {
+      if (context.extractedData.operation === 'desconocido') {
         logger.info({ tenantId }, '[COORDINADOR] Cancelado: Operación no clasificada como pedido.');
         context.status = 'FAILED';
         context.errors.push('Operación no clasificada.');
@@ -158,10 +114,10 @@ export class CoordinatorAgent {
       context.status = 'EXTRACTED';
 
       // 4. Agente 2: Geolocalizador e intenciones
-      const hasUbicacion = context.extractedData.zonas && context.extractedData.zonas.length > 0;
+      const hasUbicacion = context.extractedData.zones && context.extractedData.zones.length > 0;
       if (hasUbicacion) {
         logger.info({ tenantId }, '[COORDINADOR] Ubicación detectada. Ejecutando Agente 2 (Geolocalizador)...');
-        context.zoneIntent = await extractZoneIntent(body, context.extractedData.operacion);
+        context.zoneIntent = await extractZoneIntent(body, context.extractedData.operation);
         logger.info({ zoneIntent: context.zoneIntent, tenantId }, '[COORDINADOR - AGENTE 2] Geolocalización completada');
         context.status = 'GEOLOCATED';
       } else {
@@ -178,11 +134,11 @@ export class CoordinatorAgent {
         const matchResult = checkMatch(context.extractedData, property, context.zoneIntent);
 
         if (matchResult.isMatch) {
-          logger.info({ property: property.domicilio, tenantId }, '[COORDINADOR] Match algorítmico encontrado. Ejecutando Agente Validador...');
+          logger.info({ property: property.address, tenantId }, '[COORDINADOR] Match algorítmico encontrado. Ejecutando Agente Validador...');
           const validation = await validateMatch(body, property, context.extractedData);
-          logger.info({ 
-            property: property.domicilio, 
-            score: validation.score, 
+          logger.info({
+            property: property.address,
+            score: validation.score,
             isValid: validation.isValid,
             tenantId
           }, '[COORDINADOR - VALIDADOR] Evaluación finalizada');
@@ -190,42 +146,43 @@ export class CoordinatorAgent {
           const matchDetailsText = `Score Físico: ${matchResult.score}% | Score IA: ${validation.score}%\n\nMotivo Validación:\n${validation.reasoning}\n\nDetalles Algorítmicos:\n${matchResult.reasons.join('\n')}`;
 
           // Persistir el match en Supabase
-          if (dbMessage) {
-            try {
-              // Obtener ID de la propiedad correspondiente al tenant
-              const { data: dbProperty, error: propErr } = await supabase
-                .from('Property')
-                .select('id')
-                .eq('domicilio', property.domicilio)
-                .eq('sheetName', property.sheetName)
-                .eq('pisoLote', property.pisoLote || null)
-                .eq('tenant_id', tenantId)
-                .limit(1)
-                .maybeSingle();
+          try {
+            // Obtener ID de la propiedad correspondiente al tenant
+            const { data: dbProperty, error: propErr } = await supabase
+              .from('properties')
+              .select('id')
+              .eq('address', property.address)
+              .eq('sheet_name', property.sheet_name)
+              .eq('unit', property.unit || null)
+              .eq('tenant_id', tenantId)
+              .limit(1)
+              .maybeSingle();
 
-              if (propErr) throw propErr;
+            if (propErr) throw propErr;
 
-              if (dbProperty) {
-                const { error: matchErr } = await supabase
-                  .from('Match')
-                  .insert({
-                    id: randomUUID(),
-                    messageId: dbMessage.id,
-                    propertyId: dbProperty.id,
-                    score: matchResult.score,
-                    validationScore: validation.score,
-                    isValid: validation.isValid,
-                    reasoning: validation.reasoning,
-                    matchDetails: matchDetailsText,
-                    tenant_id: tenantId,
-                    notification_status: 'PENDING' // Se guarda como PENDING para el Notificador consolidado
-                  });
-                if (matchErr) throw matchErr;
-                logger.info({ property: property.domicilio, tenantId }, '[COORDINADOR - SUPABASE] Match registrado con estado PENDING');
-              }
-            } catch (dbErr: any) {
-              logger.warn({ error: dbErr.message || dbErr, tenantId }, '[COORDINADOR - SUPABASE] Error al registrar el match');
+            if (dbProperty) {
+              const { error: matchErr } = await supabase
+                .from('match_queue')
+                .insert({
+                  id: randomUUID(),
+                  tenant_id: tenantId,
+                  property_id: dbProperty.id,
+                  whatsapp_group_name: groupName,
+                  whatsapp_sender_name: sender,
+                  whatsapp_sender_phone: senderPhone,
+                  raw_message_text: body,
+                  is_notified: false,
+                  score: matchResult.score,
+                  validation_score: validation.score,
+                  is_valid: validation.isValid,
+                  reasoning: validation.reasoning,
+                  match_details: matchDetailsText
+                });
+              if (matchErr) throw matchErr;
+              logger.info({ property: property.address, tenantId }, '[COORDINADOR - SUPABASE] Match registrado en match_queue');
             }
+          } catch (dbErr: any) {
+            logger.warn({ error: dbErr.message || dbErr, tenantId }, '[COORDINADOR - SUPABASE] Error al registrar el match');
           }
 
           // Si califica, registrarlo en la memoria caché del tenant

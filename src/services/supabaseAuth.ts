@@ -2,134 +2,118 @@ import { AuthenticationCreds, AuthenticationState, SignalDataTypeMap, initAuthCr
 import { supabase } from './supabase';
 
 export async function useSupabaseAuthState(tenantId: string): Promise<{ state: AuthenticationState, saveCreds: () => Promise<void> }> {
-  
-  // 1. Cargar o inicializar credenciales principales
-  let creds: AuthenticationCreds;
-  const { data: credsRow, error: credsError } = await supabase
-    .from('WhatsappSession')
-    .select('value')
+
+  // Cargar auth state completo desde whatsapp_sessions.auth_creds (una sola fila por tenant)
+  const { data, error: loadError } = await supabase
+    .from('whatsapp_sessions')
+    .select('auth_creds')
     .eq('tenant_id', tenantId)
-    .eq('key', 'creds')
     .maybeSingle();
 
-  if (credsError) {
-    console.error(`[SUPABASE-AUTH] Error al cargar credenciales para tenant ${tenantId}:`, credsError);
+  if (loadError) {
+    console.error(`[SUPABASE-AUTH] Error al cargar credenciales para tenant ${tenantId}:`, loadError);
   }
 
-  if (credsRow && credsRow.value) {
-    creds = JSON.parse(JSON.stringify(credsRow.value), BufferJSON.reviver);
+  // auth_creds almacena: { creds: {...}, keys: { "type-id": value, ... } }
+  const rawState = (data?.auth_creds as Record<string, any> | null) || {};
+
+  let creds: AuthenticationCreds;
+  if (rawState.creds) {
+    creds = JSON.parse(JSON.stringify(rawState.creds), BufferJSON.reviver);
   } else {
     creds = initAuthCreds();
   }
 
-  const saveCreds = async () => {
+  // Mapa en memoria de las signal keys (cargadas desde DB al inicio, sincronizadas en cada escritura)
+  const keysStore: Record<string, any> = rawState.keys
+    ? JSON.parse(JSON.stringify(rawState.keys), BufferJSON.reviver)
+    : {};
+
+  const flushState = async () => {
+    // Snapshot tomado de forma síncrona al momento de llamar, antes del await
+    const updatedState = {
+      creds: JSON.parse(JSON.stringify(creds, BufferJSON.replacer)),
+      keys: JSON.parse(JSON.stringify(keysStore, BufferJSON.replacer))
+    };
+
     const { error } = await supabase
-      .from('WhatsappSession')
+      .from('whatsapp_sessions')
       .upsert({
         tenant_id: tenantId,
-        key: 'creds',
-        value: JSON.parse(JSON.stringify(creds, BufferJSON.replacer))
-      });
-    
+        auth_creds: updatedState,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'tenant_id' });
+
     if (error) {
       if (error.code === '23503') {
-        // Ignorar silenciosamente si el tenant ya fue eliminado (carrera al desvincular/mapear)
+        // Puede ser una carrera real de borrado de tenant, o que el perfil del tenant
+        // nunca se creó (ver /api/auth/exchange-token) — logueamos para poder distinguirlos,
+        // ya que silenciarlo del todo escondió ese bug la última vez.
+        console.warn(`[SUPABASE-AUTH] No se pudo guardar credenciales del tenant ${tenantId}: tenant_id no existe en profiles (FK).`);
         return;
       }
       console.error(`[SUPABASE-AUTH] Error al guardar credenciales para tenant ${tenantId}:`, error);
     }
   };
 
+  // Durante el emparejamiento (escaneo de QR), Baileys dispara creds.update/keys.set
+  // decenas de veces en ráfaga. Sin serializar, esas escrituras a Supabase corren en
+  // paralelo y pueden completarse fuera de orden, dejando el estado de credenciales
+  // incompleto/corrupto justo antes del reconnect automático de Baileys — lo que hacía
+  // que el QR pareciera emparejar en el teléfono pero la sesión "cayera" segundos después.
+  // Acá se garantiza como máximo una escritura en vuelo por tenant, colapsando ráfagas
+  // en una sola escritura final con el snapshot más reciente.
+  let writeInFlight: Promise<void> | null = null;
+  let writePending = false;
+
+  const persistState = (): Promise<void> => {
+    if (writeInFlight) {
+      writePending = true;
+      return writeInFlight;
+    }
+
+    writeInFlight = (async () => {
+      await flushState();
+      while (writePending) {
+        writePending = false;
+        await flushState();
+      }
+    })().finally(() => {
+      writeInFlight = null;
+    });
+
+    return writeInFlight;
+  };
+
+  const saveCreds = persistState;
+
   return {
     state: {
       creds,
       keys: {
         get: async (type: keyof SignalDataTypeMap, ids: string[]) => {
-          const data: { [id: string]: any } = {};
-          
-          if (ids.length === 0) return data;
-          
-          // Dividir la lista de IDs en lotes de 50 para evitar sobrepasar límites de longitud de URL (PostgREST HTTP Header Overflow)
-          const chunkSize = 50;
-          const chunks: string[][] = [];
-          for (let i = 0; i < ids.length; i += chunkSize) {
-            chunks.push(ids.slice(i, i + chunkSize));
-          }
-
-          const results = await Promise.all(chunks.map(async (chunk) => {
-            const dbKeys = chunk.map(id => `${type}-${id}`);
-            const { data: rows, error } = await supabase
-              .from('WhatsappSession')
-              .select('key, value')
-              .eq('tenant_id', tenantId)
-              .in('key', dbKeys);
-
-            if (error) {
-              console.error(`[SUPABASE-AUTH] Error al obtener keys (${type}) para tenant ${tenantId}:`, error);
-              return [];
+          const result: { [id: string]: any } = {};
+          for (const id of ids) {
+            const dbKey = `${type}-${id}`;
+            if (keysStore[dbKey] !== undefined) {
+              result[id] = keysStore[dbKey];
             }
-            return rows || [];
-          }));
-
-          const allRows = results.flat();
-          for (const row of allRows) {
-            const originalId = row.key.substring(type.length + 1); // Extraer 'id' de 'type-id'
-            data[originalId] = JSON.parse(JSON.stringify(row.value), BufferJSON.reviver);
           }
-          return data;
+          return result;
         },
         set: async (data: any) => {
-          const upserts: any[] = [];
-          const deletes: string[] = [];
-
           for (const type in data) {
             for (const id in data[type]) {
               const value = data[type][id];
               const dbKey = `${type}-${id}`;
-
               if (value) {
-                upserts.push({
-                  tenant_id: tenantId,
-                  key: dbKey,
-                  value: JSON.parse(JSON.stringify(value, BufferJSON.replacer))
-                });
+                keysStore[dbKey] = value;
               } else {
-                deletes.push(dbKey);
+                delete keysStore[dbKey];
               }
             }
           }
-
-          // 1. Guardar las actualizaciones en lotes si son demasiadas (upsert via POST en JSON body es seguro, pero se hace directo)
-          if (upserts.length > 0) {
-            const { error } = await supabase.from('WhatsappSession').upsert(upserts);
-            if (error) {
-              if (error.code === '23503') {
-                // Ignorar silenciosamente si el tenant ya fue eliminado
-                return;
-              }
-              console.error(`[SUPABASE-AUTH] Error al guardar keys para tenant ${tenantId}:`, error);
-            }
-          }
-
-          // 2. Eliminar las claves en lotes de 50 para evitar sobrepasar el límite de URL en la petición DELETE
-          if (deletes.length > 0) {
-            const chunkSize = 50;
-            const chunks: string[][] = [];
-            for (let i = 0; i < deletes.length; i += chunkSize) {
-              chunks.push(deletes.slice(i, i + chunkSize));
-            }
-
-            await Promise.all(chunks.map(async (chunk) => {
-              const { error } = await supabase
-                .from('WhatsappSession')
-                .delete()
-                .eq('tenant_id', tenantId)
-                .in('key', chunk);
-              if (error) {
-                console.error(`[SUPABASE-AUTH] Error al eliminar keys para tenant ${tenantId}:`, error);
-              }
-            }));
-          }
+          await persistState();
         }
       }
     },
@@ -139,8 +123,8 @@ export async function useSupabaseAuthState(tenantId: string): Promise<{ state: A
 
 export async function clearSupabaseSession(tenantId: string): Promise<void> {
   const { error } = await supabase
-    .from('WhatsappSession')
-    .delete()
+    .from('whatsapp_sessions')
+    .update({ auth_creds: null, status: 'disconnected' })
     .eq('tenant_id', tenantId);
 
   if (error) {

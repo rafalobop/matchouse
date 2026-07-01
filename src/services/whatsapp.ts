@@ -41,6 +41,49 @@ export function saveSettings(tenantId: string, settings: Settings): void {
   } catch (e) {
     console.error(`Error al guardar configuración del tenant ${tenantId}:`, e);
   }
+
+  // Espejo en Supabase (whatsapp_sessions.monitored_groups) para que los grupos
+  // seleccionados sobrevivan a un redeploy o a otra instancia del servidor,
+  // en vez de vivir solo en el filesystem local.
+  const { supabase } = require('./supabase');
+  supabase
+    .from('whatsapp_sessions')
+    .update({ monitored_groups: settings.selectedGroups, updated_at: new Date().toISOString() })
+    .eq('tenant_id', tenantId)
+    .then(({ error }: any) => {
+      if (error) {
+        console.error(`[WHATSAPP] Error al guardar grupos monitoreados en Supabase para tenant ${tenantId}:`, error);
+      }
+    });
+}
+
+/**
+ * Hidrata la caché local de grupos seleccionados desde Supabase si no existe
+ * (ej. tras un redeploy que reinicia el filesystem).
+ */
+async function hydrateSettingsFromDb(tenantId: string): Promise<void> {
+  const settingsPath = getCacheFilePath(`settings_${tenantId}.json`);
+  if (fs.existsSync(settingsPath)) return;
+
+  const { supabase } = require('./supabase');
+  const { data, error } = await supabase
+    .from('whatsapp_sessions')
+    .select('monitored_groups')
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+
+  if (error) {
+    console.error(`[WHATSAPP] Error al hidratar grupos monitoreados desde Supabase para tenant ${tenantId}:`, error);
+    return;
+  }
+
+  if (data?.monitored_groups?.length) {
+    try {
+      fs.writeFileSync(settingsPath, JSON.stringify({ selectedGroups: data.monitored_groups }, null, 2), 'utf-8');
+    } catch (e) {
+      console.error(`Error al escribir caché de configuración del tenant ${tenantId}:`, e);
+    }
+  }
 }
 
 function getGroupsCachePath(tenantId: string): string {
@@ -75,6 +118,10 @@ export const activeSessions = new Map<string, WASocket>();
 export const sessionStatuses = new Map<string, WhatsAppStatus>();
 export const tenantRedirects = new Map<string, string>(); // tempId -> consolidatedId
 export const reconnectTimeouts = new Map<string, NodeJS.Timeout>();
+// Deduplica inicializaciones concurrentes del mismo tenant (ej. polling de /api/status
+// disparando initTenantSession de nuevo mientras la anterior todavía está cargando
+// las credenciales desde Supabase, lo que generaba QRs huérfanos que nunca terminaban de emparejar).
+const pendingInits = new Map<string, Promise<WASocket>>();
 let savedOptions: WhatsAppClientOptions | null = null;
 
 export interface WhatsAppClientOptions {
@@ -132,18 +179,36 @@ export async function sendWhatsAppMessage(tenantId: string, toPhone: string, mes
 /**
  * Inicializa la sesión de WhatsApp de un Tenant de forma dinámica
  */
-export async function initTenantSession(tenantId: string, options: WhatsAppClientOptions): Promise<WASocket> {
+export function initTenantSession(tenantId: string, options: WhatsAppClientOptions): Promise<WASocket> {
   if (tenantId === '00000000-0000-0000-0000-000000000000') {
     console.log('[WHATSAPP] Omitiendo inicialización de sesión para el Tenant por Defecto del sistema.');
-    return null as any;
+    return Promise.resolve(null as any);
   }
 
+  // Si ya hay una inicialización en curso para este tenant, reutilizarla en vez de
+  // levantar otra sesión de Baileys en paralelo (eso generaba QRs huérfanos que el
+  // teléfono nunca lograba emparejar).
+  const existingInit = pendingInits.get(tenantId);
+  if (existingInit) {
+    return existingInit;
+  }
+
+  const initPromise = initTenantSessionInternal(tenantId, options).finally(() => {
+    pendingInits.delete(tenantId);
+  });
+  pendingInits.set(tenantId, initPromise);
+  return initPromise;
+}
+
+async function initTenantSessionInternal(tenantId: string, options: WhatsAppClientOptions): Promise<WASocket> {
   console.log(`[WHATSAPP] Inicializando sesión dinámica para Tenant: ${tenantId}...`);
-  
+
   // Límite estricto de 10 Tenants / Sesiones activas
   if (activeSessions.size >= 10 && !activeSessions.has(tenantId)) {
     throw new Error('Límite máximo de 10 sesiones de WhatsApp activas alcanzado.');
   }
+
+  await hydrateSettingsFromDb(tenantId);
 
   const tenantStatus: WhatsAppStatus = { status: 'INITIALIZING' };
   sessionStatuses.set(tenantId, tenantStatus);
@@ -244,8 +309,11 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
 
       const userJid = sock.user?.id;
       const userNumber = userJid ? userJid.split('@')[0].split(':')[0] : 'Desconocido';
+      // `name` es el nombre que el propio dueño de la cuenta le puso al contacto en su
+      // WhatsApp (normalmente vacío para uno mismo); `notify` es el nombre de perfil
+      // que la cuenta configuró y llega directamente en el pairing.
       tenantStatus.user = {
-        name: sock.user?.name || 'Usuario',
+        name: sock.user?.name || (sock.user as any)?.notify || 'Usuario',
         number: userNumber
       };
 
@@ -253,56 +321,61 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
       console.log(`¡TENANT ${tenantId} CONECTADO COMO: ${tenantStatus.user.name} (${userNumber})!`);
       console.log(`=========================================\n`);
 
-      // Registrar o sincronizar el Tenant en Supabase
+      // Registrar o sincronizar la sesión en whatsapp_sessions
       const { supabase } = require('./supabase');
       try {
         const jidFormatted = userNumber + '@s.whatsapp.net';
-        
-        // Buscar si ya existe un Tenant registrado con este número de WhatsApp
-        const { data: existingTenant, error: selectErr } = await supabase
-          .from('Tenant')
-          .select('id')
+
+        // Buscar si ya existe una sesión registrada con este número de WhatsApp
+        const { data: existingSession, error: selectErr } = await supabase
+          .from('whatsapp_sessions')
+          .select('tenant_id')
           .eq('phone_number', jidFormatted)
           .maybeSingle();
 
         if (selectErr) throw selectErr;
 
-        const targetTenantId = existingTenant ? existingTenant.id : tenantId;
+        const targetTenantId = existingSession ? existingSession.tenant_id : tenantId;
 
-        if (existingTenant && existingTenant.id !== tenantId) {
-          console.log(`[WHATSAPP] Migrando sesión de tenant provisorio ${tenantId} a consolidado ${existingTenant.id}...`);
+        if (existingSession && existingSession.tenant_id !== tenantId) {
+          console.log(`[WHATSAPP] Migrando sesión de tenant provisorio ${tenantId} a consolidado ${existingSession.tenant_id}...`);
 
-          // 1. Obtener todas las claves del provisorio de la base de datos
-          const { data: sessionRows } = await supabase
-            .from('WhatsappSession')
-            .select('*')
-            .eq('tenant_id', tenantId);
+          // 1. Obtener auth_creds del tenant provisorio
+          const { data: provisionalSession } = await supabase
+            .from('whatsapp_sessions')
+            .select('auth_creds')
+            .eq('tenant_id', tenantId)
+            .maybeSingle();
 
-          if (sessionRows && sessionRows.length > 0) {
-            // 2. Insertar/actualizar en el consolidado
-            const upsertData = sessionRows.map((row: any) => ({
-              tenant_id: existingTenant.id,
-              key: row.key,
-              value: row.value
-            }));
-            await supabase.from('WhatsappSession').upsert(upsertData);
-            
-            // 3. Borrar del provisorio en la base de datos
+          if (provisionalSession?.auth_creds) {
+            // 2. Copiar auth_creds al tenant consolidado
             await supabase
-              .from('WhatsappSession')
-              .delete()
+              .from('whatsapp_sessions')
+              .upsert({
+                tenant_id: existingSession.tenant_id,
+                auth_creds: provisionalSession.auth_creds,
+                updated_at: new Date().toISOString()
+              }, { onConflict: 'tenant_id' });
+
+            // 3. Limpiar auth_creds del provisorio
+            await supabase
+              .from('whatsapp_sessions')
+              .update({ auth_creds: null, status: 'disconnected' })
               .eq('tenant_id', tenantId);
           }
 
-          // Registrar la redirección para que el index.ts del api pueda actualizar la cookie del navegador
-          tenantRedirects.set(tenantId, existingTenant.id);
-          
+          // Actualizar estado de la sesión consolidada
           await supabase
-            .from('Tenant')
+            .from('whatsapp_sessions')
             .update({
-              name: sock.user?.name || 'Inmobiliaria'
+              status: 'connected',
+              phone_number: jidFormatted,
+              updated_at: new Date().toISOString()
             })
-            .eq('id', existingTenant.id);
+            .eq('tenant_id', existingSession.tenant_id);
+
+          // Registrar la redirección para que el index.ts del api pueda actualizar la cookie del navegador
+          tenantRedirects.set(tenantId, existingSession.tenant_id);
 
           // 4. Cerrar el socket provisorio (para evitar que siga escribiendo con el tenant_id viejo)
           activeSessions.delete(tenantId);
@@ -315,44 +388,50 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
           } catch (e) {}
 
           // 5. Iniciar la sesión consolidada con el ID correcto
-          console.log(`[WHATSAPP] Inicializando sesión consolidada para tenant ${existingTenant.id}`);
-          initTenantSession(existingTenant.id, options).catch(err => {
-            console.error(`[WHATSAPP] Error al iniciar sesión consolidada ${existingTenant.id}:`, err);
+          console.log(`[WHATSAPP] Inicializando sesión consolidada para tenant ${existingSession.tenant_id}`);
+          initTenantSession(existingSession.tenant_id, options).catch(err => {
+            console.error(`[WHATSAPP] Error al iniciar sesión consolidada ${existingSession.tenant_id}:`, err);
           });
 
           return;
         } else {
           // Es un tenant nuevo o los IDs coinciden
           await supabase
-            .from('Tenant')
+            .from('whatsapp_sessions')
             .upsert({
-              id: tenantId,
-              name: sock.user?.name || 'Inmobiliaria',
-              phone_number: jidFormatted
-            });
+              tenant_id: tenantId,
+              phone_number: jidFormatted,
+              status: 'connected',
+              updated_at: new Date().toISOString()
+            }, { onConflict: 'tenant_id' });
         }
 
         // Cargar catálogo de Supabase en memoria del coordinador inmediatamente al conectar
         const { coordinator } = require('./coordinator');
         const { data: dbProps } = await supabase
-          .from('Property')
+          .from('properties')
           .select('*')
           .eq('tenant_id', targetTenantId);
 
         if (dbProps && dbProps.length > 0) {
           const propertyCatalog = dbProps.map((p: any) => ({
-            domicilio: p.domicilio,
-            pisoLote: p.pisoLote || '',
-            precio: p.precio,
-            moneda: p.moneda,
-            expensas: p.expensas,
-            dormitorios: p.dormitorios,
-            caracteristicas: p.caracteristicas || '',
-            contacto: p.contacto || '',
-            zona: p.zona,
-            operacion: p.operacion,
-            tipo_propiedad: p.tipoPropiedad,
-            sheetName: p.sheetName
+            address: p.address,
+            floor: p.floor || undefined,
+            unit: p.unit || undefined,
+            block: p.block || undefined,
+            lot: p.lot || undefined,
+            price: p.price,
+            currency: p.currency,
+            maintenance_fees: p.maintenance_fees,
+            bedrooms: p.bedrooms,
+            features: p.features || undefined,
+            contact_info: p.contact_info || undefined,
+            property_type: p.property_type,
+            operation: p.operation,
+            zone_display_name: p.sheet_name,
+            sheet_name: p.sheet_name,
+            latitude: p.latitude,
+            longitude: p.longitude
           }));
           coordinator.setCatalog(targetTenantId, propertyCatalog);
           console.log(`[WHATSAPP - CATALOG] Catálogo de ${propertyCatalog.length} propiedades cargado en coordinador para tenant ${targetTenantId}`);
