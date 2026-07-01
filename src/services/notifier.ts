@@ -107,16 +107,19 @@ export async function sendConsolidatedNotifications() {
   try {
     // 1. Obtener todos los matches calificados pendientes en Supabase
     const { data: pendingMatches, error } = await supabase
-      .from('Match')
+      .from('match_queue')
       .select(`
         id,
         tenant_id,
         score,
-        property:Property(*),
-        message:Message(*)
+        whatsapp_group_name,
+        whatsapp_sender_name,
+        whatsapp_sender_phone,
+        raw_message_text,
+        property:properties(*)
       `)
-      .eq('notification_status', 'PENDING')
-      .eq('isValid', true)
+      .eq('is_notified', false)
+      .eq('is_valid', true)
       .gte('score', 70);
 
     if (error) throw error;
@@ -146,34 +149,34 @@ export async function sendConsolidatedNotifications() {
         continue;
       }
 
-      // Agrupar matches por Mensaje original (pedido) para hacer consolidados coherentes
+      // Agrupar matches por grupo de WhatsApp (pedido) para hacer consolidados coherentes
       const matchesByMessage = new Map<string, any[]>();
       matches.forEach(m => {
-        const msgId = m.message.id;
-        if (!matchesByMessage.has(msgId)) {
-          matchesByMessage.set(msgId, []);
+        const groupKey = m.whatsapp_group_name || 'default';
+        if (!matchesByMessage.has(groupKey)) {
+          matchesByMessage.set(groupKey, []);
         }
-        matchesByMessage.get(msgId)!.push(m);
+        matchesByMessage.get(groupKey)!.push(m);
       });
 
       const processedMatchIds: string[] = [];
 
-      for (const [messageId, matchGroup] of matchesByMessage.entries()) {
+      for (const [groupKey, matchGroup] of matchesByMessage.entries()) {
         const firstMatch = matchGroup[0];
-        const groupName = firstMatch.message.groupName;
-        const originalText = firstMatch.message.body;
-        const sender = firstMatch.message.sender;
-        const senderPhone = firstMatch.message.senderPhone;
+        const groupName = firstMatch.whatsapp_group_name;
+        const originalText = firstMatch.raw_message_text;
+        const sender = firstMatch.whatsapp_sender_name;
+        const senderPhone = firstMatch.whatsapp_sender_phone;
 
         // Construir detalles de las propiedades
         const propDetails = matchGroup.map((m, idx) => {
           const prop = m.property;
-          const waLink = prop.contacto ? `https://wa.me/${prop.contacto.replace(/\D/g, '')}` : '';
-          const contactInfo = waLink ? `[${prop.contacto}](${waLink})` : (prop.contacto || 'No especificado');
-          
-          return `*${idx + 1}. ${prop.domicilio}* (${prop.sheetName})
-   • Precio: *${prop.moneda} ${prop.precio}*
-   • Zona: ${prop.zona}
+          const waLink = prop.contact_info ? `https://wa.me/${prop.contact_info.replace(/\D/g, '')}` : '';
+          const contactInfo = waLink ? `[${prop.contact_info}](${waLink})` : (prop.contact_info || 'No especificado');
+
+          return `*${idx + 1}. ${prop.address}* (${prop.sheet_name})
+   • Precio: *${prop.currency} ${prop.price}*
+   • Zona: ${prop.sheet_name}
    • Contacto Captador: ${contactInfo}`;
         }).join('\n\n');
 
@@ -191,12 +194,12 @@ export async function sendConsolidatedNotifications() {
           
           // Enviar mensaje
           await sock.sendMessage(selfJid, { text: consolidatedMessage });
-          logger.info({ tenantId, messageId, matchCount: matchGroup.length }, '[NOTIFIER] Mensaje consolidado enviado con éxito.');
+          logger.info({ tenantId, groupKey, matchCount: matchGroup.length }, '[NOTIFIER] Mensaje consolidado enviado con éxito.');
           
           // Enviar Web Push Notification
           try {
             const { data: subs, error: subsError } = await supabase
-              .from('WebPushSubscription')
+              .from('web_push_subscriptions')
               .select('id, subscription')
               .eq('tenant_id', tenantId);
 
@@ -206,7 +209,7 @@ export async function sendConsolidatedNotifications() {
               const payload = JSON.stringify({
                 title: `🏠 Match Detectado - ${groupName}`,
                 body: `Se encontraron propiedades coincidentes para el pedido de ${sender}.`,
-                tag: `match-${messageId}`,
+                tag: `match-${groupKey}`,
                 data: {
                   url: '/'
                 }
@@ -219,7 +222,7 @@ export async function sendConsolidatedNotifications() {
                   if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
                     logger.info({ subId: sub.id, statusCode: pushErr.statusCode }, '[NOTIFIER] Eliminando suscripción web push expirada/inválida.');
                     await supabase
-                      .from('WebPushSubscription')
+                      .from('web_push_subscriptions')
                       .delete()
                       .eq('id', sub.id);
                   } else {
@@ -235,7 +238,7 @@ export async function sendConsolidatedNotifications() {
           // Registrar IDs para actualización de estado
           matchGroup.forEach(m => processedMatchIds.push(m.id));
         } catch (sendErr) {
-          logger.error({ error: sendErr, tenantId, messageId }, '[NOTIFIER] Error al despachar mensaje consolidado.');
+          logger.error({ error: sendErr, tenantId, groupKey }, '[NOTIFIER] Error al despachar mensaje consolidado.');
         }
       }
 
@@ -243,12 +246,12 @@ export async function sendConsolidatedNotifications() {
       if (processedMatchIds.length > 0) {
         try {
           const { error: updateErr } = await supabase
-            .from('Match')
-            .update({ notification_status: 'SENT' })
+            .from('match_queue')
+            .update({ is_notified: true })
             .in('id', processedMatchIds);
 
           if (updateErr) throw updateErr;
-          logger.info({ tenantId, updatedCount: processedMatchIds.length }, '[NOTIFIER] Estado de matches actualizado a SENT en Supabase.');
+          logger.info({ tenantId, updatedCount: processedMatchIds.length }, '[NOTIFIER] Estado de matches actualizado a notificado en Supabase.');
         } catch (dbErr: any) {
           logger.error({ error: dbErr.message || dbErr, tenantId }, '[NOTIFIER] Error al actualizar estado de notificación en base de datos.');
         }
