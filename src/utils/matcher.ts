@@ -153,7 +153,7 @@ export class OperationMatchingStrategy implements IMatchingStrategy {
   evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
     const operacionRequest = (zoneIntent && zoneIntent.operacion !== 'DESCONOCIDO')
       ? (zoneIntent.operacion === 'COMPRA' ? 'venta' : 'alquiler')
-      : request.operacion;
+      : request.operation;
 
     if (operacionRequest !== 'desconocido' && operacionRequest !== property.operation) {
       return { isMatch: false, scoreDeduction: 0, reason: 'Diferente tipo de operación' };
@@ -166,7 +166,7 @@ export class PropertyTypeMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Tipo de Propiedad';
 
   evaluate(request: ExtractedRealEstateRequest, property: Property): MatchingResult {
-    if (request.tipo_propiedad !== 'otro' && request.tipo_propiedad !== property.property_type) {
+    if (request.property_type !== 'otro' && request.property_type !== property.property_type) {
       return { isMatch: false, scoreDeduction: 0, reason: 'Diferente tipo de propiedad' };
     }
     return { isMatch: true, scoreDeduction: 0 };
@@ -223,15 +223,15 @@ export class ZoneMatchingStrategy implements IMatchingStrategy {
     }
 
     // 2. Zona de Ubicación General (Si no se usó el Agente 2 para geo-filtrado específico)
-    if (request.zonas.length > 0) {
-      const zoneMatch = request.zonas.some(zonaReq =>
+    if (request.zones.length > 0) {
+      const zoneMatch = request.zones.some(zonaReq =>
         zonaReq.toLowerCase() === (property.zone_display_name ?? '').toLowerCase()
       );
       if (!zoneMatch) {
         return {
           isMatch: false,
           scoreDeduction: 0,
-          reason: `Zona de la propiedad (${property.zone_display_name ?? ''}) no solicitada en: ${request.zonas.join(', ')}`
+          reason: `Zona de la propiedad (${property.zone_display_name ?? ''}) no solicitada en: ${request.zones.join(', ')}`
         };
       }
     }
@@ -246,7 +246,7 @@ export class BedroomsMatchingStrategy implements IMatchingStrategy {
   evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
     const bedroomsRequired = (zoneIntent && zoneIntent.dormitorios_min !== null)
       ? zoneIntent.dormitorios_min
-      : request.dormitorios;
+      : request.bedrooms;
 
     if (bedroomsRequired !== null) {
       if (property.bedrooms < bedroomsRequired) {
@@ -272,31 +272,31 @@ export class BudgetMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Presupuesto';
 
   evaluate(request: ExtractedRealEstateRequest, property: Property): MatchingResult {
-    if (request.presupuesto_max !== null && property.price > 0) {
+    if (request.max_budget !== null && property.price > 0) {
       let propertyPriceInReqCurrency = property.price;
       let conversionReason = '';
 
-      if (request.moneda !== 'desconocido' && request.moneda !== property.currency) {
+      if (request.currency !== 'desconocido' && request.currency !== property.currency) {
         const dolarRate = getDolarBlueRate();
-        if (request.moneda === 'USD' && property.currency === 'ARS') {
+        if (request.currency === 'USD' && property.currency === 'ARS') {
           propertyPriceInReqCurrency = property.price / dolarRate;
           conversionReason = `Conversión de moneda: propiedad en ARS convertida a USD usando tasa ref $${dolarRate}`;
-        } else if (request.moneda === 'ARS' && property.currency === 'USD') {
+        } else if (request.currency === 'ARS' && property.currency === 'USD') {
           propertyPriceInReqCurrency = property.price * dolarRate;
           conversionReason = `Conversión de moneda: propiedad en USD convertida a ARS usando tasa ref $${dolarRate}`;
         }
       }
 
-      const toleranceLimit = request.presupuesto_max * 1.05;
+      const toleranceLimit = request.max_budget * 1.05;
       if (propertyPriceInReqCurrency > toleranceLimit) {
         return {
           isMatch: false,
           scoreDeduction: 0,
-          reason: `El precio (${property.currency} ${property.price}) excede el presupuesto máximo (${request.moneda} ${request.presupuesto_max})`
+          reason: `El precio (${property.currency} ${property.price}) excede el presupuesto máximo (${request.currency} ${request.max_budget})`
         };
       }
 
-      if (propertyPriceInReqCurrency > request.presupuesto_max) {
+      if (propertyPriceInReqCurrency > request.max_budget) {
         return {
           isMatch: true,
           scoreDeduction: 10,
@@ -320,7 +320,7 @@ export class FeaturesMatchingStrategy implements IMatchingStrategy {
 
   evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
     const requiredFeatures = Array.from(new Set([
-      ...request.caracteristicas_clave,
+      ...request.key_features,
       ...(zoneIntent?.caracteristicas_claves || [])
     ]));
 
