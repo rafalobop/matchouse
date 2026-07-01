@@ -26,7 +26,7 @@ Los agentes deben respetar de forma estricta la existencia de la clave foránea 
 * **`match_queue`** *(ex `Match`, absorbe ex `Message`)*: `id` (UUID, PK), `tenant_id` (FK, NOT NULL), `property_id` (FK), `score`, `validation_score`, `is_valid` (Boolean), `reasoning`, `match_details`, `user_review_status` ('PENDING' | 'ACCEPTED' | 'REJECTED'), `feedback_reason`, `notification_status` ('PENDING' | 'SENT'), `fecha`. Campos de mensaje embebidos: `whatsapp_group_name`, `whatsapp_sender_name`, `whatsapp_sender_phone`, `raw_message_text`.
 * **`whatsapp_sessions`** *(ex `WhatsappSession`)*: Single-row por tenant con columna JSONB `auth_creds` (patrón reescrito en SPEC-0012; reemplaza el esquema multi-row key-value anterior).
 
-**Auth:** Los endpoints `/api/auth/*` están temporalmente stubbed con 503 — pendientes de reimplementación con Supabase Auth magic link (SPEC-0013).
+**Auth:** Implementada con Supabase Auth magic link (SPEC-0013). Flujo: email → magic link → `#access_token` en URL hash → `POST /api/auth/exchange-token` → cookie HttpOnly `housematch_session`. Middleware `tenantAuthMiddleware` valida via `supabase.auth.getUser(token)`, retorna 401 si inválido. Rate limit 5 req/min/IP en `request-magic-link`.
 
 ---
 
@@ -57,13 +57,15 @@ La aplicación está construida sobre **Node.js** utilizando **TypeScript** y el
 *(Esta sección es mantenida activamente por @pm, @product y @git)*
 
 ### Última Especificación Implementada
-* **SPEC-0012:** Refactor de esquema v2 — migración completa de tablas y campos a inglés, consolidación de `Message` en `match_queue`, reescritura de `supabaseAuth.ts` a patrón JSONB single-row, punto de extensión `resolvePropertyZoneId()` y stub 503 en endpoints de auth. Tests: 15/15 en verde.
+* **SPEC-0013:** Auth Supabase magic link — reemplaza OTP por WhatsApp. Endpoints `/api/auth/*` implementados (request-magic-link, exchange-token, session, logout). `tenantAuthMiddleware` usa `supabase.auth.getUser()`. Frontend: auth overlay con email input + callback handler de hash URL. Tests: 15/15 en verde.
+* **SPEC-0012:** Refactor de esquema v2 — migración completa de tablas y campos a inglés, consolidación de `Message` en `match_queue`, reescritura de `supabaseAuth.ts` a patrón JSONB single-row, punto de extensión `resolvePropertyZoneId()`. Tests: 15/15 en verde.
 * **SPEC-0011:** Arquitectura de propiedades centrada en base de datos (eliminación de Sheets y caché local en disco).
 * **SPEC-0010:** Mitigación de deuda técnica (colas de mensajes por tenant), fugas de memoria (Supabase, WhatsApp huerfan timeouts) y cotización dinámica del Dólar Blue (DolarAPI).
 * **SPEC-0009:** Refactorización de calidad, implementación del patrón Strategy en el Matcher, Structured Outputs en OpenAI y ordenamiento de directorios (`cache/`).
 
 ### Deuda Técnica y Próximos Pasos Activos
-- [ ] **Auth Supabase magic link (SPEC-0013):** Reimplementar endpoints `/api/auth/*` con Supabase Auth magic link — reemplaza el binding OTP por WhatsApp. Auth está temporalmente stubbed con 503.
+- [x] **Auth Supabase magic link (SPEC-0013):** Implementado. Endpoints activos, middleware con `supabase.auth.getUser()`, frontend actualizado.
+- [ ] **Configuración Supabase Dashboard post-SPEC-0013:** Agregar `APP_URL` como Site URL y Redirect URL en Authentication → URL Configuration.
 - [ ] **Notificación por email:** Reemplazar canal de notificación de matches de WhatsApp a email (desacoplar el bot de las notificaciones operativas).
 - [ ] **Matching espacial PostGIS:** Implementar polígonos de zonas en Supabase e integrar búsqueda espacial real en `resolvePropertyZoneId()` de `src/utils/matcher.ts`.
 - [ ] **LangGraph:** Evaluar migración del flujo de agentes cognitivos a LangGraph para control de estado y reintentos más sofisticados.
