@@ -14,6 +14,7 @@ export interface Config {
   vapidPublicKey: string;
   vapidPrivateKey: string;
   vapidEmail: string;
+  appUrl: string;
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -31,6 +32,7 @@ export function validateConfig(): Config {
   const vapidPublicKey = cleanEnvVar(process.env.VAPID_PUBLIC_KEY) || 'BNmVCR9MQPF4jTiJfcsqjZuVUpkc2eFjNviiA_ddqnZnbnzsJBRAdZ3PTfDK7OUIuVtbu4Oc8ANj_xpUy-_s0aI';
   const vapidPrivateKey = cleanEnvVar(process.env.VAPID_PRIVATE_KEY) || '8QmgGSOvRrSlm8Xi_dscW6bfaVjLNPiUsBndeXE8uQo';
   const vapidEmail = cleanEnvVar(process.env.VAPID_EMAIL) || 'mailto:info@housematch.com';
+  const appUrl = cleanEnvVar(process.env.APP_URL) || 'http://localhost:3000';
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
@@ -53,7 +55,8 @@ export function validateConfig(): Config {
     supabaseAnonKey,
     vapidPublicKey,
     vapidPrivateKey,
-    vapidEmail
+    vapidEmail,
+    appUrl
   };
 }
 
