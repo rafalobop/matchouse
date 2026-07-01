@@ -63,26 +63,32 @@ function getClientIp(req: express.Request): string {
   return ip;
 }
 
-/**
- * Middleware para autenticación basada en Cookie JWT (Single Session & RLS)
- * TODO: auth-phase — validación contra tabla Tenant desactivada; reimplementar con Supabase Auth magic link
- */
+// Rate limiter en memoria para endpoints de auth (max 5 req/min por IP)
+const authRateLimitMap = new Map<string, { count: number; resetAt: number }>();
+function checkAuthRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = authRateLimitMap.get(ip);
+  if (!entry || now > entry.resetAt) {
+    authRateLimitMap.set(ip, { count: 1, resetAt: now + 60_000 });
+    return true;
+  }
+  if (entry.count >= 5) return false;
+  entry.count++;
+  return true;
+}
+
 async function tenantAuthMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
-  // TODO: auth-phase — bypass temporal: no valida sesión contra BD mientras se reimplementa auth
   const { supabase } = require('./services/supabase');
   const token = req.cookies?.housematch_session;
-  if (token) {
-    try {
-      const jwt = require('jsonwebtoken');
-      const { config } = require('./config/env');
-      const decoded = jwt.verify(token, config.supabaseJwtSecret) as any;
-      (req as any).tenantId = decoded.sub;
-    } catch {
-      (req as any).tenantId = 'anonymous';
-    }
-  } else {
-    (req as any).tenantId = 'anonymous';
+  if (!token) {
+    return res.status(401).json({ error: 'No autenticado.' });
   }
+  const { data: { user }, error } = await supabase.auth.getUser(token);
+  if (error || !user) {
+    res.clearCookie('housematch_session');
+    return res.status(401).json({ error: 'Sesión inválida o expirada.' });
+  }
+  (req as any).tenantId = user.id;
   (req as any).supabaseClient = supabase;
   next();
 }
@@ -91,49 +97,57 @@ async function tenantAuthMiddleware(req: express.Request, res: express.Response,
 // ENDPOINTS DE AUTENTICACIÓN (PÚBLICOS)
 // ==========================================
 
-/**
- * Consulta el estado de sesión actual para el token provisto por cookie
- * TODO: auth-phase — reimplementar con Supabase Auth magic link
- */
-app.get('/api/auth/session', (req, res) => {
-  // TODO: auth-phase — reimplementar con Supabase Auth magic link
-  res.status(503).json({ error: 'Auth en mantenimiento — próxima fase' });
+app.get('/api/auth/session', async (req, res) => {
+  const { supabase } = require('./services/supabase');
+  const token = req.cookies?.housematch_session;
+  if (!token) return res.json({ authenticated: false });
+  const { data: { user }, error } = await supabase.auth.getUser(token);
+  if (error || !user) {
+    res.clearCookie('housematch_session');
+    return res.json({ authenticated: false });
+  }
+  res.json({ authenticated: true, tenant: { id: user.id, email: user.email } });
 });
 
-/**
- * Solicita el envío de un código OTP por WhatsApp al número de bot provisto
- * TODO: auth-phase — reimplementar con Supabase Auth magic link
- */
-app.post('/api/auth/request-otp', (req, res) => {
-  // TODO: auth-phase — reimplementar con Supabase Auth magic link
-  res.status(503).json({ error: 'Auth en mantenimiento — próxima fase' });
+app.post('/api/auth/request-magic-link', async (req, res) => {
+  const ip = getClientIp(req);
+  if (!checkAuthRateLimit(ip)) {
+    return res.status(429).json({ error: 'Demasiados intentos. Esperá un minuto e intentá de nuevo.' });
+  }
+  const { email } = req.body;
+  if (!email || !String(email).includes('@')) {
+    return res.status(400).json({ error: 'Email inválido.' });
+  }
+  const { supabase } = require('./services/supabase');
+  const { config } = require('./config/env');
+  const { error } = await supabase.auth.signInWithOtp({
+    email,
+    options: { emailRedirectTo: config.appUrl }
+  });
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ success: true, message: 'Revisá tu email. Te enviamos un link de acceso.' });
 });
 
-/**
- * Verifica el código OTP y vincula la sesión actual mediante cookie HttpOnly
- * TODO: auth-phase — reimplementar con Supabase Auth magic link
- */
-app.post('/api/auth/verify-otp', (req, res) => {
-  // TODO: auth-phase — reimplementar con Supabase Auth magic link
-  res.status(503).json({ error: 'Auth en mantenimiento — próxima fase' });
+app.post('/api/auth/exchange-token', async (req, res) => {
+  const { access_token } = req.body;
+  if (!access_token) return res.status(400).json({ error: 'Token requerido.' });
+  const { supabase } = require('./services/supabase');
+  const { data: { user }, error } = await supabase.auth.getUser(access_token);
+  if (error || !user) return res.status(401).json({ error: 'Token inválido o expirado.' });
+  // Crear perfil en primera sesión si no existe
+  await supabase.from('profiles').upsert({ id: user.id }, { onConflict: 'id', ignoreDuplicates: true });
+  res.cookie('housematch_session', access_token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax' as const,
+    maxAge: 7 * 24 * 60 * 60 * 1000
+  });
+  res.json({ authenticated: true, tenant: { id: user.id, email: user.email } });
 });
 
-/**
- * Registra un Tenant provisional, configura su sesión y devuelve el token mediante cookie
- * TODO: auth-phase — reimplementar con Supabase Auth magic link
- */
-app.post('/api/auth/register-new', (req, res) => {
-  // TODO: auth-phase — reimplementar con Supabase Auth magic link
-  res.status(503).json({ error: 'Auth en mantenimiento — próxima fase' });
-});
-
-/**
- * Cierra la sesión activa en el frontend, limpia la cookie y desconecta WhatsApp
- * TODO: auth-phase — reimplementar con Supabase Auth magic link
- */
-app.post('/api/auth/logout', (req, res) => {
-  // TODO: auth-phase — reimplementar con Supabase Auth magic link
-  res.status(503).json({ error: 'Auth en mantenimiento — próxima fase' });
+app.post('/api/auth/logout', (_req, res) => {
+  res.clearCookie('housematch_session');
+  res.json({ success: true });
 });
 
 // ==========================================
@@ -142,9 +156,7 @@ app.post('/api/auth/logout', (req, res) => {
 
 app.get('/api/status', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
-  const { tenantRedirects, initTenantSession } = require('./services/whatsapp');
-
-  // TODO: auth-phase — lógica de redirección provisional eliminada (usaba Tenant.active_session_token / otp_code que no existen en nuevo esquema)
+  const { initTenantSession } = require('./services/whatsapp');
 
   // Comprobar el estado de sesión de WhatsApp
   const { activeSessions, sessionStatuses } = require('./services/whatsapp');
