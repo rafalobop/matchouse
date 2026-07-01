@@ -29,7 +29,8 @@ export async function useSupabaseAuthState(tenantId: string): Promise<{ state: A
     ? JSON.parse(JSON.stringify(rawState.keys), BufferJSON.reviver)
     : {};
 
-  const persistState = async () => {
+  const flushState = async () => {
+    // Snapshot tomado de forma síncrona al momento de llamar, antes del await
     const updatedState = {
       creds: JSON.parse(JSON.stringify(creds, BufferJSON.replacer)),
       keys: JSON.parse(JSON.stringify(keysStore, BufferJSON.replacer))
@@ -45,11 +46,43 @@ export async function useSupabaseAuthState(tenantId: string): Promise<{ state: A
 
     if (error) {
       if (error.code === '23503') {
-        // Ignorar silenciosamente si el tenant ya fue eliminado (carrera al desvincular/mapear)
+        // Puede ser una carrera real de borrado de tenant, o que el perfil del tenant
+        // nunca se creó (ver /api/auth/exchange-token) — logueamos para poder distinguirlos,
+        // ya que silenciarlo del todo escondió ese bug la última vez.
+        console.warn(`[SUPABASE-AUTH] No se pudo guardar credenciales del tenant ${tenantId}: tenant_id no existe en profiles (FK).`);
         return;
       }
       console.error(`[SUPABASE-AUTH] Error al guardar credenciales para tenant ${tenantId}:`, error);
     }
+  };
+
+  // Durante el emparejamiento (escaneo de QR), Baileys dispara creds.update/keys.set
+  // decenas de veces en ráfaga. Sin serializar, esas escrituras a Supabase corren en
+  // paralelo y pueden completarse fuera de orden, dejando el estado de credenciales
+  // incompleto/corrupto justo antes del reconnect automático de Baileys — lo que hacía
+  // que el QR pareciera emparejar en el teléfono pero la sesión "cayera" segundos después.
+  // Acá se garantiza como máximo una escritura en vuelo por tenant, colapsando ráfagas
+  // en una sola escritura final con el snapshot más reciente.
+  let writeInFlight: Promise<void> | null = null;
+  let writePending = false;
+
+  const persistState = (): Promise<void> => {
+    if (writeInFlight) {
+      writePending = true;
+      return writeInFlight;
+    }
+
+    writeInFlight = (async () => {
+      await flushState();
+      while (writePending) {
+        writePending = false;
+        await flushState();
+      }
+    })().finally(() => {
+      writeInFlight = null;
+    });
+
+    return writeInFlight;
   };
 
   const saveCreds = persistState;

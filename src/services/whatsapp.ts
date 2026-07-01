@@ -41,6 +41,49 @@ export function saveSettings(tenantId: string, settings: Settings): void {
   } catch (e) {
     console.error(`Error al guardar configuración del tenant ${tenantId}:`, e);
   }
+
+  // Espejo en Supabase (whatsapp_sessions.monitored_groups) para que los grupos
+  // seleccionados sobrevivan a un redeploy o a otra instancia del servidor,
+  // en vez de vivir solo en el filesystem local.
+  const { supabase } = require('./supabase');
+  supabase
+    .from('whatsapp_sessions')
+    .update({ monitored_groups: settings.selectedGroups, updated_at: new Date().toISOString() })
+    .eq('tenant_id', tenantId)
+    .then(({ error }: any) => {
+      if (error) {
+        console.error(`[WHATSAPP] Error al guardar grupos monitoreados en Supabase para tenant ${tenantId}:`, error);
+      }
+    });
+}
+
+/**
+ * Hidrata la caché local de grupos seleccionados desde Supabase si no existe
+ * (ej. tras un redeploy que reinicia el filesystem).
+ */
+async function hydrateSettingsFromDb(tenantId: string): Promise<void> {
+  const settingsPath = getCacheFilePath(`settings_${tenantId}.json`);
+  if (fs.existsSync(settingsPath)) return;
+
+  const { supabase } = require('./supabase');
+  const { data, error } = await supabase
+    .from('whatsapp_sessions')
+    .select('monitored_groups')
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+
+  if (error) {
+    console.error(`[WHATSAPP] Error al hidratar grupos monitoreados desde Supabase para tenant ${tenantId}:`, error);
+    return;
+  }
+
+  if (data?.monitored_groups?.length) {
+    try {
+      fs.writeFileSync(settingsPath, JSON.stringify({ selectedGroups: data.monitored_groups }, null, 2), 'utf-8');
+    } catch (e) {
+      console.error(`Error al escribir caché de configuración del tenant ${tenantId}:`, e);
+    }
+  }
 }
 
 function getGroupsCachePath(tenantId: string): string {
@@ -75,6 +118,10 @@ export const activeSessions = new Map<string, WASocket>();
 export const sessionStatuses = new Map<string, WhatsAppStatus>();
 export const tenantRedirects = new Map<string, string>(); // tempId -> consolidatedId
 export const reconnectTimeouts = new Map<string, NodeJS.Timeout>();
+// Deduplica inicializaciones concurrentes del mismo tenant (ej. polling de /api/status
+// disparando initTenantSession de nuevo mientras la anterior todavía está cargando
+// las credenciales desde Supabase, lo que generaba QRs huérfanos que nunca terminaban de emparejar).
+const pendingInits = new Map<string, Promise<WASocket>>();
 let savedOptions: WhatsAppClientOptions | null = null;
 
 export interface WhatsAppClientOptions {
@@ -132,18 +179,36 @@ export async function sendWhatsAppMessage(tenantId: string, toPhone: string, mes
 /**
  * Inicializa la sesión de WhatsApp de un Tenant de forma dinámica
  */
-export async function initTenantSession(tenantId: string, options: WhatsAppClientOptions): Promise<WASocket> {
+export function initTenantSession(tenantId: string, options: WhatsAppClientOptions): Promise<WASocket> {
   if (tenantId === '00000000-0000-0000-0000-000000000000') {
     console.log('[WHATSAPP] Omitiendo inicialización de sesión para el Tenant por Defecto del sistema.');
-    return null as any;
+    return Promise.resolve(null as any);
   }
 
+  // Si ya hay una inicialización en curso para este tenant, reutilizarla en vez de
+  // levantar otra sesión de Baileys en paralelo (eso generaba QRs huérfanos que el
+  // teléfono nunca lograba emparejar).
+  const existingInit = pendingInits.get(tenantId);
+  if (existingInit) {
+    return existingInit;
+  }
+
+  const initPromise = initTenantSessionInternal(tenantId, options).finally(() => {
+    pendingInits.delete(tenantId);
+  });
+  pendingInits.set(tenantId, initPromise);
+  return initPromise;
+}
+
+async function initTenantSessionInternal(tenantId: string, options: WhatsAppClientOptions): Promise<WASocket> {
   console.log(`[WHATSAPP] Inicializando sesión dinámica para Tenant: ${tenantId}...`);
-  
+
   // Límite estricto de 10 Tenants / Sesiones activas
   if (activeSessions.size >= 10 && !activeSessions.has(tenantId)) {
     throw new Error('Límite máximo de 10 sesiones de WhatsApp activas alcanzado.');
   }
+
+  await hydrateSettingsFromDb(tenantId);
 
   const tenantStatus: WhatsAppStatus = { status: 'INITIALIZING' };
   sessionStatuses.set(tenantId, tenantStatus);
@@ -244,8 +309,11 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
 
       const userJid = sock.user?.id;
       const userNumber = userJid ? userJid.split('@')[0].split(':')[0] : 'Desconocido';
+      // `name` es el nombre que el propio dueño de la cuenta le puso al contacto en su
+      // WhatsApp (normalmente vacío para uno mismo); `notify` es el nombre de perfil
+      // que la cuenta configuró y llega directamente en el pairing.
       tenantStatus.user = {
-        name: sock.user?.name || 'Usuario',
+        name: sock.user?.name || (sock.user as any)?.notify || 'Usuario',
         number: userNumber
       };
 

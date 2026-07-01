@@ -134,8 +134,15 @@ app.post('/api/auth/exchange-token', async (req, res) => {
   const { supabase } = require('./services/supabase');
   const { data: { user }, error } = await supabase.auth.getUser(access_token);
   if (error || !user) return res.status(401).json({ error: 'Token inválido o expirado.' });
-  // Crear perfil en primera sesión si no existe
-  await supabase.from('profiles').upsert({ id: user.id }, { onConflict: 'id', ignoreDuplicates: true });
+  // Crear perfil en primera sesión si no existe (full_name/email son NOT NULL en la tabla)
+  const { error: profileError } = await supabase.from('profiles').upsert({
+    id: user.id,
+    email: user.email,
+    full_name: user.email?.split('@')[0] || user.id
+  }, { onConflict: 'id', ignoreDuplicates: true });
+  if (profileError) {
+    console.error(`[AUTH] Error al crear/actualizar perfil para ${user.id}:`, profileError);
+  }
   res.cookie('housematch_session', access_token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
