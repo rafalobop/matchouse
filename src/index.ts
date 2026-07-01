@@ -65,44 +65,26 @@ function getClientIp(req: express.Request): string {
 
 /**
  * Middleware para autenticación basada en Cookie JWT (Single Session & RLS)
+ * TODO: auth-phase — validación contra tabla Tenant desactivada; reimplementar con Supabase Auth magic link
  */
 async function tenantAuthMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
+  // TODO: auth-phase — bypass temporal: no valida sesión contra BD mientras se reimplementa auth
+  const { supabase } = require('./services/supabase');
   const token = req.cookies?.housematch_session;
-  if (!token) {
-    return res.status(401).json({ error: 'No autorizado: Sesión no encontrada' });
-  }
-
-  const { supabase, getTenantClient } = require('./services/supabase');
-  const jwt = require('jsonwebtoken');
-  const { config } = require('./config/env');
-
-  try {
-    const decoded = jwt.verify(token, config.supabaseJwtSecret) as any;
-    const tenantId = decoded.sub;
-    const sessionToken = decoded.session_token;
-
-    // Validar en base de datos maestra si el token de sesión sigue activo
-    const { data: tenant, error } = await supabase
-      .from('Tenant')
-      .select('id, active_session_token')
-      .eq('id', tenantId)
-      .maybeSingle();
-
-    if (error) throw error;
-
-    if (!tenant || tenant.active_session_token !== sessionToken) {
-      res.clearCookie('housematch_session');
-      return res.status(401).json({ error: 'Sesión invalidada o iniciada en otro dispositivo' });
+  if (token) {
+    try {
+      const jwt = require('jsonwebtoken');
+      const { config } = require('./config/env');
+      const decoded = jwt.verify(token, config.supabaseJwtSecret) as any;
+      (req as any).tenantId = decoded.sub;
+    } catch {
+      (req as any).tenantId = 'anonymous';
     }
-
-    (req as any).tenantId = tenantId;
-    (req as any).supabaseClient = getTenantClient(token);
-    next();
-  } catch (err: any) {
-    console.error('Error en tenantAuthMiddleware:', err);
-    res.clearCookie('housematch_session');
-    res.status(401).json({ error: 'Sesión expirada o inválida' });
+  } else {
+    (req as any).tenantId = 'anonymous';
   }
+  (req as any).supabaseClient = supabase;
+  next();
 }
 
 // ==========================================
@@ -111,250 +93,47 @@ async function tenantAuthMiddleware(req: express.Request, res: express.Response,
 
 /**
  * Consulta el estado de sesión actual para el token provisto por cookie
+ * TODO: auth-phase — reimplementar con Supabase Auth magic link
  */
-app.get('/api/auth/session', async (req, res) => {
-  const token = req.cookies?.housematch_session;
-  if (!token) {
-    return res.json({ authenticated: false });
-  }
-
-  const { supabase } = require('./services/supabase');
-  const jwt = require('jsonwebtoken');
-  const { config } = require('./config/env');
-
-  try {
-    const decoded = jwt.verify(token, config.supabaseJwtSecret) as any;
-    const tenantId = decoded.sub;
-    const sessionToken = decoded.session_token;
-
-    const { data: tenant, error } = await supabase
-      .from('Tenant')
-      .select('id, name, phone_number, active_session_token')
-      .eq('id', tenantId)
-      .maybeSingle();
-
-    if (error) throw error;
-
-    if (tenant && tenant.active_session_token === sessionToken) {
-      res.json({
-        authenticated: true,
-        tenant: {
-          id: tenant.id,
-          name: tenant.name || 'Inmobiliaria',
-          number: tenant.phone_number ? tenant.phone_number.split('@')[0] : ''
-        }
-      });
-    } else {
-      res.clearCookie('housematch_session');
-      res.json({ authenticated: false });
-    }
-  } catch (err: any) {
-    res.clearCookie('housematch_session');
-    res.json({ authenticated: false });
-  }
+app.get('/api/auth/session', (req, res) => {
+  // TODO: auth-phase — reimplementar con Supabase Auth magic link
+  res.status(503).json({ error: 'Auth en mantenimiento — próxima fase' });
 });
 
 /**
  * Solicita el envío de un código OTP por WhatsApp al número de bot provisto
+ * TODO: auth-phase — reimplementar con Supabase Auth magic link
  */
-app.post('/api/auth/request-otp', async (req, res) => {
-  const { phone } = req.body;
-  if (!phone) return res.status(400).json({ error: 'Número de teléfono requerido' });
-
-  const cleanPhone = phone.replace(/\D/g, '');
-  const jid = cleanPhone + '@s.whatsapp.net';
-
-  const { supabase } = require('./services/supabase');
-  const { sendWhatsAppMessage } = require('./services/whatsapp');
-
-  try {
-    const { data: tenant, error } = await supabase
-      .from('Tenant')
-      .select('*')
-      .eq('phone_number', jid)
-      .maybeSingle();
-
-    if (error) throw error;
-
-    if (!tenant) {
-      return res.status(404).json({ error: 'Número de WhatsApp no registrado. Conecta un nuevo bot primero.' });
-    }
-
-    // Generar OTP de 6 dígitos
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 min validez
-
-    await supabase
-      .from('Tenant')
-      .update({
-        otp_code: otp,
-        otp_expires_at: expiresAt
-      })
-      .eq('id', tenant.id);
-
-    // Despachar el OTP por chat privado mediante la sesión del propio bot
-    const sent = await sendWhatsAppMessage(tenant.id, cleanPhone, `🔐 Código de verificación HouseMatch: *${otp}*\n\nEste código es de un solo uso y expira en 5 minutos.`);
-
-    if (!sent) {
-      return res.status(500).json({ error: 'No se pudo enviar el OTP. Valida que tu bot esté en línea.' });
-    }
-
-    res.json({ success: true, message: 'OTP enviado.' });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Error interno al procesar OTP.' });
-  }
+app.post('/api/auth/request-otp', (req, res) => {
+  // TODO: auth-phase — reimplementar con Supabase Auth magic link
+  res.status(503).json({ error: 'Auth en mantenimiento — próxima fase' });
 });
 
 /**
  * Verifica el código OTP y vincula la sesión actual mediante cookie HttpOnly
+ * TODO: auth-phase — reimplementar con Supabase Auth magic link
  */
-app.post('/api/auth/verify-otp', async (req, res) => {
-  const { phone, otp } = req.body;
-  if (!phone || !otp) return res.status(400).json({ error: 'Teléfono y OTP requeridos' });
-
-  const cleanPhone = phone.replace(/\D/g, '');
-  const jid = cleanPhone + '@s.whatsapp.net';
-
-  const { supabase, generateTenantToken } = require('./services/supabase');
-
-  try {
-    const { data: tenant, error } = await supabase
-      .from('Tenant')
-      .select('*')
-      .eq('phone_number', jid)
-      .maybeSingle();
-
-    if (error) throw error;
-
-    if (!tenant || tenant.otp_code !== otp) {
-      return res.status(400).json({ error: 'Código OTP incorrecto.' });
-    }
-
-    const expires = new Date(tenant.otp_expires_at).getTime();
-    if (Date.now() > expires) {
-      return res.status(400).json({ error: 'Código OTP expirado.' });
-    }
-
-    // Generar nuevo active_session_token (single session enforcement)
-    const newSessionToken = randomUUID();
-
-    // Actualizar tenant en la base de datos
-    await supabase
-      .from('Tenant')
-      .update({
-        active_session_token: newSessionToken,
-        otp_code: null,
-        otp_expires_at: null
-      })
-      .eq('id', tenant.id);
-
-    // Firmar JWT
-    const token = generateTenantToken(tenant.id, newSessionToken);
-
-    // Enviar cookie HttpOnly y Secure
-    res.cookie('housematch_session', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 días
-    });
-
-    res.json({ success: true });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Error interno al validar OTP.' });
-  }
+app.post('/api/auth/verify-otp', (req, res) => {
+  // TODO: auth-phase — reimplementar con Supabase Auth magic link
+  res.status(503).json({ error: 'Auth en mantenimiento — próxima fase' });
 });
 
 /**
  * Registra un Tenant provisional, configura su sesión y devuelve el token mediante cookie
+ * TODO: auth-phase — reimplementar con Supabase Auth magic link
  */
-app.post('/api/auth/register-new', async (req, res) => {
-  const { supabase, generateTenantToken } = require('./services/supabase');
-
-  try {
-    // Autolimpiar provisionales inactivos de más de 1 hora para evitar colmatar el límite de 10
-    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    try {
-      const { data: oldProv } = await supabase
-        .from('Tenant')
-        .select('id')
-        .eq('name', 'Provisional')
-        .is('phone_number', null)
-        .lt('created_at', oneHourAgo);
-
-      if (oldProv && oldProv.length > 0) {
-        const oldIds = oldProv.map((t: any) => t.id);
-        await supabase.from('Match').delete().in('tenant_id', oldIds);
-        await supabase.from('Message').delete().in('tenant_id', oldIds);
-        await supabase.from('Property').delete().in('tenant_id', oldIds);
-        await supabase.from('WhatsappSession').delete().in('tenant_id', oldIds);
-        await supabase.from('Tenant').delete().in('id', oldIds);
-        console.log(`[CLEANUP] Limpiados ${oldIds.length} tenants provisionales inactivos.`);
-      }
-    } catch (cleanErr) {
-      console.error('[CLEANUP] Error al autolimpiar provisionales:', cleanErr);
-    }
-
-    // Validar límite estricto de 10 Tenants
-    const { count, error: countErr } = await supabase
-      .from('Tenant')
-      .select('*', { count: 'exact', head: true });
-
-    if (countErr) throw countErr;
-
-    if (count && count >= 10) {
-      return res.status(400).json({ error: 'Límite de 10 licencias activas alcanzado en el sistema.' });
-    }
-
-    const tempId = randomUUID();
-    const newSessionToken = randomUUID();
-
-    // Crear un Tenant provisional
-    await supabase
-      .from('Tenant')
-      .insert({
-        id: tempId,
-        name: 'Provisional',
-        active_session_token: newSessionToken
-      });
-
-    // Inicializar sesión de WhatsApp provisional
-    initTenantSession(tempId, {
-      onMessage: async (message, senderName, groupName, senderPhone, tenantId) => {
-        messageQueue.enqueue(async () => {
-          await coordinator.handleIncomingMessage(message.body, senderName, groupName, senderPhone, message.id, tenantId);
-        }, tenantId);
-      }
-    }).catch(err => {
-      console.error(`[MAIN] Fallo inicialización provisional tenant ${tempId}:`, err);
-    });
-
-    // Firmar JWT y establecer cookie
-    const token = generateTenantToken(tempId, newSessionToken);
-    res.cookie('housematch_session', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 días
-    });
-
-    res.json({ success: true, tenantId: tempId });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Error interno al crear bot.' });
-  }
+app.post('/api/auth/register-new', (req, res) => {
+  // TODO: auth-phase — reimplementar con Supabase Auth magic link
+  res.status(503).json({ error: 'Auth en mantenimiento — próxima fase' });
 });
 
 /**
  * Cierra la sesión activa en el frontend, limpia la cookie y desconecta WhatsApp
+ * TODO: auth-phase — reimplementar con Supabase Auth magic link
  */
-app.post('/api/auth/logout', tenantAuthMiddleware, async (req, res) => {
-  const tenantId = (req as any).tenantId;
-  const { logoutTenantSession } = require('./services/whatsapp');
-  try {
-    await logoutTenantSession(tenantId);
-    res.clearCookie('housematch_session');
-    res.json({ success: true });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Error al desconectar sesión.' });
-  }
+app.post('/api/auth/logout', (req, res) => {
+  // TODO: auth-phase — reimplementar con Supabase Auth magic link
+  res.status(503).json({ error: 'Auth en mantenimiento — próxima fase' });
 });
 
 // ==========================================
@@ -364,71 +143,10 @@ app.post('/api/auth/logout', tenantAuthMiddleware, async (req, res) => {
 app.get('/api/status', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
   const { tenantRedirects, initTenantSession } = require('./services/whatsapp');
-  const { supabase, generateTenantToken } = require('./services/supabase');
 
-  // 1. Validar si existe una redirección porque este tenant provisorio escaneó un QR de un número ya registrado
-  const redirectId = tenantRedirects.get(tenantId);
-  if (redirectId) {
-    try {
-      const { data: extTenant } = await supabase
-        .from('Tenant')
-        .select('active_session_token, phone_number')
-        .eq('id', redirectId)
-        .maybeSingle();
+  // TODO: auth-phase — lógica de redirección provisional eliminada (usaba Tenant.active_session_token / otp_code que no existen en nuevo esquema)
 
-      if (extTenant) {
-        if (extTenant.active_session_token) {
-          // Ya tiene una sesión web activa en otro dispositivo -> Forzar OTP
-          tenantRedirects.delete(tenantId);
-
-          const otp = Math.floor(100000 + Math.random() * 900000).toString();
-          const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-          await supabase
-            .from('Tenant')
-            .update({ otp_code: otp, otp_expires_at: expiresAt })
-            .eq('id', redirectId);
-
-          const { sendWhatsAppMessage } = require('./services/whatsapp');
-          const cleanPhone = extTenant.phone_number.split('@')[0];
-          await sendWhatsAppMessage(redirectId, cleanPhone, `🔐 Código de verificación HouseMatch: *${otp}*\n\nEste código es de un solo uso y expira en 5 minutos.`);
-
-          // Limpiar la sesión provisoria de la base de datos
-          await supabase.from('Tenant').delete().eq('id', tenantId);
-
-          return res.json({
-            status: 'REQUIRES_OTP',
-            phone: cleanPhone
-          });
-        } else {
-          // No tiene sesión web activa -> Redirigir/iniciar sesión automáticamente
-          tenantRedirects.delete(tenantId);
-          const newSessionToken = randomUUID();
-          await supabase
-            .from('Tenant')
-            .update({ active_session_token: newSessionToken })
-            .eq('id', redirectId);
-
-          const token = generateTenantToken(redirectId, newSessionToken);
-          res.cookie('housematch_session', token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            maxAge: 7 * 24 * 60 * 60 * 1000
-          });
-
-          await supabase.from('Tenant').delete().eq('id', tenantId);
-
-          return res.json({
-            status: 'REDIRECT',
-            tenantId: redirectId
-          });
-        }
-      }
-    } catch (err) {
-      console.error('[STATUS] Error al procesar redirección de tenant:', err);
-    }
-  }
-
-  // 2. Si no hay redirección, comprobar el estado de sesión de WhatsApp
+  // Comprobar el estado de sesión de WhatsApp
   const { activeSessions, sessionStatuses } = require('./services/whatsapp');
   let tenantStatus = sessionStatuses.get(tenantId);
 
@@ -510,40 +228,39 @@ app.get('/api/matches', tenantAuthMiddleware, async (req, res) => {
   const supabase = (req as any).supabaseClient;
   try {
     const { data: dbMatches, error } = await supabase
-      .from('Match')
+      .from('match_queue')
       .select(`
         *,
-        property:Property(*),
-        message:Message(*)
+        property:properties(*)
       `)
-      .order('fecha', { ascending: false })
+      .order('created_at', { ascending: false })
       .limit(50);
 
     if (error) throw error;
 
     const mappedMatches = dbMatches.map((m: any) => ({
       id: m.id,
-      fecha: new Date(m.fecha).toLocaleString('es-AR', { timeZone: 'America/Argentina/Tucuman' }),
-      originalText: m.message.body,
-      contactSender: m.message.sender,
-      groupName: m.message.groupName,
+      fecha: new Date(m.created_at).toLocaleString('es-AR', { timeZone: 'America/Argentina/Tucuman' }),
+      originalText: m.raw_message_text,
+      contactSender: m.whatsapp_sender_name,
+      groupName: m.whatsapp_group_name,
       property: {
-        domicilio: m.property.domicilio,
-        pisoLote: m.property.pisoLote || '',
-        precio: m.property.precio,
-        moneda: m.property.moneda,
-        expensas: m.property.expensas,
-        dormitorios: m.property.dormitorios,
-        caracteristicas: m.property.caracteristicas || '',
-        contacto: m.property.contacto || '',
-        zona: m.property.zona,
-        operacion: m.property.operacion,
-        tipo_propiedad: m.property.tipoPropiedad,
-        sheetName: m.property.sheetName
+        domicilio: m.property?.address || '',
+        pisoLote: [m.property?.floor, m.property?.unit, m.property?.block, m.property?.lot].filter(Boolean).join(' '),
+        precio: m.property?.price || 0,
+        moneda: m.property?.currency || 'ARS',
+        expensas: m.property?.maintenance_fees || 0,
+        dormitorios: m.property?.bedrooms || 0,
+        caracteristicas: m.property?.features || '',
+        contacto: m.property?.contact_info || '',
+        zona: m.property?.sheet_name || '',
+        operacion: m.property?.operation || '',
+        tipo_propiedad: m.property?.property_type || '',
+        sheetName: m.property?.sheet_name || ''
       },
-      matchDetails: m.matchDetails,
-      userReviewStatus: m.userReviewStatus || 'PENDING',
-      feedbackReason: m.feedbackReason || null
+      matchDetails: m.match_details || '',
+      userReviewStatus: m.user_review_status || 'PENDING',
+      feedbackReason: m.feedback_reason || null
     }));
 
     res.json({ matches: mappedMatches });
@@ -565,10 +282,10 @@ app.post('/api/matches/:id/feedback', tenantAuthMiddleware, async (req, res) => 
 
   try {
     const { error } = await supabase
-      .from('Match')
+      .from('match_queue')
       .update({
-        userReviewStatus: status,
-        feedbackReason: status === 'REJECTED' ? (reason || 'No especificado') : null
+        user_review_status: status,
+        feedback_reason: status === 'REJECTED' ? (reason || 'No especificado') : null
       })
       .eq('id', id);
 
@@ -598,7 +315,7 @@ app.post('/api/notifications/subscribe', tenantAuthMiddleware, async (req, res) 
   try {
     // Buscar si ya existe la suscripción para este tenant
     const { data: existing, error: selectError } = await supabase
-      .from('WebPushSubscription')
+      .from('web_push_subscriptions')
       .select('id')
       .eq('tenant_id', tenantId)
       .filter('subscription->>endpoint', 'eq', subscription.endpoint)
@@ -608,7 +325,7 @@ app.post('/api/notifications/subscribe', tenantAuthMiddleware, async (req, res) 
 
     if (!existing) {
       const { error: insertError } = await supabase
-        .from('WebPushSubscription')
+        .from('web_push_subscriptions')
         .insert({
           tenant_id: tenantId,
           subscription
@@ -632,32 +349,29 @@ async function main() {
 
   const { supabase } = require('./services/supabase');
 
-  let tenants: any[] = [];
+  let sessions: any[] = [];
   try {
     const { data, error } = await supabase
-      .from('Tenant')
+      .from('whatsapp_sessions')
       .select('*');
 
     if (error) throw error;
-    tenants = data || [];
+    sessions = data || [];
   } catch (e) {
-    console.warn('[MAIN - SUPABASE] No se pudo recuperar tenants para arranque inicial:', e);
+    console.warn('[MAIN - SUPABASE] No se pudo recuperar sesiones para arranque inicial:', e);
   }
 
-  // Inicializar sesiones y catálogos de cada Tenant registrado
-  for (const tenant of tenants) {
-    const tenantId = tenant.id;
+  // Inicializar sesiones y catálogos de cada sesión registrada
+  for (const session of sessions) {
+    const tenantId = session.tenant_id;
     if (tenantId === '00000000-0000-0000-0000-000000000000') {
-      continue;
-    }
-    if (!tenant.phone_number) {
       continue;
     }
 
     let propertyCatalog: Property[] = [];
     try {
       const { data: dbProperties, error: propErr } = await supabase
-        .from('Property')
+        .from('properties')
         .select('*')
         .eq('tenant_id', tenantId);
 
@@ -666,25 +380,28 @@ async function main() {
       if (dbProperties && dbProperties.length > 0) {
         console.log(`[MAIN - SUPABASE] Catálogo cargado desde Supabase para tenant ${tenantId} (${dbProperties.length} propiedades).`);
         propertyCatalog = dbProperties.map((p: any) => ({
-          domicilio: p.domicilio,
-          pisoLote: p.pisoLote || '',
-          precio: p.precio,
-          moneda: p.moneda as any,
-          expensas: p.expensas,
-          dormitorios: p.dormitorios,
-          caracteristicas: p.caracteristicas || '',
-          contacto: p.contacto || '',
-          zona: p.zona,
-          operacion: p.operacion as any,
-          tipo_propiedad: p.tipoPropiedad as any,
-          sheetName: p.sheetName,
-          latitud: p.latitud || undefined,
-          longitud: p.longitud || undefined
+          address: p.address,
+          floor: p.floor || undefined,
+          unit: p.unit || undefined,
+          block: p.block || undefined,
+          lot: p.lot || undefined,
+          price: p.price,
+          currency: p.currency,
+          maintenance_fees: p.maintenance_fees,
+          bedrooms: p.bedrooms,
+          features: p.features || undefined,
+          contact_info: p.contact_info || undefined,
+          property_type: p.property_type,
+          operation: p.operation,
+          zone_display_name: p.sheet_name,
+          sheet_name: p.sheet_name,
+          latitude: p.latitude,
+          longitude: p.longitude
         }));
       }
     } catch (e) {
-        console.warn(`[ARRANQUE] Error al cargar catálogo de Supabase del tenant ${tenantId}:`, e);
-      }
+      console.warn(`[ARRANQUE] Error al cargar catálogo de Supabase del tenant ${tenantId}:`, e);
+    }
 
     coordinator.setCatalog(tenantId, propertyCatalog);
 
