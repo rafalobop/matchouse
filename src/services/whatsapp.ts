@@ -253,56 +253,61 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
       console.log(`¡TENANT ${tenantId} CONECTADO COMO: ${tenantStatus.user.name} (${userNumber})!`);
       console.log(`=========================================\n`);
 
-      // Registrar o sincronizar el Tenant en Supabase
+      // Registrar o sincronizar la sesión en whatsapp_sessions
       const { supabase } = require('./supabase');
       try {
         const jidFormatted = userNumber + '@s.whatsapp.net';
-        
-        // Buscar si ya existe un Tenant registrado con este número de WhatsApp
-        const { data: existingTenant, error: selectErr } = await supabase
-          .from('Tenant')
-          .select('id')
+
+        // Buscar si ya existe una sesión registrada con este número de WhatsApp
+        const { data: existingSession, error: selectErr } = await supabase
+          .from('whatsapp_sessions')
+          .select('tenant_id')
           .eq('phone_number', jidFormatted)
           .maybeSingle();
 
         if (selectErr) throw selectErr;
 
-        const targetTenantId = existingTenant ? existingTenant.id : tenantId;
+        const targetTenantId = existingSession ? existingSession.tenant_id : tenantId;
 
-        if (existingTenant && existingTenant.id !== tenantId) {
-          console.log(`[WHATSAPP] Migrando sesión de tenant provisorio ${tenantId} a consolidado ${existingTenant.id}...`);
+        if (existingSession && existingSession.tenant_id !== tenantId) {
+          console.log(`[WHATSAPP] Migrando sesión de tenant provisorio ${tenantId} a consolidado ${existingSession.tenant_id}...`);
 
-          // 1. Obtener todas las claves del provisorio de la base de datos
-          const { data: sessionRows } = await supabase
-            .from('WhatsappSession')
-            .select('*')
-            .eq('tenant_id', tenantId);
+          // 1. Obtener auth_creds del tenant provisorio
+          const { data: provisionalSession } = await supabase
+            .from('whatsapp_sessions')
+            .select('auth_creds')
+            .eq('tenant_id', tenantId)
+            .maybeSingle();
 
-          if (sessionRows && sessionRows.length > 0) {
-            // 2. Insertar/actualizar en el consolidado
-            const upsertData = sessionRows.map((row: any) => ({
-              tenant_id: existingTenant.id,
-              key: row.key,
-              value: row.value
-            }));
-            await supabase.from('WhatsappSession').upsert(upsertData);
-            
-            // 3. Borrar del provisorio en la base de datos
+          if (provisionalSession?.auth_creds) {
+            // 2. Copiar auth_creds al tenant consolidado
             await supabase
-              .from('WhatsappSession')
-              .delete()
+              .from('whatsapp_sessions')
+              .upsert({
+                tenant_id: existingSession.tenant_id,
+                auth_creds: provisionalSession.auth_creds,
+                updated_at: new Date().toISOString()
+              }, { onConflict: 'tenant_id' });
+
+            // 3. Limpiar auth_creds del provisorio
+            await supabase
+              .from('whatsapp_sessions')
+              .update({ auth_creds: null, status: 'disconnected' })
               .eq('tenant_id', tenantId);
           }
 
-          // Registrar la redirección para que el index.ts del api pueda actualizar la cookie del navegador
-          tenantRedirects.set(tenantId, existingTenant.id);
-          
+          // Actualizar estado de la sesión consolidada
           await supabase
-            .from('Tenant')
+            .from('whatsapp_sessions')
             .update({
-              name: sock.user?.name || 'Inmobiliaria'
+              status: 'connected',
+              phone_number: jidFormatted,
+              updated_at: new Date().toISOString()
             })
-            .eq('id', existingTenant.id);
+            .eq('tenant_id', existingSession.tenant_id);
+
+          // Registrar la redirección para que el index.ts del api pueda actualizar la cookie del navegador
+          tenantRedirects.set(tenantId, existingSession.tenant_id);
 
           // 4. Cerrar el socket provisorio (para evitar que siga escribiendo con el tenant_id viejo)
           activeSessions.delete(tenantId);
@@ -315,44 +320,50 @@ export async function initTenantSession(tenantId: string, options: WhatsAppClien
           } catch (e) {}
 
           // 5. Iniciar la sesión consolidada con el ID correcto
-          console.log(`[WHATSAPP] Inicializando sesión consolidada para tenant ${existingTenant.id}`);
-          initTenantSession(existingTenant.id, options).catch(err => {
-            console.error(`[WHATSAPP] Error al iniciar sesión consolidada ${existingTenant.id}:`, err);
+          console.log(`[WHATSAPP] Inicializando sesión consolidada para tenant ${existingSession.tenant_id}`);
+          initTenantSession(existingSession.tenant_id, options).catch(err => {
+            console.error(`[WHATSAPP] Error al iniciar sesión consolidada ${existingSession.tenant_id}:`, err);
           });
 
           return;
         } else {
           // Es un tenant nuevo o los IDs coinciden
           await supabase
-            .from('Tenant')
+            .from('whatsapp_sessions')
             .upsert({
-              id: tenantId,
-              name: sock.user?.name || 'Inmobiliaria',
-              phone_number: jidFormatted
-            });
+              tenant_id: tenantId,
+              phone_number: jidFormatted,
+              status: 'connected',
+              updated_at: new Date().toISOString()
+            }, { onConflict: 'tenant_id' });
         }
 
         // Cargar catálogo de Supabase en memoria del coordinador inmediatamente al conectar
         const { coordinator } = require('./coordinator');
         const { data: dbProps } = await supabase
-          .from('Property')
+          .from('properties')
           .select('*')
           .eq('tenant_id', targetTenantId);
 
         if (dbProps && dbProps.length > 0) {
           const propertyCatalog = dbProps.map((p: any) => ({
-            domicilio: p.domicilio,
-            pisoLote: p.pisoLote || '',
-            precio: p.precio,
-            moneda: p.moneda,
-            expensas: p.expensas,
-            dormitorios: p.dormitorios,
-            caracteristicas: p.caracteristicas || '',
-            contacto: p.contacto || '',
-            zona: p.zona,
-            operacion: p.operacion,
-            tipo_propiedad: p.tipoPropiedad,
-            sheetName: p.sheetName
+            address: p.address,
+            floor: p.floor || undefined,
+            unit: p.unit || undefined,
+            block: p.block || undefined,
+            lot: p.lot || undefined,
+            price: p.price,
+            currency: p.currency,
+            maintenance_fees: p.maintenance_fees,
+            bedrooms: p.bedrooms,
+            features: p.features || undefined,
+            contact_info: p.contact_info || undefined,
+            property_type: p.property_type,
+            operation: p.operation,
+            zone_display_name: p.sheet_name,
+            sheet_name: p.sheet_name,
+            latitude: p.latitude,
+            longitude: p.longitude
           }));
           coordinator.setCatalog(targetTenantId, propertyCatalog);
           console.log(`[WHATSAPP - CATALOG] Catálogo de ${propertyCatalog.length} propiedades cargado en coordinador para tenant ${targetTenantId}`);
