@@ -5,20 +5,32 @@ import { randomUUID } from 'crypto';
 import { logger } from './logger';
 import { supabase } from './supabase';
 export interface Property {
-  domicilio: string;
-  pisoLote: string;
-  precio: number;
-  moneda: 'USD' | 'ARS';
-  expensas: number;
-  dormitorios: number;
-  caracteristicas: string;
-  contacto: string;
-  zona: string;        // "Yerba Buena" o "San Miguel de Tucumán"
-  operacion: 'venta' | 'alquiler'; // Deductible por la pestaña
-  tipo_propiedad: 'departamento' | 'casa' | 'terreno' | 'local' | 'oficina' | 'otro';
-  sheetName: string;   // Origen de los datos
-  latitud?: number;
-  longitud?: number;
+  // Address components (era: domicilio + pisoLote)
+  address: string;
+  floor?: string;
+  unit?: string;
+  block?: string;
+  lot?: string;
+
+  // Pricing
+  price: number;
+  currency: 'USD' | 'ARS';
+  maintenance_fees?: number;   // era: expensas
+
+  // Details
+  bedrooms: number;
+  features?: string;           // era: caracteristicas
+  contact_info?: string;       // era: contacto
+  property_type: 'departamento' | 'casa' | 'terreno' | 'local' | 'oficina' | 'otro';
+  operation: 'venta' | 'alquiler';
+
+  // Zone (solo runtime — NO se persiste en BD)
+  zone_display_name?: string;  // era: zona
+
+  // Metadata
+  sheet_name: string;          // era: sheetName
+  latitude?: number;           // era: latitud
+  longitude?: number;          // era: longitud
 }
 
 export function detectTipoPropiedad(
@@ -57,6 +69,17 @@ export function detectTipoPropiedad(
   }
 
   return 'casa'; // Valor por defecto
+}
+
+function parsePisoLote(raw: string): { floor?: string; unit?: string; block?: string; lot?: string } {
+  if (!raw.trim()) return {};
+  const lower = raw.toLowerCase().trim();
+  if (lower.includes('lote') || lower.includes('terreno')) return { lot: raw.trim() };
+  const blockMatch = lower.match(/bloqu?e?\s*([a-z0-9]+)/i);
+  if (blockMatch) return { block: blockMatch[1].toUpperCase() };
+  const floorUnitMatch = lower.match(/piso\s*(\d+)\s*(?:dpto?\.?\s*)?([a-z0-9]+)/i);
+  if (floorUnitMatch) return { floor: floorUnitMatch[1], unit: floorUnitMatch[2].toUpperCase() };
+  return { unit: raw.trim() };
 }
 
 /**
@@ -256,20 +279,20 @@ export function processExcelBuffer(buffer: Buffer): Property[] {
       }
 
       catalog.push({
-        domicilio: rowDomicilioText,
-        pisoLote: rawPisoLote,
-        precio: precioVal,
-        moneda: monedaVal,
-        expensas: expensasVal,
-        dormitorios: dormitoriosVal,
-        caracteristicas: rawCaracteristicas,
-        contacto: colContacto !== -1 ? String(row[colContacto] || '') : '',
-        zona,
-        operacion: operacionProp,
-        tipo_propiedad: tipoPropiedad,
-        latitud: latitudVal,
-        longitud: longitudVal,
-        sheetName
+        address: rowDomicilioText,
+        ...parsePisoLote(rawPisoLote),
+        price: precioVal,
+        currency: monedaVal,
+        maintenance_fees: expensasVal,
+        bedrooms: dormitoriosVal,
+        features: rawCaracteristicas,
+        contact_info: colContacto !== -1 ? String(row[colContacto] || '') : '',
+        zone_display_name: zona,
+        operation: operacionProp,
+        property_type: tipoPropiedad,
+        latitude: latitudVal,
+        longitude: longitudVal,
+        sheet_name: sheetName
       });
     }
   }
@@ -283,8 +306,8 @@ export async function syncPropertiesToDatabase(properties: Property[], tenantId:
     
     // 1. Obtener todas las propiedades actuales de Supabase filtradas por tenant_id
     const { data: dbProps, error: fetchErr } = await supabase
-      .from('Property')
-      .select('id, domicilio, pisoLote, precio, contacto, sheetName')
+      .from('properties')
+      .select('id, address, floor, unit, block, lot, price, contact_info, sheet_name')
       .eq('tenant_id', tenantId);
 
     if (fetchErr) {
@@ -296,7 +319,7 @@ export async function syncPropertiesToDatabase(properties: Property[], tenantId:
     // 2. Mapear en memoria los registros actuales
     const dbPropsMap = new Map<string, string>(); // clave -> id
     dbProperties.forEach((p: any) => {
-      const key = `${p.domicilio}_${p.pisoLote || ''}_${p.precio}_${p.contacto || ''}_${p.sheetName}`.toLowerCase().trim();
+      const key = `${p.address}_${p.floor || ''}_${p.unit || ''}_${p.block || ''}_${p.lot || ''}_${p.price}_${p.contact_info || ''}_${p.sheet_name}`.toLowerCase().trim();
       dbPropsMap.set(key, p.id);
     });
 
@@ -305,25 +328,27 @@ export async function syncPropertiesToDatabase(properties: Property[], tenantId:
     const matchedIds = new Set<string>();
 
     properties.forEach(p => {
-      const key = `${p.domicilio}_${p.pisoLote || ''}_${p.precio}_${p.contacto || ''}_${p.sheetName}`.toLowerCase().trim();
+      const key = `${p.address}_${p.floor || ''}_${p.unit || ''}_${p.block || ''}_${p.lot || ''}_${p.price}_${p.contact_info || ''}_${p.sheet_name}`.toLowerCase().trim();
       const existingId = dbPropsMap.get(key);
-      
+
       const propertyPayload = {
         id: existingId || randomUUID(),
-        domicilio: p.domicilio,
-        pisoLote: p.pisoLote || null,
-        precio: p.precio,
-        moneda: p.moneda,
-        expensas: p.expensas,
-        dormitorios: p.dormitorios,
-        caracteristicas: p.caracteristicas || null,
-        contacto: p.contacto || null,
-        zona: p.zona,
-        operacion: p.operacion,
-        tipoPropiedad: p.tipo_propiedad,
-        sheetName: p.sheetName,
-        latitud: p.latitud || null,
-        longitud: p.longitud || null,
+        address: p.address,
+        floor: p.floor || null,
+        unit: p.unit || null,
+        block: p.block || null,
+        lot: p.lot || null,
+        price: p.price,
+        currency: p.currency,
+        maintenance_fees: p.maintenance_fees ?? 0,
+        bedrooms: p.bedrooms,
+        features: p.features || null,
+        contact_info: p.contact_info || null,
+        operation: p.operation,
+        property_type: p.property_type,
+        sheet_name: p.sheet_name,
+        latitude: p.latitude || 0,
+        longitude: p.longitude || 0,
         tenant_id: tenantId
       };
 
@@ -344,7 +369,7 @@ export async function syncPropertiesToDatabase(properties: Property[], tenantId:
     // 5. Ejecutar operaciones
     if (upsertList.length > 0) {
       const { error: upsertErr } = await supabase
-        .from('Property')
+        .from('properties')
         .upsert(upsertList);
 
       if (upsertErr) {
@@ -354,7 +379,7 @@ export async function syncPropertiesToDatabase(properties: Property[], tenantId:
 
     if (deleteList.length > 0) {
       const { error: deleteErr } = await supabase
-        .from('Property')
+        .from('properties')
         .delete()
         .in('id', deleteList)
         .eq('tenant_id', tenantId);
