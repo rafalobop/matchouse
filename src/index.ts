@@ -2,6 +2,7 @@ import dns from 'dns';
 dns.setDefaultResultOrder('ipv4first');
 
 import express from 'express';
+import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import multer from 'multer';
 import * as path from 'path';
@@ -19,7 +20,9 @@ import { Property, processExcelBuffer, syncPropertiesToDatabase } from './servic
 import { coordinator } from './services/coordinator';
 import { messageQueue } from './utils/queue';
 import { startNotificationService } from './services/notifier';
+import { startEmailNotificationService } from './services/notifier-email';
 import { startDolarService } from './services/dolar';
+import { config } from './config/env';
 
 // Express Setup
 const app = express();
@@ -34,6 +37,7 @@ process.on('uncaughtException', (error) => {
   console.error('[PROCESO] Error no controlado (Uncaught Exception):', error);
 });
 
+app.use(helmet());
 app.use(express.json());
 app.use(cookieParser());
 
@@ -252,6 +256,7 @@ app.get('/api/matches', tenantAuthMiddleware, async (req, res) => {
         *,
         property:properties(*)
       `)
+      .eq('tenant_id', tenantId)
       .order('created_at', { ascending: false })
       .limit(50);
 
@@ -300,20 +305,80 @@ app.post('/api/matches/:id/feedback', tenantAuthMiddleware, async (req, res) => 
   }
 
   try {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('match_queue')
       .update({
         user_review_status: status,
         feedback_reason: status === 'REJECTED' ? (reason || 'No especificado') : null
       })
-      .eq('id', id);
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .select('id');
 
     if (error) throw error;
+
+    if (!data || data.length === 0) {
+      return res.status(404).json({ error: 'Match no encontrado.' });
+    }
 
     res.json({ success: true });
   } catch (error: any) {
     console.error('Error al actualizar el feedback de match:', error);
     res.status(500).json({ error: error.message || 'Error interno al guardar feedback.' });
+  }
+});
+
+// Pixel 1x1 transparente para trackear apertura de emails de notificación (sin auth: lo pide el cliente de mail)
+const TRACKING_PIXEL_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
+
+app.get('/api/notifications/email/pixel/:matchId.gif', async (req, res) => {
+  const { matchId } = req.params;
+  res.set('Content-Type', 'image/gif');
+  res.send(TRACKING_PIXEL_GIF);
+
+  try {
+    const { supabase } = require('./services/supabase');
+    await supabase
+      .from('match_queue')
+      .update({ email_opened_at: new Date().toISOString() })
+      .eq('id', matchId)
+      .is('email_opened_at', null);
+  } catch (e) {
+    console.warn('[NOTIFIER-EMAIL] No se pudo registrar apertura de email para match', matchId, e);
+  }
+});
+
+// Redirect trackeado para los deep links wa.me embebidos en el email de notificación
+app.get('/api/notifications/email/click/:matchId', async (req, res) => {
+  const { matchId } = req.params;
+  const { supabase } = require('./services/supabase');
+
+  try {
+    const { data: match, error } = await supabase
+      .from('match_queue')
+      .select('whatsapp_sender_phone, whatsapp_group_name, property:properties(*)')
+      .eq('id', matchId)
+      .single();
+
+    if (error || !match) {
+      return res.status(404).send('Match no encontrado.');
+    }
+
+    await supabase
+      .from('match_queue')
+      .update({ email_clicked_at: new Date().toISOString() })
+      .eq('id', matchId)
+      .is('email_clicked_at', null);
+
+    const { buildWhatsAppMessage } = require('./services/notifier-email');
+    const message = buildWhatsAppMessage(match.whatsapp_group_name, match.property);
+    const phone = (match.whatsapp_sender_phone || '').replace(/\D/g, '');
+    const waUrl = `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+
+    res.redirect(302, waUrl);
+  } catch (e: any) {
+    console.error('[NOTIFIER-EMAIL] Error al procesar redirect de click:', e.message || e);
+    res.status(500).send('Error al procesar el link.');
   }
 });
 
@@ -439,8 +504,12 @@ async function main() {
   // Iniciar servicio de cotización de Dólar Blue (dinámico y horaria)
   startDolarService();
 
-  // Iniciar servicio notificador consolidado (corre cada 10 min por defecto)
-  startNotificationService();
+  // Iniciar servicio notificador consolidado según el canal configurado (NOTIFICATION_CHANNEL)
+  if (config.notificationChannel === 'email') {
+    startEmailNotificationService();
+  } else {
+    startNotificationService();
+  }
 
   // Levantar servidor Express
   app.listen(PORT, () => {

@@ -15,6 +15,9 @@ export interface Config {
   vapidPrivateKey: string;
   vapidEmail: string;
   appUrl: string;
+  resendApiKey?: string;
+  notificationChannel: 'whatsapp' | 'email';
+  notificationIntervalMinutes: number;
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -33,6 +36,10 @@ export function validateConfig(): Config {
   const vapidPrivateKey = cleanEnvVar(process.env.VAPID_PRIVATE_KEY) || '8QmgGSOvRrSlm8Xi_dscW6bfaVjLNPiUsBndeXE8uQo';
   const vapidEmail = cleanEnvVar(process.env.VAPID_EMAIL) || 'mailto:info@housematch.com';
   const appUrl = cleanEnvVar(process.env.APP_URL) || 'http://localhost:3000';
+  // SENDER_API_KEY es la API key de Resend (nombre histórico de la variable en .env)
+  const resendApiKey = cleanEnvVar(process.env.SENDER_API_KEY);
+  const notificationChannel = (cleanEnvVar(process.env.NOTIFICATION_CHANNEL) === 'whatsapp') ? 'whatsapp' : 'email';
+  const notificationIntervalMinutes = parseInt(cleanEnvVar(process.env.NOTIFICATION_INTERVAL_MINUTES) || '20', 10);
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
@@ -56,7 +63,10 @@ export function validateConfig(): Config {
     vapidPublicKey,
     vapidPrivateKey,
     vapidEmail,
-    appUrl
+    appUrl,
+    resendApiKey,
+    notificationChannel,
+    notificationIntervalMinutes
   };
 }
 
