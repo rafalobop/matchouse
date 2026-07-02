@@ -5,6 +5,7 @@ import './coordinator.test';
 import './dolar.test';
 import './excel.test';
 import './logger.test';
+import './matcher.test';
 import './notifier.test';
 import './notifier-email.test';
 import './supabase.test';
