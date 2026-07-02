@@ -37,6 +37,12 @@ CREATE TABLE public.match_queue (
   user_review_status text DEFAULT 'PENDING'::text,
   feedback_reason text,
 
+  -- Agregadas en esta misma sesión (spec_0014) vía mcp__supabase__apply_migration,
+  -- migración "add_email_notification_tracking_columns", para trackear apertura y
+  -- click de los deep links wa.me en el email de notificación consolidada:
+  email_opened_at timestamptz,
+  email_clicked_at timestamptz,
+
   CONSTRAINT match_queue_pkey PRIMARY KEY (id),
   CONSTRAINT match_queue_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.profiles(id),
   CONSTRAINT match_queue_property_id_fkey FOREIGN KEY (property_id) REFERENCES public.properties(id)
