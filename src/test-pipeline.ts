@@ -3,65 +3,64 @@ import { checkMatch } from './utils/matcher';
 import { ExtractedRealEstateRequest, ZoneIntentRequest } from './services/ai';
 import { Property } from './services/excel';
 
-// ... (Rest of imports and mockCartera are preserved)
 
 // 1. Base de datos de cartera simulada
 const mockCartera: Property[] = [
   {
-    domicilio: 'Av. Aconquija 1200',
-    pisoLote: 'PB - B',
-    precio: 350,
-    moneda: 'USD',
-    expensas: 25000,
-    dormitorios: 1,
-    caracteristicas: 'Departamento planta baja con cochera, patio chico, sin pileta, cocina equipada',
-    contacto: 'Juan Pérez - 3815551234',
-    zona: 'Yerba Buena',
-    operacion: 'alquiler',
-    tipo_propiedad: 'departamento',
-    sheetName: 'Alquileres Yerba Buena'
+    address: 'Av. Aconquija 1200',
+    unit: 'PB - B',
+    price: 350,
+    currency: 'USD',
+    maintenance_fees: 25000,
+    bedrooms: 1,
+    features: 'Departamento planta baja con cochera, patio chico, sin pileta, cocina equipada',
+    contact_info: 'Juan Pérez - 3815551234',
+    zone_display_name: 'Yerba Buena',
+    operation: 'alquiler',
+    property_type: 'departamento',
+    sheet_name: 'Alquileres Yerba Buena'
   },
   {
-    domicilio: 'Lomas de Yerba Buena',
-    pisoLote: 'Lote 45',
-    precio: 45000,
-    moneda: 'USD',
-    expensas: 0,
-    dormitorios: 0,
-    caracteristicas: 'Terreno plano de 450m2 listo para construir, apto credito, todos los servicios',
-    contacto: 'María López - 3815555678',
-    zona: 'Yerba Buena',
-    operacion: 'venta',
-    tipo_propiedad: 'terreno',
-    sheetName: 'Ventas Yerba Buena'
+    address: 'Lomas de Yerba Buena',
+    unit: 'Lote 45',
+    price: 45000,
+    currency: 'USD',
+    maintenance_fees: 0,
+    bedrooms: 0,
+    features: 'Terreno plano de 450m2 listo para construir, apto credito, todos los servicios',
+    contact_info: 'María López - 3815555678',
+    zone_display_name: 'Yerba Buena',
+    operation: 'venta',
+    property_type: 'terreno',
+    sheet_name: 'Ventas Yerba Buena'
   },
   {
-    domicilio: 'Muñecas 800',
-    pisoLote: 'Piso 5 - A',
-    precio: 280000,
-    moneda: 'ARS',
-    expensas: 35000,
-    dormitorios: 2,
-    caracteristicas: 'Dpto de 2 dormitorios en Barrio Norte, balcón al frente, cochera techada, pileta y SUM en terraza',
-    contacto: 'Carlos Gómez - 3815559012',
-    zona: 'San Miguel de Tucumán',
-    operacion: 'alquiler',
-    tipo_propiedad: 'departamento',
-    sheetName: 'Alquileres San Miguel de Tucumán'
+    address: 'Muñecas 800',
+    unit: 'Piso 5 - A',
+    price: 280000,
+    currency: 'ARS',
+    maintenance_fees: 35000,
+    bedrooms: 2,
+    features: 'Dpto de 2 dormitorios en Barrio Norte, balcón al frente, cochera techada, pileta y SUM en terraza',
+    contact_info: 'Carlos Gómez - 3815559012',
+    zone_display_name: 'San Miguel de Tucumán',
+    operation: 'alquiler',
+    property_type: 'departamento',
+    sheet_name: 'Alquileres San Miguel de Tucumán'
   },
   {
-    domicilio: 'Laprida 400',
-    pisoLote: 'Piso 2',
-    precio: 85000,
-    moneda: 'USD',
-    expensas: 40000,
-    dormitorios: 3,
-    caracteristicas: 'Amplio departamento de 3 dorms, cocina comedor, living, dependencia de servicio, apto credito, cochera',
-    contacto: 'Ana Ruiz - 3815553456',
-    zona: 'San Miguel de Tucumán',
-    operacion: 'venta',
-    tipo_propiedad: 'departamento',
-    sheetName: 'Ventas San Miguel de Tucumán'
+    address: 'Laprida 400',
+    unit: 'Piso 2',
+    price: 85000,
+    currency: 'USD',
+    maintenance_fees: 40000,
+    bedrooms: 3,
+    features: 'Amplio departamento de 3 dorms, cocina comedor, living, dependencia de servicio, apto credito, cochera',
+    contact_info: 'Ana Ruiz - 3815553456',
+    zone_display_name: 'San Miguel de Tucumán',
+    operation: 'venta',
+    property_type: 'departamento',
+    sheet_name: 'Ventas San Miguel de Tucumán'
   }
 ];
 
@@ -102,33 +101,33 @@ const mockMessages = [
 // 3. Entidades simuladas correspondientes a las búsquedas exitosas (paso intermedio que haría Gemini)
 const mockExtractedEntities: Record<number, ExtractedRealEstateRequest> = {
   1: {
-    operacion: 'alquiler',
-    tipo_propiedad: 'departamento',
-    zonas: ['Yerba Buena'],
-    presupuesto_max: 400,
-    moneda: 'USD',
-    dormitorios: 1,
-    caracteristicas_clave: ['cochera'],
+    operation: 'alquiler',
+    property_type: 'departamento',
+    zones: ['Yerba Buena'],
+    max_budget: 400,
+    currency: 'USD',
+    bedrooms: 1,
+    key_features: ['cochera'],
     country: 'indiferente'
   },
   3: {
-    operacion: 'venta',
-    tipo_propiedad: 'terreno',
-    zonas: ['Yerba Buena'],
-    presupuesto_max: 50000,
-    moneda: 'USD',
-    dormitorios: null,
-    caracteristicas_clave: ['apto credito'],
+    operation: 'venta',
+    property_type: 'terreno',
+    zones: ['Yerba Buena'],
+    max_budget: 50000,
+    currency: 'USD',
+    bedrooms: null,
+    key_features: ['apto credito'],
     country: 'indiferente'
   },
   5: {
-    operacion: 'alquiler',
-    tipo_propiedad: 'departamento',
-    zonas: ['San Miguel de Tucumán'],
-    presupuesto_max: null,
-    moneda: 'ARS',
-    dormitorios: 2,
-    caracteristicas_clave: ['pileta'],
+    operation: 'alquiler',
+    property_type: 'departamento',
+    zones: ['San Miguel de Tucumán'],
+    max_budget: null,
+    currency: 'ARS',
+    bedrooms: 2,
+    key_features: ['pileta'],
     country: 'indiferente'
   }
 };
@@ -208,9 +207,9 @@ function runTestPipeline() {
       if (matchResult.isMatch) {
         matchCount++;
         console.log(`\n🎉 MATCH ENCONTRADO (${matchResult.score}%):`);
-        console.log(`   - Propiedad: ${property.domicilio} (Pestaña: ${property.sheetName})`);
-        console.log(`   - Precio: ${property.moneda} ${property.precio}`);
-        console.log(`   - Contacto Captador: ${property.contacto}`);
+        console.log(`   - Propiedad: ${property.address} (Pestaña: ${property.sheet_name})`);
+        console.log(`   - Precio: ${property.currency} ${property.price}`);
+        console.log(`   - Contacto Captador: ${property.contact_info}`);
         console.log(`   - Detalles:`);
         matchResult.reasons.forEach(r => console.log(`     * ${r}`));
       }
