@@ -2,6 +2,7 @@ import dns from 'dns';
 dns.setDefaultResultOrder('ipv4first');
 
 import express from 'express';
+import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import multer from 'multer';
 import * as path from 'path';
@@ -36,6 +37,7 @@ process.on('uncaughtException', (error) => {
   console.error('[PROCESO] Error no controlado (Uncaught Exception):', error);
 });
 
+app.use(helmet());
 app.use(express.json());
 app.use(cookieParser());
 
