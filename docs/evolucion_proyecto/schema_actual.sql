@@ -50,11 +50,11 @@ CREATE TABLE public.match_queue (
 
 -- Referencia rápida de tablas relacionadas (mismo snapshot de introspección):
 --
--- public.profiles (RLS deshabilitado):
+-- public.profiles (RLS habilitado, ver ADENDA de seguridad más abajo):
 --   id uuid PK (FK -> auth.users.id), full_name text, email text UNIQUE,
 --   created_at timestamptz DEFAULT timezone('utc', now())
 --
--- public.properties (RLS deshabilitado):
+-- public.properties (RLS habilitado, ver ADENDA de seguridad más abajo):
 --   id uuid PK DEFAULT gen_random_uuid(), tenant_id uuid (FK -> profiles.id),
 --   address text, floor text, unit text, block text, lot text,
 --   operation text CHECK (operation IN ('compra','alquiler','venta')),
@@ -66,8 +66,29 @@ CREATE TABLE public.match_queue (
 --   location geometry (PostGIS, nullable, no usada aún por resolvePropertyZoneId()),
 --   created_at timestamptz DEFAULT timezone('utc', now())
 --
--- ADVERTENCIA DE SEGURIDAD (fuera de alcance de esta ronda, solo se deja constancia):
--- Row Level Security está DESHABILITADO en las 8 tablas de public (incl. match_queue,
--- properties, profiles, whatsapp_sessions) — expuestas por completo a las claves
--- anon/authenticated de Supabase. No se aplica remediation aquí porque activar RLS
--- sin políticas bloquearía todo acceso; queda reportado para que el usuario decida.
+-- ADENDA DE SEGURIDAD (2026-07-02, sesión posterior a spec_0014):
+-- RLS ya está HABILITADO vía mcp__supabase__apply_migration, migración
+-- "enable_rls_tenant_isolation":
+--   - profiles: FOR ALL TO authenticated USING/WITH CHECK (id = auth.uid())
+--   - properties, match_queue, whatsapp_sessions: FOR ALL TO authenticated
+--     USING/WITH CHECK (tenant_id = auth.uid())
+--   - neighborhood_groups/neighborhoods/neighborhood_aliases: RLS habilitado,
+--     sin políticas (deny-all) — no hay código en src/ que las use hoy.
+--   - spatial_ref_sys: deliberadamente NO se tocó (catálogo del sistema PostGIS,
+--     no datos de la app; algunas funciones de PostGIS lo consultan internamente).
+--
+-- IMPORTANTE — hallazgo real detectado al auditar esto: `tenantAuthMiddleware`
+-- (src/index.ts) usa el cliente SERVICE-ROLE para todo (nunca `getTenantClient()`,
+-- el único que respeta RLS). O sea: RLS es hoy defensa en profundidad genuina
+-- (protege si la anon key se filtra), pero NO aisla tenants dentro del flujo real
+-- de la app — eso seguiría dependiendo de los filtros `.eq('tenant_id', ...)`
+-- explícitos en cada query. Cambiar el middleware para usar `getTenantClient()`
+-- es un cambio de arquitectura mayor, pendiente para otra sesión.
+--
+-- Bug real e independiente de RLS, corregido en esta misma sesión: `GET /api/matches`
+-- y `POST /api/matches/:id/feedback` no filtraban por tenant_id — cualquier tenant
+-- autenticado podía ver/editar matches de otros tenants. Ya tienen `.eq('tenant_id', tenantId)`.
+--
+-- `web_push_subscriptions`: el código (notifier.ts) consulta esta tabla, pero
+-- NO EXISTE en el schema real — hallazgo separado, notificaciones web push están
+-- silenciosamente rotas en producción. Fuera de alcance de esta sesión.

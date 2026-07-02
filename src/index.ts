@@ -256,6 +256,7 @@ app.get('/api/matches', tenantAuthMiddleware, async (req, res) => {
         *,
         property:properties(*)
       `)
+      .eq('tenant_id', tenantId)
       .order('created_at', { ascending: false })
       .limit(50);
 
@@ -304,15 +305,21 @@ app.post('/api/matches/:id/feedback', tenantAuthMiddleware, async (req, res) => 
   }
 
   try {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('match_queue')
       .update({
         user_review_status: status,
         feedback_reason: status === 'REJECTED' ? (reason || 'No especificado') : null
       })
-      .eq('id', id);
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .select('id');
 
     if (error) throw error;
+
+    if (!data || data.length === 0) {
+      return res.status(404).json({ error: 'Match no encontrado.' });
+    }
 
     res.json({ success: true });
   } catch (error: any) {
