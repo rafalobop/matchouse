@@ -313,7 +313,7 @@ ${JSON.stringify(property)}
   }
 }
 
-function logFallbackWarning(strategyName: string, error: any) {
+export function logFallbackWarning(strategyName: string, error: any) {
   const errMsg = error?.message || String(error);
   const isQuotaError = errMsg.includes('429') ||
     errMsg.toLowerCase().includes('quota') ||
