@@ -5,7 +5,7 @@
 // techLead) comparten esta secuenciación; solo cambian la skill, los prompts
 // específicos del rol y el schema de salida del Reconcile.
 
-import { generateText, generateStructuredJSON, GenerateStructuredJSONParams } from './llm';
+import { generateText, generateStructuredJSON, GenerateStructuredJSONParams, LLMProvider } from './llm';
 import { DevTeamState } from './state';
 
 // Formato común en el que los 3 nodos de debate le pasan state.spec al modelo.
@@ -22,6 +22,7 @@ export interface DebateStepContext {
   roleHandle: string;  // ej. "@pm", el handle usado dentro del SKILL.md
   skillContent: string; // contenido completo del SKILL.md del rol
   specSummary: string;  // state.spec ya formateado en texto para inyectar en los prompts
+  primaryProvider?: LLMProvider; // default 'gemini' (ver src/graph/llm.ts)
 }
 
 function buildStepInstruction(context: DebateStepContext, step: 'Proposer' | 'Opposer'): string {
@@ -111,23 +112,24 @@ export interface RunDebateParams<T> {
 
 export async function runProposerOpposerReconcile<T>(params: RunDebateParams<T>): Promise<T> {
   const { context, reconcileSchemas, normalizeReconcile } = params;
+  const llmOptions = { primaryProvider: context.primaryProvider };
 
   const proposerText = await generateText({
     systemInstruction: buildStepInstruction(context, 'Proposer'),
     userPrompt: buildProposerUserPrompt(context)
-  });
+  }, llmOptions);
 
   const opposerText = await generateText({
     systemInstruction: buildStepInstruction(context, 'Opposer'),
     userPrompt: buildOpposerUserPrompt(context, proposerText)
-  });
+  }, llmOptions);
 
   const rawReconcile = await generateStructuredJSON({
     systemInstruction: buildReconcileInstruction(context),
     userPrompt: buildReconcileUserPrompt(context, proposerText, opposerText),
     geminiSchema: reconcileSchemas.geminiSchema,
     openaiSchema: reconcileSchemas.openaiSchema
-  });
+  }, llmOptions);
 
   return normalizeReconcile(rawReconcile);
 }

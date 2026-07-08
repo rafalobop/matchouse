@@ -3,7 +3,13 @@
 // entidades de dominio de HouseMatch (esas viven en src/services, src/utils).
 
 export interface DevTeamState {
-  // Entrada
+  // Entrada: key de Jira de la tarea/historia a atacar (ej. "HOUSE-42"), elegida
+  // manualmente corrida a corrida. Si está presente, tiene prioridad sobre rawIdea.
+  jiraIssueKey: string | null;
+
+  // Entrada alternativa/manual: idea cruda tipeada a mano (sin pasar por Jira),
+  // útil para test/smoke. poNode también la usa como campo de trazabilidad,
+  // volcando ahí el contenido derivado de Jira cuando esa es la fuente usada.
   rawIdea: string;
 
   // Producto de Product Owner

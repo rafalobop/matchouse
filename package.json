@@ -8,7 +8,8 @@
     "dev": "ts-node src/index.ts",
     "test-pipeline": "ts-node src/test-pipeline.ts",
     "build": "tsc",
-    "test": "ts-node tests/runner.ts"
+    "test": "ts-node tests/runner.ts",
+    "graph:run": "ts-node src/graph/run.ts"
   },
   "keywords": [],
   "author": "",

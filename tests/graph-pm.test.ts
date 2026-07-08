@@ -25,6 +25,7 @@ test('graph/nodes/pm - normalizePMInput fuerza concerns/priorities a array aunqu
 test('graph/nodes/pm - pmNode rechaza correr sin state.spec (invariante de orden en el grafo)', async () => {
   await assert.rejects(
     () => pmNode({
+      jiraIssueKey: null,
       rawIdea: 'idea',
       spec: null,
       roleInputs: { pm: null, em: null, techLead: null },

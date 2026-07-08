@@ -24,6 +24,7 @@ test('graph/nodes/techLead - normalizeTechLeadInput fuerza tradeoffs/risks a arr
 test('graph/nodes/techLead - techLeadNode rechaza correr sin state.spec (invariante de orden en el grafo)', async () => {
   await assert.rejects(
     () => techLeadNode({
+      jiraIssueKey: null,
       rawIdea: 'idea',
       spec: null,
       roleInputs: { pm: null, em: null, techLead: null },

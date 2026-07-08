@@ -64,7 +64,8 @@ export async function emNode(state: DevTeamState): Promise<{ roleInputs: Partial
       roleName: 'Engineering Manager (EM)',
       roleHandle: '@em',
       skillContent: loadEngineeringManagerSkill(),
-      specSummary: formatSpecSummary(state.spec)
+      specSummary: formatSpecSummary(state.spec),
+      primaryProvider: 'openai'
     },
     reconcileSchemas: {
       geminiSchema: EM_GEMINI_SCHEMA,

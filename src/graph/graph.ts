@@ -9,6 +9,8 @@ import { poNode } from './nodes/po';
 import { pmNode } from './nodes/pm';
 import { emNode } from './nodes/em';
 import { techLeadNode } from './nodes/techLead';
+import { judgeNode } from './nodes/judge';
+import { taskCreationNode } from './nodes/taskCreation';
 
 // Todos los campos son "last value wins": cada nodo devuelve el delta de state
 // que le corresponde y LangGraph lo mergea sobreescribiendo esa clave (sin
@@ -30,6 +32,7 @@ function mergeRoleInputs(
 }
 
 export const GraphState = Annotation.Root({
+  jiraIssueKey: Annotation<DevTeamState['jiraIssueKey']>({ reducer: overwrite, default: () => null }),
   rawIdea: Annotation<DevTeamState['rawIdea']>({ reducer: overwrite, default: () => '' }),
   spec: Annotation<DevTeamState['spec']>({ reducer: overwrite, default: () => null }),
   roleInputs: Annotation<DevTeamState['roleInputs'], Partial<DevTeamState['roleInputs']>>({
@@ -51,17 +54,21 @@ export function buildDevTeamGraph() {
     .addNode('pm', pmNode)
     .addNode('em', emNode)
     .addNode('techLead', techLeadNode)
+    .addNode('judge', judgeNode)
+    .addNode('taskCreation', taskCreationNode)
     .addEdge(START, 'po')
     // Fan-out real: los 3 corren en paralelo, sin verse entre sí (Paso 3 de la skill).
     .addEdge('po', 'pm')
     .addEdge('po', 'em')
     .addEdge('po', 'techLead')
-    // TODO: reemplazar por el fan-in real cuando exista judgeNode:
-    //   .addEdge('pm', 'judge').addEdge('em', 'judge').addEdge('techLead', 'judge')
-    // Por ahora cada rama termina acá para que el grafo sea compilable e invocable de punta a punta.
-    .addEdge('pm', END)
-    .addEdge('em', END)
-    .addEdge('techLead', END);
+    // Fan-in real: forma de array en addEdge = "esperar a que las 3 ramas terminen"
+    // (waiting edge). Con 3 addEdge separados hacia el mismo destino, judge podría
+    // dispararse una vez por cada rama en vez de una sola vez con las 3 completas.
+    .addEdge(['pm', 'em', 'techLead'], 'judge')
+    .addEdge('judge', 'taskCreation')
+    // TODO: reemplazar por el edge real cuando exista devNode: .addEdge('taskCreation', 'developer')
+    // Por ahora termina acá para que el grafo sea compilable e invocable de punta a punta.
+    .addEdge('taskCreation', END);
 
   return builder.compile();
 }
