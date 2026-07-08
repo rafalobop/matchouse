@@ -67,7 +67,8 @@ export async function pmNode(state: DevTeamState): Promise<{ roleInputs: Partial
       roleName: 'Project Manager (PM)',
       roleHandle: '@pm',
       skillContent: loadProjectManagerSkill(),
-      specSummary: formatSpecSummary(state.spec)
+      specSummary: formatSpecSummary(state.spec),
+      primaryProvider: 'openai'
     },
     reconcileSchemas: {
       geminiSchema: PM_GEMINI_SCHEMA,

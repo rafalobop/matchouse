@@ -60,7 +60,8 @@ export async function techLeadNode(state: DevTeamState): Promise<{ roleInputs: P
       roleName: 'Tech Lead',
       roleHandle: '@techlead',
       skillContent: loadTechLeadSkill(),
-      specSummary: formatSpecSummary(state.spec)
+      specSummary: formatSpecSummary(state.spec),
+      primaryProvider: 'openai'
     },
     reconcileSchemas: {
       geminiSchema: TECH_LEAD_GEMINI_SCHEMA,

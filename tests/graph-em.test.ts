@@ -23,6 +23,7 @@ test('graph/nodes/em - normalizeEMInput fuerza risks a array aunque el LLM devue
 test('graph/nodes/em - emNode rechaza correr sin state.spec (invariante de orden en el grafo)', async () => {
   await assert.rejects(
     () => emNode({
+      jiraIssueKey: null,
       rawIdea: 'idea',
       spec: null,
       roleInputs: { pm: null, em: null, techLead: null },

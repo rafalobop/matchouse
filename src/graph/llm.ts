@@ -11,6 +11,34 @@ import { logFallbackWarning } from '../services/ai';
 const genAI = new GoogleGenAI({ apiKey: config.geminiApiKey });
 const openai = config.openaiApiKey ? new OpenAI({ apiKey: config.openaiApiKey }) : null;
 
+export type LLMProvider = 'gemini' | 'openai';
+
+export interface LLMCallOptions {
+  // Cuál proveedor probar primero. Default 'gemini' (comportamiento histórico).
+  // Los nodos que necesiten gpt-4o-mini como primario (ej. po/pm/em/techLead)
+  // pasan 'openai' acá — el otro proveedor sigue actuando como fallback.
+  primaryProvider?: LLMProvider;
+}
+
+async function runWithFallback<T>(
+  primaryProvider: LLMProvider,
+  geminiFn: () => Promise<T>,
+  openaiFn: () => Promise<T>
+): Promise<T> {
+  const primaryIsOpenAI = primaryProvider === 'openai';
+  const first = primaryIsOpenAI ? openaiFn : geminiFn;
+  const firstName = primaryIsOpenAI ? 'OpenAI (gpt-4o-mini)' : 'Google Gemini (gemini-2.5-flash-lite)';
+  const second = primaryIsOpenAI ? geminiFn : openaiFn;
+
+  try {
+    return await first();
+  } catch (error) {
+    logFallbackWarning(firstName, error);
+  }
+
+  return await second();
+}
+
 export interface GenerateStructuredJSONParams {
   systemInstruction: string;
   userPrompt: string;
@@ -61,16 +89,18 @@ async function generateWithOpenAI(params: GenerateStructuredJSONParams): Promise
   return JSON.parse(content.trim());
 }
 
-// Gemini primero (costo/velocidad), fallback automático a OpenAI ante error o cuota agotada.
-// Ver src/services/ai.ts para el mismo patrón aplicado a los sub-agentes cognitivos del producto.
-export async function generateStructuredJSON(params: GenerateStructuredJSONParams): Promise<any> {
-  try {
-    return await generateWithGemini(params);
-  } catch (error) {
-    logFallbackWarning('Google Gemini (gemini-2.5-flash-lite)', error);
-  }
-
-  return await generateWithOpenAI(params);
+// Default Gemini primero (costo/velocidad), fallback automático al otro proveedor
+// ante error o cuota agotada. Ver src/services/ai.ts para el mismo patrón aplicado
+// a los sub-agentes cognitivos del producto.
+export async function generateStructuredJSON(
+  params: GenerateStructuredJSONParams,
+  options: LLMCallOptions = {}
+): Promise<any> {
+  return runWithFallback(
+    options.primaryProvider ?? 'gemini',
+    () => generateWithGemini(params),
+    () => generateWithOpenAI(params)
+  );
 }
 
 export interface GenerateTextParams {
@@ -111,12 +141,13 @@ async function generateTextWithOpenAI(params: GenerateTextParams): Promise<strin
 // Igual que generateStructuredJSON pero para texto libre (sin schema) — pensado
 // para los pasos Proposer/Opposer del debate interno de cada rol, donde queremos
 // razonamiento en prosa, no JSON forzado.
-export async function generateText(params: GenerateTextParams): Promise<string> {
-  try {
-    return await generateTextWithGemini(params);
-  } catch (error) {
-    logFallbackWarning('Google Gemini (gemini-2.5-flash-lite)', error);
-  }
-
-  return await generateTextWithOpenAI(params);
+export async function generateText(
+  params: GenerateTextParams,
+  options: LLMCallOptions = {}
+): Promise<string> {
+  return runWithFallback(
+    options.primaryProvider ?? 'gemini',
+    () => generateTextWithGemini(params),
+    () => generateTextWithOpenAI(params)
+  );
 }
