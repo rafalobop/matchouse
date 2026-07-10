@@ -1,6 +1,8 @@
 node_modules/
 dist/
-*.env
+.env
+.env.*
+!.env.example
 credentials.json
 .wwebjs_auth/
 .wwebjs_cache/
@@ -12,8 +14,10 @@ yarn-error.log*
 /catalog.json
 /settings.json
 .baileys_auth/
-.agents/
+.agent/skills
+.agent/agent_runner.db
 /src/generated/prisma
+.claude/
 
 # Archivos dinámicos de Tenants (Caché, Configuración y Sesiones)
 cache/

@@ -8,13 +8,13 @@ import { zones } from '../utils/constants/zones';
 export const ALLOWED_ZONE_IDS = [...Object.keys(zones), 'DESCONOCIDO'];
 
 export interface ExtractedRealEstateRequest {
-  operacion: 'venta' | 'alquiler' | 'desconocido';
-  tipo_propiedad: 'departamento' | 'casa' | 'terreno' | 'local' | 'oficina' | 'otro';
-  zonas: string[];
-  presupuesto_max: number | null;
-  moneda: 'USD' | 'ARS' | 'desconocido';
-  dormitorios: number | null;
-  caracteristicas_clave: string[];
+  operation: 'venta' | 'alquiler' | 'desconocido';
+  property_type: 'departamento' | 'casa' | 'terreno' | 'local' | 'oficina' | 'otro';
+  zones: string[];
+  max_budget: number | null;
+  currency: 'USD' | 'ARS' | 'desconocido';
+  bedrooms: number | null;
+  key_features: string[];
   country: 'si' | 'no' | 'indiferente';
 }
 
@@ -65,20 +65,20 @@ ${messageTexto}
         responseSchema: {
           type: 'OBJECT',
           properties: {
-            operacion: { type: 'STRING', enum: ['venta', 'alquiler', 'desconocido'] },
-            tipo_propiedad: { type: 'STRING', enum: ['departamento', 'casa', 'terreno', 'local', 'oficina', 'otro'] },
-            zonas: {
+            operation: { type: 'STRING', enum: ['venta', 'alquiler', 'desconocido'] },
+            property_type: { type: 'STRING', enum: ['departamento', 'casa', 'terreno', 'local', 'oficina', 'otro'] },
+            zones: {
               type: 'ARRAY',
               items: { type: 'STRING' },
               description: 'Zonas normalizadas'
             },
-            presupuesto_max: { type: 'INTEGER', nullable: true },
-            moneda: { type: 'STRING', enum: ['USD', 'ARS', 'desconocido'] },
-            dormitorios: { type: 'INTEGER', nullable: true },
-            caracteristicas_clave: { type: 'ARRAY', items: { type: 'STRING' } },
+            max_budget: { type: 'INTEGER', nullable: true },
+            currency: { type: 'STRING', enum: ['USD', 'ARS', 'desconocido'] },
+            bedrooms: { type: 'INTEGER', nullable: true },
+            key_features: { type: 'ARRAY', items: { type: 'STRING' } },
             country: { type: 'STRING', enum: ['si', 'no', 'indiferente'], description: 'Indica si busca dentro de un country (si), fuera de un country (no) o si no lo especifica (indiferente)' }
           },
-          required: ['operacion', 'tipo_propiedad', 'zonas', 'presupuesto_max', 'moneda', 'dormitorios', 'caracteristicas_clave', 'country']
+          required: ['operation', 'property_type', 'zones', 'max_budget', 'currency', 'bedrooms', 'key_features', 'country']
         }
       }
     });
@@ -193,16 +193,16 @@ ${messageTexto}
           schema: {
             type: 'object',
             properties: {
-              operacion: { type: 'string', enum: ['venta', 'alquiler', 'desconocido'] },
-              tipo_propiedad: { type: 'string', enum: ['departamento', 'casa', 'terreno', 'local', 'oficina', 'otro'] },
-              zonas: { type: 'array', items: { type: 'string' } },
-              presupuesto_max: { type: ['integer', 'null'] },
-              moneda: { type: 'string', enum: ['USD', 'ARS', 'desconocido'] },
-              dormitorios: { type: ['integer', 'null'] },
-              caracteristicas_clave: { type: 'array', items: { type: 'string' } },
+              operation: { type: 'string', enum: ['venta', 'alquiler', 'desconocido'] },
+              property_type: { type: 'string', enum: ['departamento', 'casa', 'terreno', 'local', 'oficina', 'otro'] },
+              zones: { type: 'array', items: { type: 'string' } },
+              max_budget: { type: ['integer', 'null'] },
+              currency: { type: 'string', enum: ['USD', 'ARS', 'desconocido'] },
+              bedrooms: { type: ['integer', 'null'] },
+              key_features: { type: 'array', items: { type: 'string' } },
               country: { type: 'string', enum: ['si', 'no', 'indiferente'] }
             },
-            required: ['operacion', 'tipo_propiedad', 'zonas', 'presupuesto_max', 'moneda', 'dormitorios', 'caracteristicas_clave', 'country'],
+            required: ['operation', 'property_type', 'zones', 'max_budget', 'currency', 'bedrooms', 'key_features', 'country'],
             additionalProperties: false
           }
         }
@@ -313,7 +313,7 @@ ${JSON.stringify(property)}
   }
 }
 
-function logFallbackWarning(strategyName: string, error: any) {
+export function logFallbackWarning(strategyName: string, error: any) {
   const errMsg = error?.message || String(error);
   const isQuotaError = errMsg.includes('429') ||
     errMsg.toLowerCase().includes('quota') ||
@@ -356,13 +356,13 @@ class AIExtractorContext {
 
     console.error('[AI STRATEGY] Todas las estrategias de extracción fallaron.');
     return {
-      operacion: 'desconocido',
-      tipo_propiedad: 'otro',
-      zonas: [],
-      presupuesto_max: null,
-      moneda: 'desconocido',
-      dormitorios: null,
-      caracteristicas_clave: [],
+      operation: 'desconocido',
+      property_type: 'otro',
+      zones: [],
+      max_budget: null,
+      currency: 'desconocido',
+      bedrooms: null,
+      key_features: [],
       country: 'indiferente'
     };
   }
@@ -432,7 +432,7 @@ Sigue estrictamente estas reglas de negocio:
 
 1. OPERACIÓN:
    - Identifica si el pedido es de "venta" o "alquiler". Si no dice explícitamente uno de los dos, revisa si está la palabra "Busco", "Necesito", "alguien tiene", busca un monto (e.g. 40000 usd), un "presupuesto" o "hasta XXX" (e.g. 100000 usd) y setea ante estas coincidencias secundarias, "venta" (en minúsculas).
-   - El campo "operacion" DEBE ser una de estas tres opciones en minúsculas: "venta", "alquiler" o "desconocido". Nunca utilices valores en mayúsculas como "DESCONOCIDO".
+   - El campo "operation" DEBE ser una de estas tres opciones en minúsculas: "venta", "alquiler" o "desconocido". Nunca utilices valores en mayúsculas como "DESCONOCIDO".
 
 2. TIPO DE PROPIEDAD:
    - Debe ser uno de: "departamento", "casa", "terreno", "local", "oficina", "otro".
@@ -448,9 +448,9 @@ Sigue estrictamente estas reglas de negocio:
 4. PRESUPUESTO MÁXIMO Y MONEDA:
    - Extrae el monto numérico máximo y la moneda ("USD", "ARS". Si no especifica, analiza qué tipo de operación es la que se busca: si es venta, setea USD, si es alquiler, setea ARS (o pesos)).
    - Ejemplos:
-     * "max 300 usd" / "hasta 300 dólares" -> presupuesto_max: 300, moneda: "USD"
-     * "hasta 250 mil pesos" / "presupuesto 250k" -> presupuesto_max: 250000, moneda: "ARS"
-     * Si no se especifica presupuesto, deja presupuesto_max in null y, en moneda, analiza el tipo de operación que se está haciendo: si es compra/venta, setea USD, si es alquiler ARS.
+     * "max 300 usd" / "hasta 300 dólares" -> max_budget: 300, currency: "USD"
+     * "hasta 250 mil pesos" / "presupuesto 250k" -> max_budget: 250000, currency: "ARS"
+     * Si no se especifica presupuesto, deja max_budget in null y, en currency, analiza el tipo de operación que se está haciendo: si es compra/venta, setea USD, si es alquiler ARS.
 
 5. DORMITORIOS:
    - Extrae el número entero de dormitorios requeridos:
@@ -514,39 +514,39 @@ Deberás devolver exactamente esta estructura:
 // --- FUNCIONES DE NORMALIZACIÓN COMPARTIDAS ---
 
 function normalizeAgent1(parsed: any): ExtractedRealEstateRequest {
-  if (parsed.operacion) {
-    parsed.operacion = String(parsed.operacion).toLowerCase() as any;
-    if (!['venta', 'alquiler', 'desconocido'].includes(parsed.operacion)) {
-      parsed.operacion = 'desconocido';
+  if (parsed.operation) {
+    parsed.operation = String(parsed.operation).toLowerCase() as any;
+    if (!['venta', 'alquiler', 'desconocido'].includes(parsed.operation)) {
+      parsed.operation = 'desconocido';
     }
   } else {
-    parsed.operacion = 'desconocido';
+    parsed.operation = 'desconocido';
   }
 
-  if (parsed.tipo_propiedad) {
-    parsed.tipo_propiedad = String(parsed.tipo_propiedad).toLowerCase() as any;
-    if (!['departamento', 'casa', 'terreno', 'local', 'oficina', 'otro'].includes(parsed.tipo_propiedad)) {
-      parsed.tipo_propiedad = 'otro';
+  if (parsed.property_type) {
+    parsed.property_type = String(parsed.property_type).toLowerCase() as any;
+    if (!['departamento', 'casa', 'terreno', 'local', 'oficina', 'otro'].includes(parsed.property_type)) {
+      parsed.property_type = 'otro';
     }
   } else {
-    parsed.tipo_propiedad = 'otro';
+    parsed.property_type = 'otro';
   }
 
-  if (parsed.moneda) {
-    parsed.moneda = String(parsed.moneda).toUpperCase() as any;
-    if (!['USD', 'ARS', 'desconocido'].includes(parsed.moneda)) {
-      parsed.moneda = 'desconocido';
+  if (parsed.currency) {
+    parsed.currency = String(parsed.currency).toUpperCase() as any;
+    if (!['USD', 'ARS', 'desconocido'].includes(parsed.currency)) {
+      parsed.currency = 'desconocido';
     }
   } else {
-    parsed.moneda = 'desconocido';
+    parsed.currency = 'desconocido';
   }
 
-  if (!Array.isArray(parsed.zonas)) {
-    parsed.zonas = [];
+  if (!Array.isArray(parsed.zones)) {
+    parsed.zones = [];
   }
 
-  if (!Array.isArray(parsed.caracteristicas_clave)) {
-    parsed.caracteristicas_clave = [];
+  if (!Array.isArray(parsed.key_features)) {
+    parsed.key_features = [];
   }
 
   if (parsed.country) {
@@ -559,13 +559,13 @@ function normalizeAgent1(parsed: any): ExtractedRealEstateRequest {
   }
 
   return {
-    operacion: parsed.operacion,
-    tipo_propiedad: parsed.tipo_propiedad,
-    zonas: parsed.zonas,
-    presupuesto_max: parsed.presupuesto_max !== undefined ? parsed.presupuesto_max : null,
-    moneda: parsed.moneda,
-    dormitorios: parsed.dormitorios !== undefined ? parsed.dormitorios : null,
-    caracteristicas_clave: parsed.caracteristicas_clave,
+    operation: parsed.operation,
+    property_type: parsed.property_type,
+    zones: parsed.zones,
+    max_budget: parsed.max_budget !== undefined ? parsed.max_budget : null,
+    currency: parsed.currency,
+    bedrooms: parsed.bedrooms !== undefined ? parsed.bedrooms : null,
+    key_features: parsed.key_features,
     country: parsed.country
   };
 }

@@ -14,6 +14,14 @@ export interface Config {
   vapidPublicKey: string;
   vapidPrivateKey: string;
   vapidEmail: string;
+  appUrl: string;
+  resendApiKey?: string;
+  notificationChannel: 'whatsapp' | 'email';
+  notificationIntervalMinutes: number;
+  jiraDomain?: string;
+  jiraEmail?: string;
+  jiraProjectKey?: string;
+  atlassianApiKey?: string;
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -31,6 +39,17 @@ export function validateConfig(): Config {
   const vapidPublicKey = cleanEnvVar(process.env.VAPID_PUBLIC_KEY) || 'BNmVCR9MQPF4jTiJfcsqjZuVUpkc2eFjNviiA_ddqnZnbnzsJBRAdZ3PTfDK7OUIuVtbu4Oc8ANj_xpUy-_s0aI';
   const vapidPrivateKey = cleanEnvVar(process.env.VAPID_PRIVATE_KEY) || '8QmgGSOvRrSlm8Xi_dscW6bfaVjLNPiUsBndeXE8uQo';
   const vapidEmail = cleanEnvVar(process.env.VAPID_EMAIL) || 'mailto:info@housematch.com';
+  const appUrl = cleanEnvVar(process.env.APP_URL) || 'http://localhost:3000';
+  // SENDER_API_KEY es la API key de Resend (nombre histórico de la variable en .env)
+  const resendApiKey = cleanEnvVar(process.env.SENDER_API_KEY);
+  const notificationChannel = (cleanEnvVar(process.env.NOTIFICATION_CHANNEL) === 'whatsapp') ? 'whatsapp' : 'email';
+  const notificationIntervalMinutes = parseInt(cleanEnvVar(process.env.NOTIFICATION_INTERVAL_MINUTES) || '20', 10);
+  // Jira es solo para el grafo LangGraph de equipo de desarrollo (src/graph/), no para
+  // la app de HouseMatch en sí — opcional a propósito, no debe romper el arranque del bot.
+  const jiraDomain = cleanEnvVar(process.env.JIRA_DOMAIN);
+  const jiraEmail = cleanEnvVar(process.env.JIRA_EMAIL);
+  const jiraProjectKey = cleanEnvVar(process.env.JIRA_PROJECT_KEY);
+  const atlassianApiKey = cleanEnvVar(process.env.ATLASSIAN_API_KEY);
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
@@ -53,7 +72,15 @@ export function validateConfig(): Config {
     supabaseAnonKey,
     vapidPublicKey,
     vapidPrivateKey,
-    vapidEmail
+    vapidEmail,
+    appUrl,
+    resendApiKey,
+    notificationChannel,
+    notificationIntervalMinutes,
+    jiraDomain,
+    jiraEmail,
+    jiraProjectKey,
+    atlassianApiKey
   };
 }
 
