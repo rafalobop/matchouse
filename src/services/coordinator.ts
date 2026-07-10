@@ -4,6 +4,9 @@ import { checkMatch } from '../utils/matcher';
 import { randomUUID } from 'crypto';
 import { logger } from './logger';
 import { supabase } from './supabase';
+import { config } from '../config/env';
+import { sendEmailForMatchGroup } from './notifier-email';
+import { sendWhatsAppForMatchGroup } from './notifier';
 
 export interface PipelineContext {
   messageId?: string;
@@ -129,6 +132,9 @@ export class CoordinatorAgent {
       logger.info({ catalogLength: tenantCatalog.length, tenantId }, '[COORDINADOR] Comparando con cartera del tenant...');
       context.matches = [];
       let matchesFoundCount = 0;
+      // Matches calificados de este pedido puntual (mismo remitente + mismo texto), para
+      // notificarlos juntos e inmediatamente en cuanto se termina de evaluar toda la cartera.
+      const matchGroupForNotification: any[] = [];
 
       for (const property of tenantCatalog) {
         const matchResult = checkMatch(context.extractedData, property, context.zoneIntent);
@@ -161,10 +167,11 @@ export class CoordinatorAgent {
             if (propErr) throw propErr;
 
             if (dbProperty) {
+              const matchId = randomUUID();
               const { error: matchErr } = await supabase
                 .from('match_queue')
                 .insert({
-                  id: randomUUID(),
+                  id: matchId,
                   tenant_id: tenantId,
                   property_id: dbProperty.id,
                   whatsapp_group_name: groupName,
@@ -180,6 +187,18 @@ export class CoordinatorAgent {
                 });
               if (matchErr) throw matchErr;
               logger.info({ property: property.address, tenantId }, '[COORDINADOR - SUPABASE] Match registrado en match_queue');
+
+              if (validation.isValid && validation.score >= 70) {
+                matchGroupForNotification.push({
+                  id: matchId,
+                  tenant_id: tenantId,
+                  whatsapp_group_name: groupName,
+                  whatsapp_sender_name: sender,
+                  whatsapp_sender_phone: senderPhone,
+                  raw_message_text: body,
+                  property
+                });
+              }
             }
           } catch (dbErr: any) {
             logger.warn({ error: dbErr.message || dbErr, tenantId }, '[COORDINADOR - SUPABASE] Error al registrar el match');
@@ -208,6 +227,19 @@ export class CoordinatorAgent {
             }
             this.recentMatches.set(tenantId, tenantRecent);
           }
+        }
+      }
+
+      // Notificar de inmediato, en un único envío, todos los matches calificados de este pedido
+      if (matchGroupForNotification.length > 0) {
+        try {
+          if (config.notificationChannel === 'email') {
+            await sendEmailForMatchGroup(tenantId, matchGroupForNotification);
+          } else {
+            await sendWhatsAppForMatchGroup(tenantId, matchGroupForNotification);
+          }
+        } catch (notifyErr: any) {
+          logger.error({ error: notifyErr.message || notifyErr, tenantId }, '[COORDINADOR] Error al enviar notificación inmediata de matches.');
         }
       }
 

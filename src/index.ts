@@ -23,6 +23,7 @@ import { startNotificationService } from './services/notifier';
 import { startEmailNotificationService } from './services/notifier-email';
 import { startDolarService } from './services/dolar';
 import { config } from './config/env';
+import { logger } from './services/logger';
 
 // Express Setup
 const app = express();
@@ -81,20 +82,79 @@ function checkAuthRateLimit(ip: string): boolean {
   return true;
 }
 
+/**
+ * Ejecuta una promesa con un tiempo límite. Evita que un request quede colgado
+ * indefinidamente (spinner infinito en el cliente) ante fallos de red/DNS hacia Supabase.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timeout de ${ms}ms esperando: ${label}`)), ms);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
+// Cache en memoria de sesiones ya validadas contra Supabase. El dashboard pollea /api/status,
+// /api/matches y /api/catalog cada 1.5-5s; sin este cache, cada poll disparaba una llamada de red
+// a la API de Auth de Supabase, lo que en un entorno con red inestable causaba 401 intermitentes
+// y deslogueos falsos (ver interceptor de fetch en app.js).
+const SESSION_CACHE_TTL_MS = 30_000;
+const sessionCache = new Map<string, { tenantId: string; expiresAt: number }>();
+
+function getCachedSession(token: string) {
+  const entry = sessionCache.get(token);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    sessionCache.delete(token);
+    return null;
+  }
+  return entry;
+}
+
+function clearCachedSession(token: string) {
+  sessionCache.delete(token);
+}
+
 async function tenantAuthMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
   const { supabase } = require('./services/supabase');
   const token = req.cookies?.housematch_session;
   if (!token) {
     return res.status(401).json({ error: 'No autenticado.' });
   }
-  const { data: { user }, error } = await supabase.auth.getUser(token);
-  if (error || !user) {
-    res.clearCookie('housematch_session');
-    return res.status(401).json({ error: 'Sesión inválida o expirada.' });
+
+  const cached = getCachedSession(token);
+  if (cached) {
+    (req as any).tenantId = cached.tenantId;
+    (req as any).supabaseClient = supabase;
+    return next();
   }
-  (req as any).tenantId = user.id;
-  (req as any).supabaseClient = supabase;
-  next();
+
+  try {
+    const { data: { user }, error }: any = await withTimeout(
+      supabase.auth.getUser(token), 10_000, 'Supabase getUser (tenantAuthMiddleware)'
+    );
+    if (error?.name === 'AuthRetryableFetchError') {
+      // Fallo transitorio de red/TLS hacia Supabase: no invalidamos la sesión del tenant por esto,
+      // sólo devolvemos 503 para que el cliente reintente en el próximo poll.
+      logger.error({ supabaseError: error.message, cause: error.cause }, '[AUTH] No se pudo conectar con Supabase al validar sesión de tenant');
+      return res.status(503).json({ error: 'No pudimos conectar con el servidor de autenticación.' });
+    }
+    if (error || !user) {
+      logger.warn({ supabaseError: error?.message }, '[AUTH] Sesión inválida o expirada en tenantAuthMiddleware');
+      clearCachedSession(token);
+      res.clearCookie('housematch_session');
+      return res.status(401).json({ error: 'Sesión inválida o expirada.' });
+    }
+    sessionCache.set(token, { tenantId: user.id, expiresAt: Date.now() + SESSION_CACHE_TTL_MS });
+    (req as any).tenantId = user.id;
+    (req as any).supabaseClient = supabase;
+    next();
+  } catch (err: any) {
+    logger.error({ err: err.message }, '[AUTH] Error inesperado en tenantAuthMiddleware (posible timeout de red hacia Supabase)');
+    return res.status(503).json({ error: 'No pudimos conectar con el servidor de autenticación.' });
+  }
 }
 
 // ==========================================
@@ -102,61 +162,112 @@ async function tenantAuthMiddleware(req: express.Request, res: express.Response,
 // ==========================================
 
 app.get('/api/auth/session', async (req, res) => {
-  const { supabase } = require('./services/supabase');
   const token = req.cookies?.housematch_session;
   if (!token) return res.json({ authenticated: false });
-  const { data: { user }, error } = await supabase.auth.getUser(token);
-  if (error || !user) {
-    res.clearCookie('housematch_session');
-    return res.json({ authenticated: false });
+  try {
+    const { supabase } = require('./services/supabase');
+    const { data: { user }, error }: any = await withTimeout(
+      supabase.auth.getUser(token), 10_000, 'Supabase getUser (session)'
+    );
+    if (error?.name === 'AuthRetryableFetchError') {
+      // No desloguear al usuario por un fallo transitorio de red/TLS hacia Supabase.
+      logger.error({ supabaseError: error.message, cause: error.cause }, '[AUTH] No se pudo conectar con Supabase al chequear /session');
+      return res.status(503).json({ authenticated: false, error: 'No pudimos conectar con el servidor de autenticación.' });
+    }
+    if (error || !user) {
+      logger.warn({ supabaseError: error?.message }, '[AUTH] Sesión inválida o expirada al chequear /session');
+      res.clearCookie('housematch_session');
+      return res.json({ authenticated: false });
+    }
+    res.json({ authenticated: true, tenant: { id: user.id, email: user.email } });
+  } catch (err: any) {
+    logger.error({ err: err.message }, '[AUTH] Error inesperado al verificar sesión');
+    res.status(500).json({ authenticated: false, error: 'Error interno al verificar la sesión.' });
   }
-  res.json({ authenticated: true, tenant: { id: user.id, email: user.email } });
 });
 
 app.post('/api/auth/request-magic-link', async (req, res) => {
   const ip = getClientIp(req);
+  const { email } = req.body;
+  logger.info({ ip, email }, '[AUTH] Solicitud de magic link recibida');
+
   if (!checkAuthRateLimit(ip)) {
+    logger.warn({ ip, email }, '[AUTH] Rate limit excedido en solicitud de magic link');
     return res.status(429).json({ error: 'Demasiados intentos. Esperá un minuto e intentá de nuevo.' });
   }
-  const { email } = req.body;
   if (!email || !String(email).includes('@')) {
+    logger.warn({ ip, email }, '[AUTH] Email inválido en solicitud de magic link');
     return res.status(400).json({ error: 'Email inválido.' });
   }
-  const { supabase } = require('./services/supabase');
-  const { config } = require('./config/env');
-  const { error } = await supabase.auth.signInWithOtp({
-    email,
-    options: { emailRedirectTo: config.appUrl }
-  });
-  if (error) return res.status(400).json({ error: error.message });
-  res.json({ success: true, message: 'Revisá tu email. Te enviamos un link de acceso.' });
+
+  try {
+    const { supabase } = require('./services/supabase');
+    const { config } = require('./config/env');
+    const { error }: any = await withTimeout(
+      supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: config.appUrl } }),
+      10_000,
+      'Supabase signInWithOtp'
+    );
+    if (error) {
+      // AuthRetryableFetchError = Supabase no fue alcanzable (red/TLS/DNS), no un rechazo real del
+      // pedido; en ese caso el mensaje del SDK ("fetch failed") no es apto para mostrar al usuario.
+      if (error.name === 'AuthRetryableFetchError') {
+        logger.error({ ip, email, supabaseError: error.message, cause: error.cause }, '[AUTH] No se pudo conectar con Supabase para enviar el magic link');
+        return res.status(503).json({ error: 'No pudimos conectar con el servidor de autenticación. Intentá de nuevo en unos segundos.' });
+      }
+      logger.warn({ ip, email, supabaseError: error.message }, '[AUTH] Supabase rechazó la solicitud de magic link');
+      return res.status(400).json({ error: error.message });
+    }
+    logger.info({ ip, email }, '[AUTH] Magic link enviado exitosamente');
+    res.json({ success: true, message: 'Revisá tu email. Te enviamos un link de acceso.' });
+  } catch (err: any) {
+    logger.error({ ip, email, err: err.message, stack: err.stack }, '[AUTH] Error inesperado al solicitar magic link (posible timeout o fallo de red hacia Supabase)');
+    res.status(500).json({ error: 'No pudimos conectar con el servidor de autenticación. Intentá de nuevo en unos segundos.' });
+  }
 });
 
 app.post('/api/auth/exchange-token', async (req, res) => {
   const { access_token } = req.body;
   if (!access_token) return res.status(400).json({ error: 'Token requerido.' });
-  const { supabase } = require('./services/supabase');
-  const { data: { user }, error } = await supabase.auth.getUser(access_token);
-  if (error || !user) return res.status(401).json({ error: 'Token inválido o expirado.' });
-  // Crear perfil en primera sesión si no existe (full_name/email son NOT NULL en la tabla)
-  const { error: profileError } = await supabase.from('profiles').upsert({
-    id: user.id,
-    email: user.email,
-    full_name: user.email?.split('@')[0] || user.id
-  }, { onConflict: 'id', ignoreDuplicates: true });
-  if (profileError) {
-    console.error(`[AUTH] Error al crear/actualizar perfil para ${user.id}:`, profileError);
+  try {
+    const { supabase } = require('./services/supabase');
+    const { data: { user }, error }: any = await withTimeout(
+      supabase.auth.getUser(access_token), 10_000, 'Supabase getUser (exchange-token)'
+    );
+    if (error?.name === 'AuthRetryableFetchError') {
+      logger.error({ supabaseError: error.message, cause: error.cause }, '[AUTH] No se pudo conectar con Supabase al intercambiar el token');
+      return res.status(503).json({ error: 'No pudimos conectar con el servidor de autenticación. Intentá de nuevo en unos segundos.' });
+    }
+    if (error || !user) {
+      logger.warn({ supabaseError: error?.message }, '[AUTH] Token inválido o expirado en exchange-token');
+      return res.status(401).json({ error: 'Token inválido o expirado.' });
+    }
+    // Crear perfil en primera sesión si no existe (full_name/email son NOT NULL en la tabla)
+    const { error: profileError } = await supabase.from('profiles').upsert({
+      id: user.id,
+      email: user.email,
+      full_name: user.email?.split('@')[0] || user.id
+    }, { onConflict: 'id', ignoreDuplicates: true });
+    if (profileError) {
+      logger.error({ tenantId: user.id, err: profileError.message }, '[AUTH] Error al crear/actualizar perfil');
+    }
+    res.cookie('housematch_session', access_token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax' as const,
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+    logger.info({ tenantId: user.id, email: user.email }, '[AUTH] Sesión establecida vía magic link');
+    res.json({ authenticated: true, tenant: { id: user.id, email: user.email } });
+  } catch (err: any) {
+    logger.error({ err: err.message, stack: err.stack }, '[AUTH] Error inesperado al intercambiar token (posible timeout o fallo de red hacia Supabase)');
+    res.status(500).json({ error: 'No pudimos conectar con el servidor de autenticación. Intentá de nuevo en unos segundos.' });
   }
-  res.cookie('housematch_session', access_token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax' as const,
-    maxAge: 7 * 24 * 60 * 60 * 1000
-  });
-  res.json({ authenticated: true, tenant: { id: user.id, email: user.email } });
 });
 
-app.post('/api/auth/logout', (_req, res) => {
+app.post('/api/auth/logout', (req, res) => {
+  const token = req.cookies?.housematch_session;
+  if (token) clearCachedSession(token);
   res.clearCookie('housematch_session');
   res.json({ success: true });
 });
@@ -356,7 +467,7 @@ app.get('/api/notifications/email/click/:matchId', async (req, res) => {
   try {
     const { data: match, error } = await supabase
       .from('match_queue')
-      .select('whatsapp_sender_phone, whatsapp_group_name, property:properties(*)')
+      .select('whatsapp_sender_phone, whatsapp_sender_name, whatsapp_group_name, raw_message_text, property:properties(*)')
       .eq('id', matchId)
       .single();
 
@@ -371,7 +482,7 @@ app.get('/api/notifications/email/click/:matchId', async (req, res) => {
       .is('email_clicked_at', null);
 
     const { buildWhatsAppMessage } = require('./services/notifier-email');
-    const message = buildWhatsAppMessage(match.whatsapp_group_name, match.property);
+    const message = buildWhatsAppMessage(match.whatsapp_group_name, match.property, match.whatsapp_sender_name, match.raw_message_text);
     const phone = (match.whatsapp_sender_phone || '').replace(/\D/g, '');
     const waUrl = `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
 
