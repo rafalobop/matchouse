@@ -50,6 +50,13 @@ test('Notifier Email - buildWhatsAppMessage incluye domicilio y precio de la pro
   assert.ok(message.includes('Grupo Test'), 'El mensaje debe incluir el nombre del grupo.');
 });
 
+test('Notifier Email - buildWhatsAppMessage personaliza con nombre del cliente y su pedido original', () => {
+  const message = buildWhatsAppMessage('Grupo Test', sampleProperty, 'Juan Perez', 'Busco depto 2 dormitorios');
+  assert.ok(message.startsWith('Hola Juan Perez!'), 'Debe saludar al cliente por su nombre.');
+  assert.ok(message.includes('Busco depto 2 dormitorios'), 'Debe incluir el pedido original del cliente.');
+  assert.ok(message.includes('Av. Alem 500'), 'Debe incluir el domicilio de la propiedad matcheada.');
+});
+
 test('Notifier Email - buildPropertyRowHtml arma el HTML con los datos de la propiedad y el link de click', () => {
   const html = buildPropertyRowHtml(sampleMatch());
   assert.ok(html.includes('Av. Alem 500'), 'Debe incluir el domicilio.');

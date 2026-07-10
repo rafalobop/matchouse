@@ -47,6 +47,28 @@ const authBackBtn = document.getElementById('auth-back-btn');
 const authStep1Error = document.getElementById('auth-step1-error');
 const authStep2Error = document.getElementById('auth-step2-error');
 
+/**
+ * fetch con timeout: evita spinners infinitos cuando el servidor no responde
+ * y loguea en consola el motivo real del fallo (timeout vs. red vs. HTTP) para diagnóstico.
+ */
+async function fetchWithTimeout(url, options = {}, timeoutMs = 15000, logTag = '[AUTH]') {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    return res;
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      console.error(`${logTag} Timeout de ${timeoutMs}ms esperando respuesta de ${url}`);
+      throw new Error('El servidor no respondió a tiempo. Probá de nuevo en unos segundos.');
+    }
+    console.error(`${logTag} Error de red al conectar con ${url}:`, error.name, error.message);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Estado de Autenticación
 let authCheckInterval = null;
 let statusInterval = null;
@@ -87,7 +109,10 @@ function resetAuthCards() {
 
 async function checkAuthSession() {
   try {
-    const res = await fetch('/api/auth/session');
+    const res = await fetchWithTimeout('/api/auth/session');
+    if (!res.ok) {
+      console.error('[AUTH] /api/auth/session respondió con error HTTP', res.status);
+    }
     const data = await res.json();
 
     if (data.authenticated) {
@@ -104,7 +129,7 @@ async function checkAuthSession() {
       stopDashboardPolling();
     }
   } catch (error) {
-    console.error('Error al comprobar sesión auth:', error);
+    console.error('[AUTH] Error al comprobar sesión auth:', error.message);
   }
 }
 
@@ -120,19 +145,47 @@ async function handleMagicLinkCallback() {
   // Limpiar el hash de la URL sin recargar
   history.replaceState(null, '', window.location.pathname);
 
+  console.log('[AUTH] Magic link callback detectado, intercambiando token...');
   try {
-    const res = await fetch('/api/auth/exchange-token', {
+    const res = await fetchWithTimeout('/api/auth/exchange-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ access_token })
     });
     if (!res.ok) {
       const data = await res.json();
-      console.error('[AUTH] Error al intercambiar token:', data.error);
+      console.error('[AUTH] Error al intercambiar token:', res.status, data.error);
+    } else {
+      console.log('[AUTH] Token intercambiado correctamente, sesión iniciada.');
     }
   } catch (error) {
-    console.error('[AUTH] Error de red al intercambiar token:', error);
+    console.error('[AUTH] Fallo al intercambiar token:', error.message);
   }
+  return true;
+}
+
+// Detectar error de magic link (ej. link expirado o ya usado) en el hash de la URL al cargar la página
+function handleAuthErrorCallback() {
+  const hash = window.location.hash;
+  if (!hash.includes('error=')) return false;
+
+  const params = new URLSearchParams(hash.substring(1));
+  const errorCode = params.get('error_code');
+  const errorDescription = params.get('error_description');
+
+  // Limpiar el hash de la URL sin recargar
+  history.replaceState(null, '', window.location.pathname);
+
+  console.warn('[AUTH] El link de acceso llegó con un error:', errorCode, errorDescription);
+
+  const message = errorCode === 'otp_expired'
+    ? 'Tu link de acceso expiró o ya fue usado. Ingresá tu email para solicitar uno nuevo.'
+    : 'El link de acceso no es válido. Ingresá tu email para solicitar uno nuevo.';
+
+  authOverlay.classList.remove('hidden');
+  authCardStep2.classList.add('hidden');
+  authCardStep1.classList.remove('hidden');
+  showAuthError(authStep1Error, message);
   return true;
 }
 
@@ -175,8 +228,9 @@ authSendMagicLinkBtn.addEventListener('click', async () => {
   authSendMagicLinkBtn.innerText = 'Enviando...';
   hideAuthError(authStep1Error);
 
+  console.log('[AUTH] Solicitando magic link para', email);
   try {
-    const res = await fetch('/api/auth/request-magic-link', {
+    const res = await fetchWithTimeout('/api/auth/request-magic-link', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email })
@@ -184,13 +238,16 @@ authSendMagicLinkBtn.addEventListener('click', async () => {
 
     const data = await res.json();
     if (res.ok) {
+      console.log('[AUTH] Magic link enviado, esperando click del usuario en el email.');
       authCardStep1.classList.add('hidden');
       authCardStep2.classList.remove('hidden');
     } else {
+      console.error('[AUTH] El servidor rechazó la solicitud de magic link:', res.status, data.error);
       showAuthError(authStep1Error, data.error || 'Error al enviar el magic link.');
     }
   } catch (error) {
-    showAuthError(authStep1Error, 'Error de red al conectar con el servidor.');
+    console.error('[AUTH] Fallo al solicitar magic link:', error.name, error.message);
+    showAuthError(authStep1Error, error.message || 'Error de red al conectar con el servidor.');
   } finally {
     authSendMagicLinkBtn.disabled = false;
     authSendMagicLinkBtn.innerText = 'Enviar Magic Link';
@@ -898,6 +955,7 @@ if (btnPushSubscribe) {
 // Inicialización: detectar magic link callback en URL o verificar sesión normal
 handleMagicLinkCallback().then(() => {
   checkAuthSession().then(() => {
+    handleAuthErrorCallback();
     initPushNotifications();
   });
 });

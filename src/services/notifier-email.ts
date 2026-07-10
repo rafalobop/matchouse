@@ -44,8 +44,33 @@ export function groupMatchesByWhatsAppGroup(matches: any[]): Map<string, any[]> 
   return byGroup;
 }
 
-export function buildWhatsAppMessage(groupName: string, property: any): string {
-  return `Hola! Te contacto por tu pedido en el grupo "${groupName}". Tenemos esta opción que podría interesarte: ${property.address} - ${property.currency} ${property.price}. ¿Te gustaría más info?`;
+/**
+ * Agrupa matches por mensaje de origen (mismo remitente + mismo texto), que es la unidad
+ * que se consolida en un único email.
+ */
+export function groupMatchesByMessage(matches: any[]): Map<string, any[]> {
+  const byMessage = new Map<string, any[]>();
+  matches.forEach((match) => {
+    const messageKey = `${match.whatsapp_sender_phone}|${match.raw_message_text}`;
+    if (!byMessage.has(messageKey)) byMessage.set(messageKey, []);
+    byMessage.get(messageKey)!.push(match);
+  });
+  return byMessage;
+}
+
+export function buildWhatsAppMessage(groupName: string, property: any, senderName?: string, requestText?: string): string {
+  const greeting = senderName ? `Hola ${senderName}` : 'Hola';
+
+  const pisoLote = [property.floor, property.unit, property.block, property.lot].filter(Boolean).join(' ');
+  const direccion = pisoLote ? `${property.address} (${pisoLote})` : property.address;
+  const detalle = [property.property_type, property.operation].filter(Boolean).join(' en ');
+
+  const truncatedRequest = requestText && requestText.length > 120 ? `${requestText.slice(0, 120)}...` : requestText;
+  const contexto = truncatedRequest
+    ? ` Vi tu mensaje en el grupo "${groupName}" ("${truncatedRequest}")`
+    : ` Vi tu pedido en el grupo "${groupName}"`;
+
+  return `${greeting}!${contexto} y justo tenemos en cartera ${direccion}${detalle ? `, ${detalle}` : ''} a ${property.currency} ${property.price}. ¿Te gustaría que te pase la ficha técnica?`;
 }
 
 export function buildPropertyRowHtml(match: any): string {
@@ -87,10 +112,67 @@ export function buildEmailHtml(groupName: string, originalText: string, sender: 
 }
 
 /**
- * Ejecuta el envío consolidado de matches pendientes de notificación por email
+ * Envía un único email consolidado con todos los matches de un mismo mensaje (mismo remitente +
+ * mismo texto) y marca esos matches como notificados. Se usa tanto para el envío inmediato
+ * (disparado apenas el coordinador termina de procesar un mensaje) como para el ciclo de
+ * respaldo que reintenta matches que quedaron pendientes por algún error transitorio.
+ */
+export async function sendEmailForMatchGroup(tenantId: string, matchGroup: any[]): Promise<boolean> {
+  if (!matchGroup || matchGroup.length === 0) return false;
+
+  const { data: profile, error: profileError } = await supabase
+    .from('profiles')
+    .select('email')
+    .eq('id', tenantId)
+    .single();
+
+  if (profileError || !profile?.email) {
+    logger.warn({ tenantId }, '[NOTIFIER-EMAIL] Tenant sin email registrado en profiles. Omitiendo.');
+    return false;
+  }
+
+  const first = matchGroup[0];
+  const html = buildEmailHtml(first.whatsapp_group_name, first.raw_message_text, first.whatsapp_sender_name, matchGroup);
+
+  try {
+    const resend = getResendClient();
+    const result = await resend.emails.send({
+      from: FROM_ADDRESS,
+      to: profile.email,
+      subject: `🏠 HouseMatch: ${matchGroup.length} match(es) para ${first.whatsapp_sender_name}`,
+      html
+    });
+
+    if (result.error) {
+      logger.error({ error: result.error, tenantId }, '[NOTIFIER-EMAIL] Resend devolvió un error al enviar.');
+      return false;
+    }
+
+    logger.info({ tenantId, matchCount: matchGroup.length, emailId: result.data?.id }, '[NOTIFIER-EMAIL] Email consolidado enviado con éxito.');
+
+    const { error: updateErr } = await supabase
+      .from('match_queue')
+      .update({ is_notified: true })
+      .in('id', matchGroup.map(m => m.id));
+
+    if (updateErr) {
+      logger.error({ error: updateErr.message, tenantId }, '[NOTIFIER-EMAIL] Error al actualizar estado de notificación en base de datos.');
+    }
+
+    return true;
+  } catch (sendErr: any) {
+    logger.error({ error: sendErr.message || sendErr, tenantId }, '[NOTIFIER-EMAIL] Error al despachar email consolidado.');
+    return false;
+  }
+}
+
+/**
+ * Ciclo de respaldo: reintenta matches calificados que quedaron sin notificar (por ejemplo, por
+ * un fallo transitorio en el envío inmediato). El envío primario ocurre apenas el coordinador
+ * termina de procesar cada mensaje, ver `sendEmailForMatchGroup`.
  */
 export async function sendConsolidatedEmailNotifications(): Promise<void> {
-  logger.info('[NOTIFIER-EMAIL] Ejecutando ciclo de notificación consolidada por email...');
+  logger.info('[NOTIFIER-EMAIL] Ejecutando ciclo de respaldo de notificación por email...');
 
   try {
     const { data: pendingMatches, error } = await supabase
@@ -118,59 +200,10 @@ export async function sendConsolidatedEmailNotifications(): Promise<void> {
 
     const matchesByTenant = groupMatchesByTenant(pendingMatches);
 
-    const resend = getResendClient();
-
     for (const [tenantId, matches] of matchesByTenant.entries()) {
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select('email')
-        .eq('id', tenantId)
-        .single();
-
-      if (profileError || !profile?.email) {
-        logger.warn({ tenantId }, '[NOTIFIER-EMAIL] Tenant sin email registrado en profiles. Omitiendo.');
-        continue;
-      }
-
-      const matchesByGroup = groupMatchesByWhatsAppGroup(matches);
-
-      const processedMatchIds: string[] = [];
-
-      for (const [groupKey, matchGroup] of matchesByGroup.entries()) {
-        const first = matchGroup[0];
-        const html = buildEmailHtml(first.whatsapp_group_name, first.raw_message_text, first.whatsapp_sender_name, matchGroup);
-
-        try {
-          const result = await resend.emails.send({
-            from: FROM_ADDRESS,
-            to: profile.email,
-            subject: `🏠 HouseMatch: ${matchGroup.length} match(es) en ${first.whatsapp_group_name}`,
-            html
-          });
-
-          if (result.error) {
-            logger.error({ error: result.error, tenantId, groupKey }, '[NOTIFIER-EMAIL] Resend devolvió un error al enviar.');
-            continue;
-          }
-
-          logger.info({ tenantId, groupKey, matchCount: matchGroup.length, emailId: result.data?.id }, '[NOTIFIER-EMAIL] Email consolidado enviado con éxito.');
-          matchGroup.forEach(m => processedMatchIds.push(m.id));
-        } catch (sendErr: any) {
-          logger.error({ error: sendErr.message || sendErr, tenantId, groupKey }, '[NOTIFIER-EMAIL] Error al despachar email consolidado.');
-        }
-      }
-
-      if (processedMatchIds.length > 0) {
-        const { error: updateErr } = await supabase
-          .from('match_queue')
-          .update({ is_notified: true })
-          .in('id', processedMatchIds);
-
-        if (updateErr) {
-          logger.error({ error: updateErr.message, tenantId }, '[NOTIFIER-EMAIL] Error al actualizar estado de notificación en base de datos.');
-        } else {
-          logger.info({ tenantId, updatedCount: processedMatchIds.length }, '[NOTIFIER-EMAIL] Estado de matches actualizado a notificado en Supabase.');
-        }
+      const matchesByMessage = groupMatchesByMessage(matches);
+      for (const matchGroup of matchesByMessage.values()) {
+        await sendEmailForMatchGroup(tenantId, matchGroup);
       }
     }
   } catch (error: any) {
