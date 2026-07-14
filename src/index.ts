@@ -118,7 +118,7 @@ function clearCachedSession(token: string) {
 }
 
 async function tenantAuthMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const { supabase } = require('./services/supabase');
+  const { supabase, getTenantClient } = require('./services/supabase');
   const token = req.cookies?.housematch_session;
   if (!token) {
     return res.status(401).json({ error: 'No autenticado.' });
@@ -127,7 +127,7 @@ async function tenantAuthMiddleware(req: express.Request, res: express.Response,
   const cached = getCachedSession(token);
   if (cached) {
     (req as any).tenantId = cached.tenantId;
-    (req as any).supabaseClient = supabase;
+    (req as any).supabaseClient = getTenantClient(token);
     return next();
   }
 
@@ -149,7 +149,7 @@ async function tenantAuthMiddleware(req: express.Request, res: express.Response,
     }
     sessionCache.set(token, { tenantId: user.id, expiresAt: Date.now() + SESSION_CACHE_TTL_MS });
     (req as any).tenantId = user.id;
-    (req as any).supabaseClient = supabase;
+    (req as any).supabaseClient = getTenantClient(token);
     next();
   } catch (err: any) {
     logger.error({ err: err.message }, '[AUTH] Error inesperado en tenantAuthMiddleware (posible timeout de red hacia Supabase)');
