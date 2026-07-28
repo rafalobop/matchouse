@@ -22,6 +22,7 @@ import { messageQueue } from './utils/queue';
 import { startNotificationService } from './services/notifier';
 import { startEmailNotificationService } from './services/notifier-email';
 import { startDolarService } from './services/dolar';
+import { startSessionCleanupService } from './services/sessionCleanup';
 import { config } from './config/env';
 import { logger } from './services/logger';
 
@@ -614,6 +615,9 @@ async function main() {
 
   // Iniciar servicio de cotización de Dólar Blue (dinámico y horaria)
   startDolarService();
+
+  // Iniciar servicio de desconexión de sesiones de WhatsApp de prueba (KAN-53)
+  startSessionCleanupService();
 
   // Iniciar servicio notificador consolidado según el canal configurado (NOTIFICATION_CHANNEL)
   if (config.notificationChannel === 'email') {
