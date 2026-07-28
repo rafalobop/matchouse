@@ -18,6 +18,8 @@ import {
 } from './services/whatsapp';
 import { Property, processExcelBuffer, syncPropertiesToDatabase } from './services/excel';
 import { coordinator } from './services/coordinator';
+import { extractFromTextInput } from './services/ai';
+import { findCrossTenantMatches } from './services/blindMatching';
 import { messageQueue } from './utils/queue';
 import { startNotificationService } from './services/notifier';
 import { startEmailNotificationService } from './services/notifier-email';
@@ -360,6 +362,74 @@ app.get('/api/catalog', tenantAuthMiddleware, (req, res) => {
   const tenantId = (req as any).tenantId;
   const catalog = coordinator.getCatalog(tenantId);
   res.json({ count: catalog.length });
+});
+
+// KAN-37: motor de matching bidireccional entre tenants, dirección búsqueda→cartera. Un tenant
+// describe lo que busca en texto libre y recibe matches de la cartera de OTROS tenants (excluye
+// la propia). La dirección cartera→búsqueda (auto-revisar active_searches de otros tenants al
+// sincronizar una propiedad nueva) queda fuera de alcance de este ticket.
+app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const tenantSupabase = (req as any).supabaseClient;
+  const { text } = req.body;
+
+  if (!text || typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'El texto de búsqueda es requerido.' });
+  }
+
+  if (!config.freeTextExtractionEnabled) {
+    return res.status(501).json({ error: 'La búsqueda de texto libre (matching ciego) todavía no está habilitada.' });
+  }
+
+  try {
+    const extractedData = await extractFromTextInput(text);
+
+    if (extractedData.operation === 'desconocido') {
+      return res.status(400).json({ error: 'No pudimos clasificar el texto como un pedido de propiedad.' });
+    }
+
+    const { data: search, error: insertErr } = await tenantSupabase
+      .from('active_searches')
+      .insert({
+        tenant_id: tenantId,
+        raw_text: text,
+        criteria: extractedData
+      })
+      .select('id, criteria, created_at, expires_at')
+      .single();
+
+    if (insertErr) throw insertErr;
+
+    const matches = await findCrossTenantMatches(tenantId, extractedData);
+
+    const mappedMatches = matches.map(m => ({
+      tenant_id: m.tenant_id,
+      score: m.score,
+      reasons: m.reasons,
+      property: {
+        domicilio: m.property.address,
+        pisoLote: [m.property.floor, m.property.unit, m.property.block, m.property.lot].filter(Boolean).join(' '),
+        precio: m.property.price,
+        moneda: m.property.currency,
+        expensas: m.property.maintenance_fees || 0,
+        dormitorios: m.property.bedrooms,
+        caracteristicas: m.property.features || '',
+        contacto: m.property.contact_info || '',
+        operacion: m.property.operation,
+        tipo_propiedad: m.property.property_type,
+        sheetName: m.property.sheet_name
+      }
+    }));
+
+    res.json({
+      success: true,
+      search: { id: search.id, criteria: search.criteria, expires_at: search.expires_at },
+      matches: mappedMatches
+    });
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId }, '[BUSQUEDA] Error al procesar búsqueda de matching ciego');
+    res.status(500).json({ error: error.message || 'Error interno al procesar la búsqueda.' });
+  }
 });
 
 app.get('/api/matches', tenantAuthMiddleware, async (req, res) => {
