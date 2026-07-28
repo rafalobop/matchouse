@@ -89,6 +89,21 @@ CREATE TABLE public.match_queue (
 -- y `POST /api/matches/:id/feedback` no filtraban por tenant_id — cualquier tenant
 -- autenticado podía ver/editar matches de otros tenants. Ya tienen `.eq('tenant_id', tenantId)`.
 --
--- `web_push_subscriptions`: el código (notifier.ts) consulta esta tabla, pero
--- NO EXISTE en el schema real — hallazgo separado, notificaciones web push están
--- silenciosamente rotas en producción. Fuera de alcance de esta sesión.
+-- `web_push_subscriptions` (KAN-19, creada 2026-07-14 vía mcp__supabase__apply_migration,
+-- migración "create_web_push_subscriptions_table"): la tabla no existía y notifier.ts/
+-- index.ts la consultaban igual, fallando silenciosamente. Columnas creadas para calzar
+-- con el código real (no con la descripción original del ticket, que mencionaba
+-- `user_id`/`subscription_details` — nombres que no coinciden con ningún query existente):
+--
+-- CREATE TABLE public.web_push_subscriptions (
+--   id uuid NOT NULL DEFAULT gen_random_uuid(),
+--   tenant_id uuid NOT NULL,
+--   subscription jsonb NOT NULL,
+--   created_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now()),
+--   CONSTRAINT web_push_subscriptions_pkey PRIMARY KEY (id),
+--   CONSTRAINT web_push_subscriptions_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.profiles(id)
+-- );
+-- CREATE INDEX web_push_subscriptions_tenant_id_idx ON public.web_push_subscriptions (tenant_id);
+--
+-- RLS habilitado con la misma política que properties/match_queue/whatsapp_sessions:
+-- FOR ALL TO authenticated USING/WITH CHECK (tenant_id = auth.uid()).

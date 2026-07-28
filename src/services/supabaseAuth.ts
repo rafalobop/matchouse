@@ -1,6 +1,37 @@
 import { AuthenticationCreds, AuthenticationState, SignalDataTypeMap, initAuthCreds, BufferJSON } from '@whiskeysockets/baileys';
 import { supabase } from './supabase';
 
+// ─────────────────────────────────────────────────────────────────────────
+// CONGELADO (KAN-32): cifrado de `auth_creds` en reposo — NO IMPLEMENTAR.
+// `auth_creds` hoy viaja y se persiste en texto plano (columna JSONB de
+// `whatsapp_sessions`). El diseño de abajo es el punto de partida previsto
+// para cuando se descongele Baileys; queda comentado a propósito para no
+// ejecutarse ni sumar la dependencia de `crypto`/manejo de clave mientras el
+// desarrollo de este módulo está frenado. No descomentar sin antes levantar
+// la bandera `BAILEYS_FROZEN=false` (src/config/env.ts) y sin pasar por
+// revisión de seguridad (rotación de `AUTH_CREDS_ENCRYPTION_KEY`, manejo de
+// creds ya persistidas en texto plano, etc.).
+//
+// import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
+//
+// const ALGO = 'aes-256-gcm';
+// const ENCRYPTION_KEY = Buffer.from(process.env.AUTH_CREDS_ENCRYPTION_KEY || '', 'hex'); // 32 bytes
+//
+// function encryptAuthCreds(plainJson: string): { iv: string; authTag: string; data: string } {
+//   const iv = randomBytes(12);
+//   const cipher = createCipheriv(ALGO, ENCRYPTION_KEY, iv);
+//   const data = Buffer.concat([cipher.update(plainJson, 'utf8'), cipher.final()]);
+//   return { iv: iv.toString('hex'), authTag: cipher.getAuthTag().toString('hex'), data: data.toString('hex') };
+// }
+//
+// function decryptAuthCreds(payload: { iv: string; authTag: string; data: string }): string {
+//   const decipher = createDecipheriv(ALGO, ENCRYPTION_KEY, Buffer.from(payload.iv, 'hex'));
+//   decipher.setAuthTag(Buffer.from(payload.authTag, 'hex'));
+//   const data = Buffer.concat([decipher.update(Buffer.from(payload.data, 'hex')), decipher.final()]);
+//   return data.toString('utf8');
+// }
+// ─────────────────────────────────────────────────────────────────────────
+
 export async function useSupabaseAuthState(tenantId: string): Promise<{ state: AuthenticationState, saveCreds: () => Promise<void> }> {
 
   // Cargar auth state completo desde whatsapp_sessions.auth_creds (una sola fila por tenant)
