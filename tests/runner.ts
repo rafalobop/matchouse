@@ -19,3 +19,4 @@ import './notifier-email.test';
 import './supabase.test';
 import './supabaseAuth.test';
 import './whatsapp.test';
+import './sessionCleanup.test';
