@@ -26,6 +26,7 @@ export interface Config {
   testWhatsappTenantIds: string[];
   sessionCleanupIntervalMinutes: number;
   devAlertEmail?: string;
+  freeTextExtractionEnabled: boolean;
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -74,6 +75,11 @@ export function validateConfig(): Config {
   // Email opcional de devs/testers al que avisar cuando se desconecta una sesión de prueba
   // (KAN-53). Si no está seteado, la notificación queda solo en los logs.
   const devAlertEmail = cleanEnvVar(process.env.DEV_ALERT_EMAIL);
+  // KAN-36: extracción de texto libre de formulario (matching ciego) — feature nueva y sin
+  // consumidor todavía, deshabilitada por default (`false`) hasta que el equipo la habilite
+  // explícitamente con FREE_TEXT_EXTRACTION_ENABLED=true. No afecta a extractFromWhatsApp,
+  // que sigue funcionando siempre sin depender de este flag.
+  const freeTextExtractionEnabled = cleanEnvVar(process.env.FREE_TEXT_EXTRACTION_ENABLED) === 'true';
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
@@ -108,7 +114,8 @@ export function validateConfig(): Config {
     baileysFrozen,
     testWhatsappTenantIds,
     sessionCleanupIntervalMinutes,
-    devAlertEmail
+    devAlertEmail,
+    freeTextExtractionEnabled
   };
 }
 
