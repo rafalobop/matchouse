@@ -22,6 +22,11 @@ export interface Config {
   jiraEmail?: string;
   jiraProjectKey?: string;
   atlassianApiKey?: string;
+  baileysFrozen: boolean;
+  testWhatsappTenantIds: string[];
+  sessionCleanupIntervalMinutes: number;
+  devAlertEmail?: string;
+  freeTextExtractionEnabled: boolean;
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -50,6 +55,31 @@ export function validateConfig(): Config {
   const jiraEmail = cleanEnvVar(process.env.JIRA_EMAIL);
   const jiraProjectKey = cleanEnvVar(process.env.JIRA_PROJECT_KEY);
   const atlassianApiKey = cleanEnvVar(process.env.ATLASSIAN_API_KEY);
+  // KAN-32: congelamiento de Baileys — sin altas de cuentas de WhatsApp nuevas mientras
+  // esta bandera esté activa. Default `true` (congelado) a propósito: el ticket que
+  // introduce la bandera es el propio congelamiento; para descongelar hace falta setear
+  // BAILEYS_FROZEN=false explícitamente en el entorno, nunca por omisión.
+  const baileysFrozen = cleanEnvVar(process.env.BAILEYS_FROZEN) !== 'false';
+  // KAN-53: lista explícita (allowlist) de tenant_id de cuentas de WhatsApp de prueba,
+  // separados por coma. Deliberadamente explícita y no heurística: nunca debe desconectar
+  // una sesión real por error. Vacía por default (`[]`) = el servicio de limpieza no hace nada.
+  const testWhatsappTenantIds = (cleanEnvVar(process.env.TEST_WHATSAPP_TENANT_IDS) || '')
+    .split(',')
+    .map(id => id.trim())
+    .filter(Boolean);
+  // Frecuencia configurable del proceso de desconexión de sesiones de prueba (KAN-53).
+  // Default 60 min: no son urgentes (no afectan a usuarios reales) y una cadencia
+  // horaria evita logins/logouts innecesarios de Baileys sin dejar sesiones de prueba
+  // colgadas por mucho tiempo.
+  const sessionCleanupIntervalMinutes = parseInt(cleanEnvVar(process.env.SESSION_CLEANUP_INTERVAL_MINUTES) || '60', 10);
+  // Email opcional de devs/testers al que avisar cuando se desconecta una sesión de prueba
+  // (KAN-53). Si no está seteado, la notificación queda solo en los logs.
+  const devAlertEmail = cleanEnvVar(process.env.DEV_ALERT_EMAIL);
+  // KAN-36/KAN-38: extracción de texto libre de formulario (matching ciego), consumida por
+  // POST /api/search. Habilitada por default desde KAN-38 (mismo patrón que BAILEYS_FROZEN):
+  // hace falta FREE_TEXT_EXTRACTION_ENABLED=false explícito para apagarla. No afecta a
+  // extractFromWhatsApp, que sigue funcionando siempre sin depender de este flag.
+  const freeTextExtractionEnabled = cleanEnvVar(process.env.FREE_TEXT_EXTRACTION_ENABLED) !== 'false';
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
@@ -80,7 +110,12 @@ export function validateConfig(): Config {
     jiraDomain,
     jiraEmail,
     jiraProjectKey,
-    atlassianApiKey
+    atlassianApiKey,
+    baileysFrozen,
+    testWhatsappTenantIds,
+    sessionCleanupIntervalMinutes,
+    devAlertEmail,
+    freeTextExtractionEnabled
   };
 }
 

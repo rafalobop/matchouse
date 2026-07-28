@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { isRealEstateRequest } from '../utils/filter';
 import { useSupabaseAuthState, clearSupabaseSession } from './supabaseAuth';
+import { config } from '../config/env';
 
 export interface Settings {
   selectedGroups: string[];
@@ -216,6 +217,18 @@ async function initTenantSessionInternal(tenantId: string, options: WhatsAppClie
 
   // Cargar estado de autenticación desde Supabase
   const { state, saveCreds } = await useSupabaseAuthState(tenantId);
+
+  // Congelamiento Baileys (KAN-32): `registered` lo marca Baileys en `true` recién
+  // después de un emparejamiento exitoso (escaneo de QR). Si sigue en `false` es porque
+  // este tenant nunca terminó de vincular un número — dejarlo seguir generaría un QR
+  // nuevo, es decir, el alta de una cuenta de WhatsApp nueva, que es justamente lo que
+  // este ticket frena. Los tenants ya emparejados (`registered: true`) siguen
+  // reconectando con normalidad; el freeze no los afecta.
+  if (config.baileysFrozen && !state.creds.registered) {
+    tenantStatus.status = 'DISCONNECTED';
+    console.warn(`[WHATSAPP] Alta de cuenta de WhatsApp nueva bloqueada para tenant ${tenantId}: Baileys está congelado (BAILEYS_FROZEN, ver KAN-32).`);
+    throw new Error('Congelamiento activo (KAN-32): no se permiten altas de cuentas de WhatsApp nuevas.');
+  }
 
   // Obtener la versión de WhatsApp Web más reciente
   let version: any = [2, 3000, 1017531287];

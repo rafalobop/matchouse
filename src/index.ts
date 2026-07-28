@@ -18,10 +18,14 @@ import {
 } from './services/whatsapp';
 import { Property, processExcelBuffer, syncPropertiesToDatabase } from './services/excel';
 import { coordinator } from './services/coordinator';
+import { extractFromTextInput } from './services/ai';
+import { findCrossTenantMatches } from './services/blindMatching';
+import { validateFreeSearchText } from './utils/searchValidation';
 import { messageQueue } from './utils/queue';
 import { startNotificationService } from './services/notifier';
 import { startEmailNotificationService } from './services/notifier-email';
 import { startDolarService } from './services/dolar';
+import { startSessionCleanupService } from './services/sessionCleanup';
 import { config } from './config/env';
 import { logger } from './services/logger';
 
@@ -118,16 +122,20 @@ function clearCachedSession(token: string) {
 }
 
 async function tenantAuthMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const { supabase } = require('./services/supabase');
+  const { supabase, getTenantClient } = require('./services/supabase');
   const token = req.cookies?.housematch_session;
   if (!token) {
     return res.status(401).json({ error: 'No autenticado.' });
   }
 
+  // KAN-63 (patrón "Tenant Context"): req.supabaseClient queda scoped al tenant (anon key +
+  // el propio access_token del usuario como Bearer), NO al cliente service-role. Esto hace que
+  // PostgREST aplique RLS de verdad en cada request autenticado del dashboard, en vez de que RLS
+  // sea solo defensa en profundidad nunca ejercitada por el tráfico real de la app.
   const cached = getCachedSession(token);
   if (cached) {
     (req as any).tenantId = cached.tenantId;
-    (req as any).supabaseClient = supabase;
+    (req as any).supabaseClient = getTenantClient(token);
     return next();
   }
 
@@ -149,7 +157,7 @@ async function tenantAuthMiddleware(req: express.Request, res: express.Response,
     }
     sessionCache.set(token, { tenantId: user.id, expiresAt: Date.now() + SESSION_CACHE_TTL_MS });
     (req as any).tenantId = user.id;
-    (req as any).supabaseClient = supabase;
+    (req as any).supabaseClient = getTenantClient(token);
     next();
   } catch (err: any) {
     logger.error({ err: err.message }, '[AUTH] Error inesperado en tenantAuthMiddleware (posible timeout de red hacia Supabase)');
@@ -342,7 +350,7 @@ app.post('/api/upload', tenantAuthMiddleware, upload.single('excelFile'), async 
 
     // Aislamiento por tenant
     coordinator.setCatalog(tenantId, catalog);
-    await syncPropertiesToDatabase(catalog, tenantId);
+    await syncPropertiesToDatabase(catalog, tenantId, (req as any).supabaseClient);
 
     res.json({ success: true, count: catalog.length });
   } catch (error: any) {
@@ -355,6 +363,79 @@ app.get('/api/catalog', tenantAuthMiddleware, (req, res) => {
   const tenantId = (req as any).tenantId;
   const catalog = coordinator.getCatalog(tenantId);
   res.json({ count: catalog.length });
+});
+
+// KAN-37: motor de matching bidireccional entre tenants, dirección búsqueda→cartera. Un tenant
+// describe lo que busca en texto libre y recibe matches de la cartera de OTROS tenants (excluye
+// la propia). La dirección cartera→búsqueda (auto-revisar active_searches de otros tenants al
+// sincronizar una propiedad nueva) queda fuera de alcance de este ticket.
+app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const tenantSupabase = (req as any).supabaseClient;
+  const { text } = req.body;
+
+  if (!text || typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'El texto de búsqueda es requerido.' });
+  }
+
+  const validationError = validateFreeSearchText(text);
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
+  }
+
+  if (!config.freeTextExtractionEnabled) {
+    return res.status(501).json({ error: 'La búsqueda de texto libre (matching ciego) todavía no está habilitada.' });
+  }
+
+  try {
+    const extractedData = await extractFromTextInput(text);
+
+    if (extractedData.operation === 'desconocido') {
+      return res.status(400).json({ error: 'No pudimos clasificar el texto como un pedido de propiedad.' });
+    }
+
+    const { data: search, error: insertErr } = await tenantSupabase
+      .from('active_searches')
+      .insert({
+        tenant_id: tenantId,
+        raw_text: text,
+        criteria: extractedData
+      })
+      .select('id, criteria, created_at, expires_at')
+      .single();
+
+    if (insertErr) throw insertErr;
+
+    const matches = await findCrossTenantMatches(tenantId, extractedData);
+
+    const mappedMatches = matches.map(m => ({
+      tenant_id: m.tenant_id,
+      score: m.score,
+      reasons: m.reasons,
+      property: {
+        domicilio: m.property.address,
+        pisoLote: [m.property.floor, m.property.unit, m.property.block, m.property.lot].filter(Boolean).join(' '),
+        precio: m.property.price,
+        moneda: m.property.currency,
+        expensas: m.property.maintenance_fees || 0,
+        dormitorios: m.property.bedrooms,
+        caracteristicas: m.property.features || '',
+        contacto: m.property.contact_info || '',
+        operacion: m.property.operation,
+        tipo_propiedad: m.property.property_type,
+        sheetName: m.property.sheet_name
+      }
+    }));
+
+    res.json({
+      success: true,
+      search: { id: search.id, criteria: search.criteria, expires_at: search.expires_at },
+      matches: mappedMatches
+    });
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId }, '[BUSQUEDA] Error al procesar búsqueda de matching ciego');
+    res.status(500).json({ error: error.message || 'Error interno al procesar la búsqueda.' });
+  }
 });
 
 app.get('/api/matches', tenantAuthMiddleware, async (req, res) => {
@@ -614,6 +695,9 @@ async function main() {
 
   // Iniciar servicio de cotización de Dólar Blue (dinámico y horaria)
   startDolarService();
+
+  // Iniciar servicio de desconexión de sesiones de WhatsApp de prueba (KAN-53)
+  startSessionCleanupService();
 
   // Iniciar servicio notificador consolidado según el canal configurado (NOTIFICATION_CHANNEL)
   if (config.notificationChannel === 'email') {

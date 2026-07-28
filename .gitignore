@@ -14,10 +14,10 @@ yarn-error.log*
 /catalog.json
 /settings.json
 .baileys_auth/
-.agent/skills
 .agent/agent_runner.db
 /src/generated/prisma
-.claude/
+.claude/*
+!.claude/skills
 
 # Archivos dinámicos de Tenants (Caché, Configuración y Sesiones)
 cache/

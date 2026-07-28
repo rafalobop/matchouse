@@ -1,4 +1,4 @@
-import { extractRealEstateRequest, extractZoneIntent, ExtractedRealEstateRequest, ZoneIntentRequest, validateMatch } from './ai';
+import { extractFromWhatsApp, extractZoneIntent, ExtractedRealEstateRequest, ZoneIntentRequest, validateMatch } from './ai';
 import { Property } from './excel';
 import { checkMatch } from '../utils/matcher';
 import { randomUUID } from 'crypto';
@@ -105,7 +105,7 @@ export class CoordinatorAgent {
     try {
       // 3. Agente 1: Extractor de Entidades
       logger.info({ tenantId }, '[COORDINADOR] Ejecutando Agente 1 (Extractor)...');
-      context.extractedData = await extractRealEstateRequest(body);
+      context.extractedData = await extractFromWhatsApp(body);
       logger.info({ extractedData: context.extractedData, tenantId }, '[COORDINADOR - AGENTE 1] Extracción completada');
 
       if (context.extractedData.operation === 'desconocido') {

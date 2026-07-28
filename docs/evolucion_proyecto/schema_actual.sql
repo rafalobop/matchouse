@@ -62,7 +62,9 @@ CREATE TABLE public.match_queue (
 --   price double precision, currency text CHECK (currency IN ('USD','ARS')),
 --   maintenance_fees double precision DEFAULT 0, bedrooms integer DEFAULT 0,
 --   features text, contact_info text, sheet_name text,
---   latitude double precision, longitude double precision,
+--   latitude double precision NOT NULL, longitude double precision NOT NULL (sin default —
+--   confirmado por introspección real en KAN-63; el código siempre manda 0/0 como fallback,
+--   ver excel.ts syncPropertiesToDatabase),
 --   location geometry (PostGIS, nullable, no usada aún por resolvePropertyZoneId()),
 --   created_at timestamptz DEFAULT timezone('utc', now())
 --
@@ -89,6 +91,68 @@ CREATE TABLE public.match_queue (
 -- y `POST /api/matches/:id/feedback` no filtraban por tenant_id — cualquier tenant
 -- autenticado podía ver/editar matches de otros tenants. Ya tienen `.eq('tenant_id', tenantId)`.
 --
--- `web_push_subscriptions`: el código (notifier.ts) consulta esta tabla, pero
--- NO EXISTE en el schema real — hallazgo separado, notificaciones web push están
--- silenciosamente rotas en producción. Fuera de alcance de esta sesión.
+-- `web_push_subscriptions` (KAN-19, creada 2026-07-14 vía mcp__supabase__apply_migration,
+-- migración "create_web_push_subscriptions_table"): la tabla no existía y notifier.ts/
+-- index.ts la consultaban igual, fallando silenciosamente. Columnas creadas para calzar
+-- con el código real (no con la descripción original del ticket, que mencionaba
+-- `user_id`/`subscription_details` — nombres que no coinciden con ningún query existente):
+--
+-- CREATE TABLE public.web_push_subscriptions (
+--   id uuid NOT NULL DEFAULT gen_random_uuid(),
+--   tenant_id uuid NOT NULL,
+--   subscription jsonb NOT NULL,
+--   created_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now()),
+--   CONSTRAINT web_push_subscriptions_pkey PRIMARY KEY (id),
+--   CONSTRAINT web_push_subscriptions_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.profiles(id)
+-- );
+-- CREATE INDEX web_push_subscriptions_tenant_id_idx ON public.web_push_subscriptions (tenant_id);
+--
+-- RLS habilitado con la misma política que properties/match_queue/whatsapp_sessions:
+-- FOR ALL TO authenticated USING/WITH CHECK (tenant_id = auth.uid()).
+--
+-- `active_searches` (KAN-35, creada 2026-07-28 vía mcp__supabase__apply_migration,
+-- migraciones "create_active_searches_table" y "harden_active_searches_trigger_search_path"):
+-- almacena las búsquedas activas de un tenant (matching ciego) para cruzarlas contra
+-- mensajes de propiedades entrantes.
+--
+-- CREATE TABLE public.active_searches (
+--   id uuid NOT NULL DEFAULT gen_random_uuid(),
+--   tenant_id uuid NOT NULL,
+--   criteria jsonb NOT NULL DEFAULT '{}'::jsonb,
+--   raw_text text NOT NULL,
+--   status text NOT NULL DEFAULT 'active',
+--   created_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now()),
+--   expires_at timestamptz NOT NULL,
+--   CONSTRAINT active_searches_pkey PRIMARY KEY (id),
+--   CONSTRAINT active_searches_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.profiles(id),
+--   CONSTRAINT active_searches_status_check CHECK (status IN ('active','expired','matched','cancelled'))
+-- );
+--
+-- Índices: active_searches_tenant_id_idx (tenant_id), active_searches_status_idx (status).
+--
+-- `expires_at` no se puede resolver con un DEFAULT de columna (Postgres no permite
+-- referenciar otra columna del mismo row ahí), así que se usa un trigger BEFORE INSERT
+-- (`set_active_searches_expires_at`, con search_path fijo por hardening) que solo
+-- completa `created_at + interval '7 days'` cuando el caller no mandó `expires_at`
+-- explícito — verificado con inserts reales (auto y con override).
+--
+-- Los valores de `status` ('active'|'expired'|'matched'|'cancelled') y el tipo jsonb
+-- de `criteria` son decisiones de diseño propias (el ticket KAN-35 solo pedía el campo
+-- `status` sin especificar sus valores ni el tipo de `criteria`).
+--
+-- Primer código consumidor (KAN-37, 2026-07-28): `POST /api/search` (src/index.ts) inserta acá
+-- vía req.supabaseClient (tenant-scoped), con `criteria` = el `ExtractedRealEstateRequest` que
+-- devuelve `extractFromTextInput` tal cual (JSON.stringify de la interfaz TS). El motor de
+-- matching (src/services/blindMatching.ts) sólo LEE `properties` cross-tenant en esa dirección
+-- (búsqueda→cartera); no hay código todavía que recorra `active_searches` de otros tenants para
+-- la dirección inversa (cartera→búsqueda) ni que transicione `status` a 'matched'/'expired'.
+--
+-- RLS habilitado con la misma política tenant_id = auth.uid() que el resto de tablas
+-- tenant-scoped.
+--
+-- Pruebas de rendimiento (transacción con ROLLBACK, sin dejar datos de prueba):
+-- 30k filas sintéticas repartidas en 50 tenants y distribución de status realista
+-- (70% active / 10% expired / 10% matched / 10% cancelled). `EXPLAIN ANALYZE`
+-- confirmó Bitmap Index Scan sobre active_searches_tenant_id_idx (tenant_id, ~2%
+-- selectividad) e Index Scan sobre active_searches_status_idx (status='cancelled',
+-- ~10% selectividad) — ambos índices se usan y evitan el seq scan sobre 30k filas.
