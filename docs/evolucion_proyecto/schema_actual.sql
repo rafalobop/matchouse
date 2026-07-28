@@ -138,9 +138,14 @@ CREATE TABLE public.match_queue (
 --
 -- Los valores de `status` ('active'|'expired'|'matched'|'cancelled') y el tipo jsonb
 -- de `criteria` son decisiones de diseño propias (el ticket KAN-35 solo pedía el campo
--- `status` sin especificar sus valores ni el tipo de `criteria`); no hay código
--- consumidor todavía que los use, quedan abiertos a ajustarse cuando se implemente
--- el matching ciego real.
+-- `status` sin especificar sus valores ni el tipo de `criteria`).
+--
+-- Primer código consumidor (KAN-37, 2026-07-28): `POST /api/search` (src/index.ts) inserta acá
+-- vía req.supabaseClient (tenant-scoped), con `criteria` = el `ExtractedRealEstateRequest` que
+-- devuelve `extractFromTextInput` tal cual (JSON.stringify de la interfaz TS). El motor de
+-- matching (src/services/blindMatching.ts) sólo LEE `properties` cross-tenant en esa dirección
+-- (búsqueda→cartera); no hay código todavía que recorra `active_searches` de otros tenants para
+-- la dirección inversa (cartera→búsqueda) ni que transicione `status` a 'matched'/'expired'.
 --
 -- RLS habilitado con la misma política tenant_id = auth.uid() que el resto de tablas
 -- tenant-scoped.
