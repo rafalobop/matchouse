@@ -17,6 +17,7 @@ import './logger.test';
 import './matcher.test';
 import './notifier.test';
 import './notifier-email.test';
+import './searchValidation.test';
 import './supabase.test';
 import './supabaseAuth.test';
 import './whatsapp.test';

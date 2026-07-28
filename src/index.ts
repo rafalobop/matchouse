@@ -20,6 +20,7 @@ import { Property, processExcelBuffer, syncPropertiesToDatabase } from './servic
 import { coordinator } from './services/coordinator';
 import { extractFromTextInput } from './services/ai';
 import { findCrossTenantMatches } from './services/blindMatching';
+import { validateFreeSearchText } from './utils/searchValidation';
 import { messageQueue } from './utils/queue';
 import { startNotificationService } from './services/notifier';
 import { startEmailNotificationService } from './services/notifier-email';
@@ -375,6 +376,11 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
 
   if (!text || typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'El texto de búsqueda es requerido.' });
+  }
+
+  const validationError = validateFreeSearchText(text);
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
   }
 
   if (!config.freeTextExtractionEnabled) {

@@ -10,12 +10,12 @@ test('AI Service - Debería exportar las funciones clave (KAN-36: extractFromWha
   assert.strictEqual(typeof validateMatch, 'function', 'validateMatch debe ser una función.');
 });
 
-test('AI Service - FREE_TEXT_EXTRACTION_ENABLED (KAN-36) está deshabilitado por default y respeta override explícito', () => {
+test('AI Service - FREE_TEXT_EXTRACTION_ENABLED (KAN-38) está habilitado por default y respeta override explícito', () => {
   const originalValue = process.env.FREE_TEXT_EXTRACTION_ENABLED;
   try {
     delete process.env.FREE_TEXT_EXTRACTION_ENABLED;
     const defaultConfig = validateConfig();
-    assert.strictEqual(defaultConfig.freeTextExtractionEnabled, false, 'Sin la variable definida, la extracción de texto libre debe estar deshabilitada por default (KAN-36).');
+    assert.strictEqual(defaultConfig.freeTextExtractionEnabled, true, 'Sin la variable definida, la extracción de texto libre debe estar habilitada por default (KAN-38).');
 
     process.env.FREE_TEXT_EXTRACTION_ENABLED = 'true';
     const enabledConfig = validateConfig();

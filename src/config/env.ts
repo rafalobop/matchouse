@@ -75,11 +75,11 @@ export function validateConfig(): Config {
   // Email opcional de devs/testers al que avisar cuando se desconecta una sesión de prueba
   // (KAN-53). Si no está seteado, la notificación queda solo en los logs.
   const devAlertEmail = cleanEnvVar(process.env.DEV_ALERT_EMAIL);
-  // KAN-36: extracción de texto libre de formulario (matching ciego) — feature nueva y sin
-  // consumidor todavía, deshabilitada por default (`false`) hasta que el equipo la habilite
-  // explícitamente con FREE_TEXT_EXTRACTION_ENABLED=true. No afecta a extractFromWhatsApp,
-  // que sigue funcionando siempre sin depender de este flag.
-  const freeTextExtractionEnabled = cleanEnvVar(process.env.FREE_TEXT_EXTRACTION_ENABLED) === 'true';
+  // KAN-36/KAN-38: extracción de texto libre de formulario (matching ciego), consumida por
+  // POST /api/search. Habilitada por default desde KAN-38 (mismo patrón que BAILEYS_FROZEN):
+  // hace falta FREE_TEXT_EXTRACTION_ENABLED=false explícito para apagarla. No afecta a
+  // extractFromWhatsApp, que sigue funcionando siempre sin depender de este flag.
+  const freeTextExtractionEnabled = cleanEnvVar(process.env.FREE_TEXT_EXTRACTION_ENABLED) !== 'false';
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
