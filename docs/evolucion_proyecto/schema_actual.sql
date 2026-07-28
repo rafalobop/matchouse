@@ -107,3 +107,45 @@ CREATE TABLE public.match_queue (
 --
 -- RLS habilitado con la misma política que properties/match_queue/whatsapp_sessions:
 -- FOR ALL TO authenticated USING/WITH CHECK (tenant_id = auth.uid()).
+--
+-- `active_searches` (KAN-35, creada 2026-07-28 vía mcp__supabase__apply_migration,
+-- migraciones "create_active_searches_table" y "harden_active_searches_trigger_search_path"):
+-- almacena las búsquedas activas de un tenant (matching ciego) para cruzarlas contra
+-- mensajes de propiedades entrantes.
+--
+-- CREATE TABLE public.active_searches (
+--   id uuid NOT NULL DEFAULT gen_random_uuid(),
+--   tenant_id uuid NOT NULL,
+--   criteria jsonb NOT NULL DEFAULT '{}'::jsonb,
+--   raw_text text NOT NULL,
+--   status text NOT NULL DEFAULT 'active',
+--   created_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now()),
+--   expires_at timestamptz NOT NULL,
+--   CONSTRAINT active_searches_pkey PRIMARY KEY (id),
+--   CONSTRAINT active_searches_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.profiles(id),
+--   CONSTRAINT active_searches_status_check CHECK (status IN ('active','expired','matched','cancelled'))
+-- );
+--
+-- Índices: active_searches_tenant_id_idx (tenant_id), active_searches_status_idx (status).
+--
+-- `expires_at` no se puede resolver con un DEFAULT de columna (Postgres no permite
+-- referenciar otra columna del mismo row ahí), así que se usa un trigger BEFORE INSERT
+-- (`set_active_searches_expires_at`, con search_path fijo por hardening) que solo
+-- completa `created_at + interval '7 days'` cuando el caller no mandó `expires_at`
+-- explícito — verificado con inserts reales (auto y con override).
+--
+-- Los valores de `status` ('active'|'expired'|'matched'|'cancelled') y el tipo jsonb
+-- de `criteria` son decisiones de diseño propias (el ticket KAN-35 solo pedía el campo
+-- `status` sin especificar sus valores ni el tipo de `criteria`); no hay código
+-- consumidor todavía que los use, quedan abiertos a ajustarse cuando se implemente
+-- el matching ciego real.
+--
+-- RLS habilitado con la misma política tenant_id = auth.uid() que el resto de tablas
+-- tenant-scoped.
+--
+-- Pruebas de rendimiento (transacción con ROLLBACK, sin dejar datos de prueba):
+-- 30k filas sintéticas repartidas en 50 tenants y distribución de status realista
+-- (70% active / 10% expired / 10% matched / 10% cancelled). `EXPLAIN ANALYZE`
+-- confirmó Bitmap Index Scan sobre active_searches_tenant_id_idx (tenant_id, ~2%
+-- selectividad) e Index Scan sobre active_searches_status_idx (status='cancelled',
+-- ~10% selectividad) — ambos índices se usan y evitan el seq scan sobre 30k filas.
