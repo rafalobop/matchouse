@@ -119,16 +119,20 @@ function clearCachedSession(token: string) {
 }
 
 async function tenantAuthMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const { supabase } = require('./services/supabase');
+  const { supabase, getTenantClient } = require('./services/supabase');
   const token = req.cookies?.housematch_session;
   if (!token) {
     return res.status(401).json({ error: 'No autenticado.' });
   }
 
+  // KAN-63 (patrón "Tenant Context"): req.supabaseClient queda scoped al tenant (anon key +
+  // el propio access_token del usuario como Bearer), NO al cliente service-role. Esto hace que
+  // PostgREST aplique RLS de verdad en cada request autenticado del dashboard, en vez de que RLS
+  // sea solo defensa en profundidad nunca ejercitada por el tráfico real de la app.
   const cached = getCachedSession(token);
   if (cached) {
     (req as any).tenantId = cached.tenantId;
-    (req as any).supabaseClient = supabase;
+    (req as any).supabaseClient = getTenantClient(token);
     return next();
   }
 
@@ -150,7 +154,7 @@ async function tenantAuthMiddleware(req: express.Request, res: express.Response,
     }
     sessionCache.set(token, { tenantId: user.id, expiresAt: Date.now() + SESSION_CACHE_TTL_MS });
     (req as any).tenantId = user.id;
-    (req as any).supabaseClient = supabase;
+    (req as any).supabaseClient = getTenantClient(token);
     next();
   } catch (err: any) {
     logger.error({ err: err.message }, '[AUTH] Error inesperado en tenantAuthMiddleware (posible timeout de red hacia Supabase)');
@@ -343,7 +347,7 @@ app.post('/api/upload', tenantAuthMiddleware, upload.single('excelFile'), async 
 
     // Aislamiento por tenant
     coordinator.setCatalog(tenantId, catalog);
-    await syncPropertiesToDatabase(catalog, tenantId);
+    await syncPropertiesToDatabase(catalog, tenantId, (req as any).supabaseClient);
 
     res.json({ success: true, count: catalog.length });
   } catch (error: any) {
