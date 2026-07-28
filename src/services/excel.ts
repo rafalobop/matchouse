@@ -3,7 +3,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { logger } from './logger';
-import { supabase } from './supabase';
+import { supabase as serviceRoleSupabase } from './supabase';
+import type { SupabaseClient } from '@supabase/supabase-js';
 export interface Property {
   // Address components (era: domicilio + pisoLote)
   address: string;
@@ -300,12 +301,17 @@ export function processExcelBuffer(buffer: Buffer): Property[] {
   return catalog;
 }
 
-export async function syncPropertiesToDatabase(properties: Property[], tenantId: string): Promise<void> {
+// KAN-63 (patrón "Tenant Context"): acepta un cliente Supabase opcional, scoped al tenant
+// (anon key + JWT del usuario vía getTenantClient), para que RLS se aplique de verdad en la
+// única ruta HTTP autenticada que escribe en `properties` (/api/upload). Si no se pasa
+// ninguno, usa el cliente service-role (comportamiento previo, para no romper otros
+// llamadores hipotéticos fuera de un request HTTP).
+export async function syncPropertiesToDatabase(properties: Property[], tenantId: string, client: SupabaseClient = serviceRoleSupabase): Promise<void> {
   try {
     logger.info({ propertiesCount: properties.length, tenantId }, '[SUPABASE] Iniciando sincronización de propiedades...');
-    
+
     // 1. Obtener todas las propiedades actuales de Supabase filtradas por tenant_id
-    const { data: dbProps, error: fetchErr } = await supabase
+    const { data: dbProps, error: fetchErr } = await client
       .from('properties')
       .select('id, address, floor, unit, block, lot, price, contact_info, sheet_name')
       .eq('tenant_id', tenantId);
@@ -368,7 +374,7 @@ export async function syncPropertiesToDatabase(properties: Property[], tenantId:
 
     // 5. Ejecutar operaciones
     if (upsertList.length > 0) {
-      const { error: upsertErr } = await supabase
+      const { error: upsertErr } = await client
         .from('properties')
         .upsert(upsertList);
 
@@ -378,7 +384,7 @@ export async function syncPropertiesToDatabase(properties: Property[], tenantId:
     }
 
     if (deleteList.length > 0) {
-      const { error: deleteErr } = await supabase
+      const { error: deleteErr } = await client
         .from('properties')
         .delete()
         .in('id', deleteList)

@@ -62,7 +62,9 @@ CREATE TABLE public.match_queue (
 --   price double precision, currency text CHECK (currency IN ('USD','ARS')),
 --   maintenance_fees double precision DEFAULT 0, bedrooms integer DEFAULT 0,
 --   features text, contact_info text, sheet_name text,
---   latitude double precision, longitude double precision,
+--   latitude double precision NOT NULL, longitude double precision NOT NULL (sin default —
+--   confirmado por introspección real en KAN-63; el código siempre manda 0/0 como fallback,
+--   ver excel.ts syncPropertiesToDatabase),
 --   location geometry (PostGIS, nullable, no usada aún por resolvePropertyZoneId()),
 --   created_at timestamptz DEFAULT timezone('utc', now())
 --
