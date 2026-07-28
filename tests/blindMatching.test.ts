@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import { matchRequestAgainstProperties } from '../src/services/blindMatching';
+import { matchRequestAgainstProperties, mapDbRowToProperty } from '../src/services/blindMatching';
 import { ExtractedRealEstateRequest } from '../src/services/ai';
 import { Property } from '../src/services/excel';
 
@@ -77,4 +77,43 @@ test('BlindMatching - matchRequestAgainstProperties: excluye implícitamente la 
   const result = matchRequestAgainstProperties(request, []);
 
   assert.deepStrictEqual(result, []);
+});
+
+// Regresión (hallazgo de QA en KAN-37): mapDbRowToProperty() no seteaba zone_display_name al
+// reconstruir un Property desde una fila de `properties`, a diferencia de los otros dos lugares
+// del repo que hacen ese mismo trabajo (src/index.ts#main(), src/services/whatsapp.ts). Efecto
+// real observado por QA: una búsqueda con zona nunca matcheaba ninguna propiedad cross-tenant,
+// aunque coincidiera en todo lo demás (operación, tipo, dormitorios, presupuesto, características).
+test('BlindMatching - mapDbRowToProperty: reconstruye zone_display_name a partir de sheet_name (regresión QA KAN-37)', () => {
+  const row = { sheet_name: 'Alquiler YB', address: 'Calle Test 123', price: 1000, currency: 'USD', bedrooms: 1, operation: 'alquiler', property_type: 'departamento' };
+
+  const property = mapDbRowToProperty(row);
+
+  assert.strictEqual(property.zone_display_name, 'Alquiler YB', 'zone_display_name debe reconstruirse desde sheet_name, igual que en index.ts y whatsapp.ts.');
+});
+
+test('BlindMatching - findCrossTenantMatches (regresión QA KAN-37): una búsqueda con zona matchea una propiedad cross-tenant cuya zona coincide', () => {
+  const dbRow = {
+    tenant_id: 'tenant-b',
+    address: 'Yerba Buena 1500',
+    price: 120000,
+    currency: 'USD',
+    maintenance_fees: 0,
+    bedrooms: 2,
+    features: 'Pileta y cochera',
+    contact_info: '',
+    operation: 'venta',
+    property_type: 'departamento',
+    sheet_name: 'Yerba Buena',
+    latitude: 0,
+    longitude: 0
+  };
+
+  const candidate = { tenant_id: dbRow.tenant_id, property: mapDbRowToProperty(dbRow) };
+  const request = baseRequest({ zones: ['Yerba Buena'], key_features: ['pileta', 'cochera'], bedrooms: 2, max_budget: 150000, currency: 'USD' });
+
+  const result = matchRequestAgainstProperties(request, [candidate]);
+
+  assert.strictEqual(result.length, 1, 'Antes del fix, esta búsqueda con zona no devolvía ningún match aunque coincidiera en todo lo demás.');
+  assert.strictEqual(result[0].tenant_id, 'tenant-b');
 });
