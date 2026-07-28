@@ -22,6 +22,7 @@ export interface Config {
   jiraEmail?: string;
   jiraProjectKey?: string;
   atlassianApiKey?: string;
+  baileysFrozen: boolean;
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -50,6 +51,11 @@ export function validateConfig(): Config {
   const jiraEmail = cleanEnvVar(process.env.JIRA_EMAIL);
   const jiraProjectKey = cleanEnvVar(process.env.JIRA_PROJECT_KEY);
   const atlassianApiKey = cleanEnvVar(process.env.ATLASSIAN_API_KEY);
+  // KAN-32: congelamiento de Baileys — sin altas de cuentas de WhatsApp nuevas mientras
+  // esta bandera esté activa. Default `true` (congelado) a propósito: el ticket que
+  // introduce la bandera es el propio congelamiento; para descongelar hace falta setear
+  // BAILEYS_FROZEN=false explícitamente en el entorno, nunca por omisión.
+  const baileysFrozen = cleanEnvVar(process.env.BAILEYS_FROZEN) !== 'false';
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
@@ -80,7 +86,8 @@ export function validateConfig(): Config {
     jiraDomain,
     jiraEmail,
     jiraProjectKey,
-    atlassianApiKey
+    atlassianApiKey,
+    baileysFrozen
   };
 }
 
