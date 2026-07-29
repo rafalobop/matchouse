@@ -1,6 +1,42 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import { processExcelBuffer, syncPropertiesToDatabase } from '../src/services/excel';
+import { processExcelBuffer, syncPropertiesToDatabase, Property } from '../src/services/excel';
+
+// Mock mínimo del builder encadenable de Supabase, mismo patrón que tests/searchExpiration.test.ts.
+// `selectResult` controla la respuesta del fetch inicial (paso 1); `mutationResult` controla
+// la respuesta de upsert/delete (paso 5).
+function buildMockSupabaseClient(options: {
+  selectResult: { data: any[] | null; error: any };
+  mutationResult?: { error: any };
+}) {
+  const mutationResult = options.mutationResult ?? { error: null };
+  return {
+    from: () => ({
+      select: () => ({
+        eq: () => Promise.resolve(options.selectResult)
+      }),
+      upsert: () => Promise.resolve(mutationResult),
+      delete: () => ({
+        in: () => ({
+          eq: () => Promise.resolve(mutationResult)
+        })
+      })
+    })
+  } as any;
+}
+
+function buildSampleProperty(overrides: Partial<Property> = {}): Property {
+  return {
+    address: 'Calle Falsa 123',
+    price: 100000,
+    currency: 'USD',
+    bedrooms: 2,
+    property_type: 'departamento',
+    operation: 'venta',
+    sheet_name: 'Hoja1',
+    ...overrides
+  } as Property;
+}
 
 test('Excel Service - Debería retornar catálogo vacío o lanzar error para buffers sin datos', () => {
   assert.strictEqual(typeof processExcelBuffer, 'function', 'processExcelBuffer es una función.');
@@ -17,4 +53,77 @@ test('Excel Service - Debería retornar catálogo vacío o lanzar error para buf
 
 test('Excel Service - Debería exportar función de sincronización de base de datos', () => {
   assert.strictEqual(typeof syncPropertiesToDatabase, 'function', 'syncPropertiesToDatabase debe ser una función.');
+});
+
+test('Excel Service - syncPropertiesToDatabase relanza el error cuando falla el fetch inicial de Supabase', async () => {
+  const dbError = new Error('conexión rechazada por Supabase');
+  const client = buildMockSupabaseClient({ selectResult: { data: null, error: dbError } });
+
+  await assert.rejects(
+    () => syncPropertiesToDatabase([buildSampleProperty()], 'tenant-1', client),
+    (error: any) => {
+      assert.strictEqual(error, dbError, 'Debe relanzar el mismo error recibido de Supabase.');
+      return true;
+    }
+  );
+});
+
+test('Excel Service - syncPropertiesToDatabase relanza el error cuando falla el upsert', async () => {
+  const dbError = new Error('violación de constraint');
+  const client = buildMockSupabaseClient({
+    selectResult: { data: [], error: null },
+    mutationResult: { error: dbError }
+  });
+
+  await assert.rejects(
+    () => syncPropertiesToDatabase([buildSampleProperty()], 'tenant-1', client),
+    (error: any) => {
+      assert.strictEqual(error, dbError, 'Debe relanzar el mismo error de upsert recibido de Supabase.');
+      return true;
+    }
+  );
+});
+
+test('Excel Service - syncPropertiesToDatabase no lanza si la sincronización es exitosa', async () => {
+  const client = buildMockSupabaseClient({
+    selectResult: { data: [], error: null },
+    mutationResult: { error: null }
+  });
+
+  await assert.doesNotReject(() => syncPropertiesToDatabase([buildSampleProperty()], 'tenant-1', client));
+});
+
+// Simula el bloque try/catch real de `POST /api/upload` (src/index.ts) con la función real
+// syncPropertiesToDatabase — no importamos src/index.ts directamente porque ese módulo levanta
+// el servidor completo al importarse (efecto secundario a nivel de módulo, `main()` sin guard
+// `require.main === module`, mismo motivo documentado para el resto de los endpoints).
+async function simulateUploadHandler(properties: Property[], tenantId: string, client: any) {
+  const res = { statusCode: 200, body: undefined as any };
+  try {
+    await syncPropertiesToDatabase(properties, tenantId, client);
+    res.statusCode = 200;
+    res.body = { success: true, count: properties.length };
+  } catch (error: any) {
+    res.statusCode = 500;
+    res.body = { error: error.message || 'Error interno al procesar el archivo.' };
+  }
+  return res;
+}
+
+test('Excel Service - el endpoint de upload responde 500 cuando syncPropertiesToDatabase falla', async () => {
+  const client = buildMockSupabaseClient({ selectResult: { data: null, error: new Error('fallo de red') } });
+
+  const res = await simulateUploadHandler([buildSampleProperty()], 'tenant-1', client);
+
+  assert.strictEqual(res.statusCode, 500, 'El endpoint debe responder 500 ante un error de sincronización.');
+  assert.ok(res.body.error, 'La respuesta 500 debe incluir un mensaje de error.');
+});
+
+test('Excel Service - el endpoint de upload responde 200 cuando syncPropertiesToDatabase tiene éxito', async () => {
+  const client = buildMockSupabaseClient({ selectResult: { data: [], error: null } });
+
+  const res = await simulateUploadHandler([buildSampleProperty()], 'tenant-1', client);
+
+  assert.strictEqual(res.statusCode, 200, 'El endpoint debe responder 200 cuando la sincronización es exitosa.');
+  assert.deepStrictEqual(res.body, { success: true, count: 1 });
 });
