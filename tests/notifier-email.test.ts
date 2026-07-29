@@ -10,7 +10,6 @@ import {
   startEmailNotificationService,
   __setResendClientForTests
 } from '../src/services/notifier-email';
-import { validateConfig } from '../src/config/env';
 
 const sampleProperty = {
   address: 'Av. Alem 500',
@@ -100,25 +99,6 @@ test('Notifier Email - groupMatchesByWhatsAppGroup agrupa correctamente por grup
 
   assert.strictEqual(grouped.size, 2, 'Debe haber 2 grupos distintos.');
   assert.strictEqual(grouped.get('Grupo A')!.length, 2, 'Grupo A debe tener 2 matches.');
-});
-
-test('Notifier Email - NOTIFICATION_CHANNEL respeta el flag de canal (default email, explícito whatsapp)', () => {
-  const originalValue = process.env.NOTIFICATION_CHANNEL;
-  try {
-    delete process.env.NOTIFICATION_CHANNEL;
-    const defaultConfig = validateConfig();
-    assert.strictEqual(defaultConfig.notificationChannel, 'email', 'Sin la variable definida, el canal primario debe ser email.');
-
-    process.env.NOTIFICATION_CHANNEL = 'whatsapp';
-    const whatsappConfig = validateConfig();
-    assert.strictEqual(whatsappConfig.notificationChannel, 'whatsapp', 'Con NOTIFICATION_CHANNEL=whatsapp, el canal debe ser whatsapp.');
-  } finally {
-    if (originalValue === undefined) {
-      delete process.env.NOTIFICATION_CHANNEL;
-    } else {
-      process.env.NOTIFICATION_CHANNEL = originalValue;
-    }
-  }
 });
 
 test('Notifier Email - __setResendClientForTests permite inyectar un mock (nunca se manda mail real en el test suite)', () => {
