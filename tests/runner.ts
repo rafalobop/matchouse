@@ -26,3 +26,4 @@ import './searchValidation.test';
 import './supabase.test';
 import './sw.test';
 import './webPush.test';
+import './withTimeout.test';
