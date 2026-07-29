@@ -27,6 +27,7 @@ export interface Config {
   sessionCleanupIntervalMinutes: number;
   devAlertEmail?: string;
   freeTextExtractionEnabled: boolean;
+  searchExpirationIntervalMinutes: number;
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -80,6 +81,11 @@ export function validateConfig(): Config {
   // hace falta FREE_TEXT_EXTRACTION_ENABLED=false explícito para apagarla. No afecta a
   // extractFromWhatsApp, que sigue funcionando siempre sin depender de este flag.
   const freeTextExtractionEnabled = cleanEnvVar(process.env.FREE_TEXT_EXTRACTION_ENABLED) !== 'false';
+  // KAN-41: frecuencia del servicio en segundo plano que marca 'active_searches' vencidas
+  // (expires_at < ahora) como 'expired'. Default 60 min: mismo criterio que
+  // SESSION_CLEANUP_INTERVAL_MINUTES (KAN-53) - el vencimiento es a 7 días, no hace falta
+  // chequear con más frecuencia que una vez por hora.
+  const searchExpirationIntervalMinutes = parseInt(cleanEnvVar(process.env.SEARCH_EXPIRATION_INTERVAL_MINUTES) || '60', 10);
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
@@ -115,7 +121,8 @@ export function validateConfig(): Config {
     testWhatsappTenantIds,
     sessionCleanupIntervalMinutes,
     devAlertEmail,
-    freeTextExtractionEnabled
+    freeTextExtractionEnabled,
+    searchExpirationIntervalMinutes
   };
 }
 
