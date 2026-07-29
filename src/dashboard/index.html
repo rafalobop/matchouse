@@ -54,6 +54,32 @@
       </div>
     </header>
 
+    <!-- Onboarding iOS: instrucciones para agregar la PWA a la pantalla de inicio (KAN-47).
+         Oculto por default; se muestra solo si ios-onboarding.js detecta iOS + no instalada. -->
+    <section id="ios-install-banner" class="card ios-install-banner hidden" role="region"
+      aria-label="Instrucciones para instalar Matchouse en tu pantalla de inicio">
+      <button id="ios-install-dismiss-btn" class="ios-install-dismiss" type="button"
+        aria-label="Cerrar instrucciones de instalación">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+      <div class="ios-install-body">
+        <div class="ios-install-icon">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>
+        </div>
+        <div class="ios-install-content">
+          <h3>Instalá Matchouse en tu iPhone/iPad</h3>
+          <p class="section-desc">Para recibir notificaciones de nuevos matches en iOS, agregá Matchouse a tu
+            pantalla de inicio:</p>
+          <ol class="ios-install-steps">
+            <li>Tocá el ícono <strong>Compartir</strong> (el cuadrado con la flecha hacia arriba) en la barra de
+              Safari.</li>
+            <li>Elegí <strong>"Agregar a pantalla de inicio"</strong>.</li>
+            <li>Abrí Matchouse desde el ícono nuevo en tu pantalla de inicio.</li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
     <main class="dashboard-grid">
       <!-- Inventario de Propiedades: widget compacto tipo stat-tile -->
       <section class="card inventory-tile">
@@ -211,6 +237,7 @@
     </div>
   </div>
 
+  <script src="/ios-onboarding.js"></script>
   <script src="/app.js"></script>
 </body>
 

@@ -330,6 +330,68 @@ h1, h2, h3 {
   border: 1px solid var(--error-border);
 }
 
+/* Onboarding iOS: agregar la PWA a la pantalla de inicio (KAN-47) */
+.ios-install-banner {
+  position: relative;
+  background: var(--accent-glow);
+  border-color: var(--accent);
+}
+
+.ios-install-dismiss {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0.25rem;
+  line-height: 0;
+  border-radius: var(--radius-sm);
+}
+
+.ios-install-dismiss:hover {
+  color: var(--text-primary);
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.ios-install-dismiss .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.ios-install-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding-right: 1.5rem;
+}
+
+.ios-install-icon {
+  flex-shrink: 0;
+  color: var(--accent);
+  display: flex;
+}
+
+.ios-install-icon .icon {
+  width: 28px;
+  height: 28px;
+}
+
+.ios-install-content h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+
+.ios-install-steps {
+  margin: 0.6rem 0 0;
+  padding-left: 1.25rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
 /* Inventario de Propiedades: widget compacto tipo stat-tile */
 .inventory-tile {
   gap: 0.75rem;
