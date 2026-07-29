@@ -15,7 +15,7 @@ import { validateFreeSearchText } from './utils/searchValidation';
 import { calculateDaysRemaining } from './utils/activeSearches';
 import { validateProfileInput } from './utils/profileValidation';
 import { isValidUUID } from './utils/idValidation';
-import { sendWebPushToTenant } from './services/webPush';
+import { sendWebPushToTenant, buildMatchFoundPushPayload } from './services/webPush';
 import { startEmailNotificationService } from './services/notifier-email';
 import { startDolarService } from './services/dolar';
 import { startSearchExpirationService } from './services/searchExpiration';
@@ -441,12 +441,7 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
     // de auth) — el push es solo un aviso genérico para evitar filtrar info de otro tenant por un
     // canal sin control de acceso propio.
     if (mappedMatches.length > 0) {
-      sendWebPushToTenant(tenantId, {
-        title: 'Encontramos matches para tu búsqueda',
-        body: `Hay ${mappedMatches.length} propiedad${mappedMatches.length === 1 ? '' : 'es'} que podría${mappedMatches.length === 1 ? '' : 'n'} interesarte.`,
-        tag: `search-match-${search.id}`,
-        data: { url: '/' }
-      }).catch((pushErr: any) => {
+      sendWebPushToTenant(tenantId, buildMatchFoundPushPayload(search.id)).catch((pushErr: any) => {
         logger.error({ error: pushErr.message || pushErr, tenantId, searchId: search.id }, '[BUSQUEDA] Error al enviar la notificación de match encontrado (no afecta la búsqueda ya confirmada)');
       });
     }
