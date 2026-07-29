@@ -15,8 +15,9 @@ import { validateFreeSearchText } from './utils/searchValidation';
 import { calculateDaysRemaining } from './utils/activeSearches';
 import { validateProfileInput } from './utils/profileValidation';
 import { isValidUUID } from './utils/idValidation';
-import { sendWebPushToTenant, buildMatchFoundPushPayload } from './services/webPush';
-import { startEmailNotificationService } from './services/notifier-email';
+import { sendWebPushToTenant, buildMatchFoundPushPayload, hasActivePushSubscriptions } from './services/webPush';
+import { startEmailNotificationService, sendBlindMatchEmailFallback } from './services/notifier-email';
+import { notifyMatchFound } from './services/notifications';
 import { startDolarService } from './services/dolar';
 import { startSearchExpirationService } from './services/searchExpiration';
 import { config } from './config/env';
@@ -440,9 +441,15 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
     // Payload sin datos de la propiedad/contacto (esos ya viajaron en la respuesta HTTP, detrás
     // de auth) — el push es solo un aviso genérico para evitar filtrar info de otro tenant por un
     // canal sin control de acceso propio.
+    // KAN-48: email como respaldo permanente, no como reemplazo — notifyMatchFound() solo lo
+    // dispara si el tenant no tiene ninguna suscripción push activa, para no duplicar el aviso.
     if (mappedMatches.length > 0) {
-      sendWebPushToTenant(tenantId, buildMatchFoundPushPayload(search.id)).catch((pushErr: any) => {
-        logger.error({ error: pushErr.message || pushErr, tenantId, searchId: search.id }, '[BUSQUEDA] Error al enviar la notificación de match encontrado (no afecta la búsqueda ya confirmada)');
+      notifyMatchFound({
+        hasActivePush: () => hasActivePushSubscriptions(tenantId),
+        sendPush: () => sendWebPushToTenant(tenantId, buildMatchFoundPushPayload(search.id)),
+        sendEmailFallback: () => sendBlindMatchEmailFallback(tenantId, text, mappedMatches)
+      }).catch((notifyErr: any) => {
+        logger.error({ error: notifyErr.message || notifyErr, tenantId, searchId: search.id }, '[BUSQUEDA] Error al notificar el match encontrado (no afecta la búsqueda ya confirmada)');
       });
     }
   } catch (error: any) {

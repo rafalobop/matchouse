@@ -21,6 +21,24 @@ export function buildMatchFoundPushPayload(searchId: string): Record<string, unk
   };
 }
 
+// KAN-48: usado para decidir si el email de respaldo debe dispararse (solo cuando el tenant NO
+// tiene push activo, así los dos canales no se duplican para un mismo evento). Ante un error de
+// red/DB, se devuelve false a propósito (fail-open hacia el email): es preferible arriesgar un
+// email de más que perder el aviso por completo si este chequeo puntual falla.
+export async function hasActivePushSubscriptions(tenantId: string, client = supabase): Promise<boolean> {
+  const { count, error } = await client
+    .from('web_push_subscriptions')
+    .select('id', { count: 'exact', head: true })
+    .eq('tenant_id', tenantId);
+
+  if (error) {
+    logger.error({ error: error.message, tenantId }, '[WEBPUSH] Error al chequear suscripciones activas del tenant.');
+    return false;
+  }
+
+  return (count || 0) > 0;
+}
+
 export async function sendWebPushToTenant(tenantId: string, payload: Record<string, unknown>): Promise<void> {
   try {
     const { data: subs, error } = await supabase

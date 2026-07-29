@@ -18,6 +18,7 @@ import './idValidation.test';
 import './iosOnboarding.test';
 import './logger.test';
 import './matcher.test';
+import './notifications.test';
 import './notifier-email.test';
 import './profileValidation.test';
 import './searchExpiration.test';
