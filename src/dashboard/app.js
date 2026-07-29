@@ -2,6 +2,7 @@
 const tenantSession = document.getElementById('tenant-session');
 const tenantEmailText = document.getElementById('tenant-email-text');
 const logoutBtn = document.getElementById('logout-btn');
+const logoutBtnLabel = document.getElementById('logout-btn-label');
 
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('file-input');
@@ -27,6 +28,39 @@ const authSendMagicLinkBtn = document.getElementById('auth-send-magic-link-btn')
 const authBackBtn = document.getElementById('auth-back-btn');
 const authStep1Error = document.getElementById('auth-step1-error');
 const authStep2Error = document.getElementById('auth-step2-error');
+
+// ==========================================
+// TEMA (CLARO / OSCURO)
+// ==========================================
+
+const THEME_STORAGE_KEY = 'matchouse-theme';
+const themeToggleBtn = document.getElementById('theme-toggle-btn');
+const themeIconDark = document.getElementById('theme-icon-dark');
+const themeIconLight = document.getElementById('theme-icon-light');
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  if (themeIconDark && themeIconLight) {
+    themeIconDark.classList.toggle('hidden', theme === 'dark');
+    themeIconLight.classList.toggle('hidden', theme !== 'dark');
+  }
+}
+
+function initTheme() {
+  const stored = localStorage.getItem(THEME_STORAGE_KEY);
+  applyTheme(stored === 'dark' ? 'dark' : 'light');
+}
+
+if (themeToggleBtn) {
+  themeToggleBtn.addEventListener('click', () => {
+    const current = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+    const next = current === 'dark' ? 'light' : 'dark';
+    localStorage.setItem(THEME_STORAGE_KEY, next);
+    applyTheme(next);
+  });
+}
+
+initTheme();
 
 /**
  * fetch con timeout: evita spinners infinitos cuando el servidor no responde
@@ -428,11 +462,11 @@ function buildMatchItem(m) {
   const summary = document.createElement('summary');
   summary.className = 'match-summary';
 
-  let statusBadgeHtml = '<span class="curation-badge pending">⏳ Pendiente</span>';
+  let statusBadgeHtml = '<span class="curation-badge pending">Pendiente</span>';
   if (m.userReviewStatus === 'ACCEPTED') {
-    statusBadgeHtml = '<span class="curation-badge accepted">✅ Aceptado</span>';
+    statusBadgeHtml = '<span class="curation-badge accepted">Aceptado</span>';
   } else if (m.userReviewStatus === 'REJECTED') {
-    statusBadgeHtml = '<span class="curation-badge rejected">❌ Rechazado</span>';
+    statusBadgeHtml = '<span class="curation-badge rejected">Rechazado</span>';
   }
 
   summary.innerHTML = `
@@ -654,10 +688,10 @@ function buildActiveSearchItem(search) {
     <div class="active-search-raw-text">"${escapeHtml(search.raw_text)}"</div>
     <div class="active-search-badges">
       <span class="search-badge status-${statusKey}">${escapeHtml(statusLabel)}</span>
-      <span class="search-badge matches-count">🔎 ${search.matches_count} match${search.matches_count === 1 ? '' : 'es'}</span>
+      <span class="search-badge matches-count">${search.matches_count} match${search.matches_count === 1 ? '' : 'es'}</span>
       ${isExpired
         ? ''
-        : `<span class="search-badge days-remaining${isUrgent ? ' urgent' : ''}">⏳ ${search.days_remaining} día${search.days_remaining === 1 ? '' : 's'} restante${search.days_remaining === 1 ? '' : 's'}</span>`}
+        : `<span class="search-badge days-remaining${isUrgent ? ' urgent' : ''}">${search.days_remaining} día${search.days_remaining === 1 ? '' : 's'} restante${search.days_remaining === 1 ? '' : 's'}</span>`}
     </div>
   `;
 
@@ -667,14 +701,14 @@ function buildActiveSearchItem(search) {
   if (isExpired) {
     const reactivateBtn = document.createElement('button');
     reactivateBtn.className = 'btn btn-success btn-small';
-    reactivateBtn.innerText = '🔄 Reactivar';
+    reactivateBtn.innerText = 'Reactivar';
     reactivateBtn.addEventListener('click', () => reactivateSearch(search.id, reactivateBtn));
     actions.appendChild(reactivateBtn);
   }
 
   const archiveBtn = document.createElement('button');
   archiveBtn.className = 'btn btn-danger btn-small';
-  archiveBtn.innerText = '🗑️ Archivar';
+  archiveBtn.innerText = 'Archivar';
   archiveBtn.addEventListener('click', () => archiveSearch(search.id, archiveBtn));
   actions.appendChild(archiveBtn);
 
@@ -806,6 +840,7 @@ confirmRejectBtn.addEventListener('click', async () => {
 // ==========================================
 
 const btnPushSubscribe = document.getElementById('btn-push-subscribe');
+const btnPushSubscribeLabel = document.getElementById('btn-push-subscribe-label');
 let swRegistration = null;
 
 async function initPushNotifications() {
@@ -848,7 +883,7 @@ async function updatePushButton() {
   if (!swRegistration || !btnPushSubscribe) return;
 
   if (Notification.permission === 'denied') {
-    btnPushSubscribe.innerText = '🔔 Bloqueado';
+    btnPushSubscribeLabel.innerText = 'Bloqueado';
     btnPushSubscribe.disabled = true;
     return;
   }
@@ -856,11 +891,11 @@ async function updatePushButton() {
   try {
     const subscription = await swRegistration.pushManager.getSubscription();
     if (subscription) {
-      btnPushSubscribe.innerText = '✅ Notificaciones Activas';
+      btnPushSubscribeLabel.innerText = 'Notificaciones activas';
       btnPushSubscribe.disabled = true;
       btnPushSubscribe.style.opacity = '0.7';
     } else {
-      btnPushSubscribe.innerText = '🔔 Activar Notificaciones';
+      btnPushSubscribeLabel.innerText = 'Activar notificaciones';
       btnPushSubscribe.disabled = false;
       btnPushSubscribe.style.opacity = '1';
     }
@@ -872,7 +907,7 @@ async function updatePushButton() {
 if (btnPushSubscribe) {
   btnPushSubscribe.addEventListener('click', async () => {
     btnPushSubscribe.disabled = true;
-    btnPushSubscribe.innerText = 'Solicitando permiso...';
+    btnPushSubscribeLabel.innerText = 'Solicitando permiso...';
 
     try {
       const permission = await Notification.requestPermission();
@@ -929,7 +964,7 @@ logoutBtn.addEventListener('click', async () => {
   }
 
   logoutBtn.disabled = true;
-  logoutBtn.innerText = 'Cerrando sesión...';
+  logoutBtnLabel.innerText = 'Cerrando sesión...';
 
   try {
     const res = await fetch('/api/auth/logout', { method: 'POST' });
@@ -949,6 +984,6 @@ logoutBtn.addEventListener('click', async () => {
     alert('Error de red al intentar cerrar sesión.');
   } finally {
     logoutBtn.disabled = false;
-    logoutBtn.innerText = '🚪 Cerrar Sesión';
+    logoutBtnLabel.innerText = 'Cerrar sesión';
   }
 });
