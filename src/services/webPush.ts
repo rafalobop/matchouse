@@ -17,12 +17,16 @@ export async function sendWebPushToTenant(tenantId: string, payload: Record<stri
       .eq('tenant_id', tenantId);
 
     if (error) throw error;
-    if (!subs || subs.length === 0) return;
+    if (!subs || subs.length === 0) {
+      logger.info({ tenantId }, '[WEBPUSH] Sin suscripciones activas para el tenant, no se envía ninguna notificación.');
+      return;
+    }
 
     const serialized = JSON.stringify(payload);
     for (const sub of subs) {
       try {
         await webpush.sendNotification(sub.subscription as any, serialized);
+        logger.info({ subId: sub.id, tenantId }, '[WEBPUSH] Notificación push entregada exitosamente.');
       } catch (pushErr: any) {
         if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
           logger.info({ subId: sub.id, statusCode: pushErr.statusCode }, '[WEBPUSH] Eliminando suscripción web push expirada/inválida.');
