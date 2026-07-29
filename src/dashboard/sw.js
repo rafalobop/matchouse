@@ -10,7 +10,7 @@ self.addEventListener('push', function(event) {
         data: data.data || {},
         tag: data.tag || 'housematch-notification',
         actions: [
-          { action: 'open', title: 'Ver Matches' }
+          { action: 'open', title: 'Tocá para ver' }
         ]
       };
       event.waitUntil(
