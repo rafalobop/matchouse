@@ -9,7 +9,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { Property, processExcelBuffer, syncPropertiesToDatabase } from './services/excel';
 import { coordinator } from './services/coordinator';
-import { extractFromTextInput } from './services/ai';
+import { extractFromTextInput, AITimeoutError } from './services/ai';
 import { findCrossTenantMatches } from './services/blindMatching';
 import { validateFreeSearchText } from './utils/searchValidation';
 import { calculateDaysRemaining } from './utils/activeSearches';
@@ -22,6 +22,7 @@ import { startDolarService } from './services/dolar';
 import { startSearchExpirationService } from './services/searchExpiration';
 import { config } from './config/env';
 import { logger } from './services/logger';
+import { withTimeout } from './utils/withTimeout';
 
 // Express Setup
 const app = express();
@@ -78,20 +79,6 @@ function checkAuthRateLimit(ip: string): boolean {
   if (entry.count >= 5) return false;
   entry.count++;
   return true;
-}
-
-/**
- * Ejecuta una promesa con un tiempo límite. Evita que un request quede colgado
- * indefinidamente (spinner infinito en el cliente) ante fallos de red/DNS hacia Supabase.
- */
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Timeout de ${ms}ms esperando: ${label}`)), ms);
-    promise.then(
-      (val) => { clearTimeout(timer); resolve(val); },
-      (err) => { clearTimeout(timer); reject(err); }
-    );
-  });
 }
 
 // Cache en memoria de sesiones ya validadas contra Supabase. El dashboard pollea /api/status,
@@ -454,6 +441,11 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
     }
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[BUSQUEDA] Error al procesar búsqueda de matching ciego');
+    // KAN-70: distinguible del 500 genérico para que el frontend pueda mostrar un mensaje
+    // específico ("el servicio de IA tardó demasiado") en vez del error interno genérico.
+    if (error instanceof AITimeoutError) {
+      return res.status(504).json({ error: error.message, code: 'AI_TIMEOUT' });
+    }
     res.status(500).json({ error: error.message || 'Error interno al procesar la búsqueda.' });
   }
 });

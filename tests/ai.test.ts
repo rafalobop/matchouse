@@ -1,6 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import { extractFromWhatsApp, extractFromTextInput, extractZoneIntent, validateMatch, normalizeAgent1 } from '../src/services/ai';
+import {
+  extractFromWhatsApp,
+  extractFromTextInput,
+  extractZoneIntent,
+  validateMatch,
+  normalizeAgent1,
+  GeminiStrategy,
+  OpenAIStrategy,
+  AITimeoutError
+} from '../src/services/ai';
+import { TimeoutError } from '../src/utils/withTimeout';
 import { config, validateConfig } from '../src/config/env';
 
 test('AI Service - Debería exportar las funciones clave (KAN-36: extractFromWhatsApp y extractFromTextInput)', () => {
@@ -104,3 +114,120 @@ test('AI Service - normalizeAgent1 (KAN-36) produce salida válida según el sch
     assert.ok(['si', 'no', 'indiferente'].includes(resultado.country), `country inválido: ${resultado.country}`);
   }
 });
+
+// --- KAN-70: timeout en las llamadas a generateContent/chat.completions.create ---
+// No se mockea el SDK con una librería externa (el proyecto no usa jest/sinon) — en cambio,
+// se sobreescribe el método real del cliente SDK ya instanciado (this.ai.models.generateContent /
+// this.openai.chat.completions.create) para que devuelva una promesa que nunca resuelve,
+// ejercitando el wrapping real de withTimeout en cada uno de los 8 call sites, sin red real.
+
+const geminiInvocations: Array<{ label: string; call: (s: GeminiStrategy) => Promise<any> }> = [
+  { label: 'extractRealEstateRequest', call: (s) => s.extractRealEstateRequest('mensaje de prueba', 'instrucción') },
+  { label: 'extractFromFreeText', call: (s) => s.extractFromFreeText('texto libre de prueba', 'instrucción') },
+  { label: 'extractZoneIntent', call: (s) => s.extractZoneIntent('mensaje de prueba', 'instrucción', 'venta') },
+  { label: 'validateMatch', call: (s) => s.validateMatch('mensaje', {}, {}, 'instrucción') }
+];
+
+test('AI Service (KAN-70) - las 4 llamadas de GeminiStrategy a generateContent usan withTimeout (rechazan con TimeoutError si el SDK cuelga)', async () => {
+  const originalTimeout = config.aiRequestTimeoutMs;
+  config.aiRequestTimeoutMs = 30;
+  try {
+    for (const { label, call } of geminiInvocations) {
+      const strategy = new GeminiStrategy();
+      (strategy as any).ai.models.generateContent = () => new Promise(() => {});
+
+      await assert.rejects(
+        () => call(strategy),
+        (error: any) => {
+          assert.ok(error instanceof TimeoutError, `${label}: el error debe ser una instancia de TimeoutError.`);
+          assert.match(error.message, /Gemini generateContent/, `${label}: el mensaje debe identificar la llamada de Gemini.`);
+          return true;
+        },
+        `${label} debería rechazar por timeout cuando generateContent cuelga.`
+      );
+    }
+  } finally {
+    config.aiRequestTimeoutMs = originalTimeout;
+  }
+});
+
+const openaiInvocations: Array<{ label: string; call: (s: OpenAIStrategy) => Promise<any> }> = [
+  { label: 'extractRealEstateRequest', call: (s) => s.extractRealEstateRequest('mensaje de prueba', 'instrucción') },
+  { label: 'extractFromFreeText', call: (s) => s.extractFromFreeText('texto libre de prueba', 'instrucción') },
+  { label: 'extractZoneIntent', call: (s) => s.extractZoneIntent('mensaje de prueba', 'instrucción', 'venta') },
+  { label: 'validateMatch', call: (s) => s.validateMatch('mensaje', {}, {}, 'instrucción') }
+];
+
+test(
+  'AI Service (KAN-70) - las 4 llamadas de OpenAIStrategy a chat.completions.create usan withTimeout (rechazan con TimeoutError si el SDK cuelga)',
+  { skip: !config.openaiApiKey ? 'OPENAI_API_KEY no configurada en este entorno' : false },
+  async () => {
+    const originalTimeout = config.aiRequestTimeoutMs;
+    config.aiRequestTimeoutMs = 30;
+    try {
+      for (const { label, call } of openaiInvocations) {
+        const strategy = new OpenAIStrategy();
+        (strategy as any).openai.chat.completions.create = () => new Promise(() => {});
+
+        await assert.rejects(
+          () => call(strategy),
+          (error: any) => {
+            assert.ok(error instanceof TimeoutError, `${label}: el error debe ser una instancia de TimeoutError.`);
+            assert.match(error.message, /OpenAI chat\.completions\.create/, `${label}: el mensaje debe identificar la llamada de OpenAI.`);
+            return true;
+          },
+          `${label} debería rechazar por timeout cuando chat.completions.create cuelga.`
+        );
+      }
+    } finally {
+      config.aiRequestTimeoutMs = originalTimeout;
+    }
+  }
+);
+
+test('AI Service (KAN-70) - extractFromTextInput lanza AITimeoutError cuando TODAS las estrategias configuradas agotan el timeout', async () => {
+  const originalGemini = GeminiStrategy.prototype.extractFromFreeText;
+  const originalOpenAI = OpenAIStrategy.prototype.extractFromFreeText;
+  const originalFlag = config.freeTextExtractionEnabled;
+
+  GeminiStrategy.prototype.extractFromFreeText = async () => { throw new TimeoutError('Timeout simulado de Gemini (KAN-70)'); };
+  OpenAIStrategy.prototype.extractFromFreeText = async () => { throw new TimeoutError('Timeout simulado de OpenAI (KAN-70)'); };
+  config.freeTextExtractionEnabled = true;
+
+  try {
+    await assert.rejects(
+      () => extractFromTextInput('busco depto 2 dorm en yerba buena hasta 80000 usd'),
+      (error: any) => {
+        assert.ok(error instanceof AITimeoutError, 'Debe lanzar AITimeoutError cuando todas las estrategias agotan el timeout, en vez de devolver el fallback silencioso.');
+        return true;
+      }
+    );
+  } finally {
+    GeminiStrategy.prototype.extractFromFreeText = originalGemini;
+    OpenAIStrategy.prototype.extractFromFreeText = originalOpenAI;
+    config.freeTextExtractionEnabled = originalFlag;
+  }
+});
+
+test(
+  'AI Service (KAN-70) - extractFromTextInput NO lanza AITimeoutError si al menos una estrategia falló por un motivo distinto a timeout (comportamiento previo intacto)',
+  { skip: !config.openaiApiKey ? 'OPENAI_API_KEY no configurada en este entorno (no hay una segunda estrategia para simular una falla mixta)' : false },
+  async () => {
+    const originalGemini = GeminiStrategy.prototype.extractFromFreeText;
+    const originalOpenAI = OpenAIStrategy.prototype.extractFromFreeText;
+    const originalFlag = config.freeTextExtractionEnabled;
+
+    GeminiStrategy.prototype.extractFromFreeText = async () => { throw new TimeoutError('Timeout simulado de Gemini (KAN-70)'); };
+    OpenAIStrategy.prototype.extractFromFreeText = async () => { throw new Error('Cuota excedida (no es timeout)'); };
+    config.freeTextExtractionEnabled = true;
+
+    try {
+      const result = await extractFromTextInput('busco depto 2 dorm en yerba buena hasta 80000 usd');
+      assert.strictEqual(result.operation, 'desconocido', 'Debe caer al objeto por defecto silencioso (comportamiento previo de la regla de negocio), no lanzar AITimeoutError.');
+    } finally {
+      GeminiStrategy.prototype.extractFromFreeText = originalGemini;
+      OpenAIStrategy.prototype.extractFromFreeText = originalOpenAI;
+      config.freeTextExtractionEnabled = originalFlag;
+    }
+  }
+);

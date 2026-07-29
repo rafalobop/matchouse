@@ -23,6 +23,7 @@ export interface Config {
   atlassianApiKey?: string;
   freeTextExtractionEnabled: boolean;
   searchExpirationIntervalMinutes: number;
+  aiRequestTimeoutMs: number;
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -59,6 +60,11 @@ export function validateConfig(): Config {
   // (expires_at < ahora) como 'expired'. Default 60 min: el vencimiento es a 7 días, no hace
   // falta chequear con más frecuencia que una vez por hora.
   const searchExpirationIntervalMinutes = parseInt(cleanEnvVar(process.env.SEARCH_EXPIRATION_INTERVAL_MINUTES) || '60', 10);
+  // KAN-70: límite de tiempo para cada llamada individual a generateContent/chat.completions.create
+  // en ai.ts. Default 20s: POST /api/search es un camino síncrono de un request HTTP (el usuario
+  // espera la respuesta en el dashboard), así que no puede quedar colgado indefinidamente si el
+  // proveedor de IA no responde.
+  const aiRequestTimeoutMs = parseInt(cleanEnvVar(process.env.AI_REQUEST_TIMEOUT_MS) || '20000', 10);
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
@@ -90,7 +96,8 @@ export function validateConfig(): Config {
     jiraProjectKey,
     atlassianApiKey,
     freeTextExtractionEnabled,
-    searchExpirationIntervalMinutes
+    searchExpirationIntervalMinutes,
+    aiRequestTimeoutMs
   };
 }
 

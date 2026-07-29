@@ -2,6 +2,19 @@ import { GoogleGenAI } from '@google/genai';
 import { OpenAI } from 'openai';
 import { config } from '../config/env';
 import { zones } from '../utils/constants/zones';
+import { withTimeout, TimeoutError } from '../utils/withTimeout';
+
+// KAN-70: error específico para cuando TODAS las estrategias de IA configuradas agotaron su
+// timeout en el camino síncrono de un request HTTP (POST /api/search, ver src/index.ts). A
+// diferencia de un error genérico, el frontend puede distinguir este caso (`instanceof
+// AITimeoutError` / `error.name === 'AITimeoutError'`) para mostrar un mensaje específico
+// ("el servicio de IA tardó demasiado") en vez del error interno genérico de un 500.
+export class AITimeoutError extends Error {
+  constructor(message: string = 'El servicio de IA no respondió a tiempo. Intentá de nuevo en unos segundos.') {
+    super(message);
+    this.name = 'AITimeoutError';
+  }
+}
 
 // --- DEFINICIONES DE TIPOS ---
 
@@ -86,12 +99,12 @@ const AGENT1_OPENAI_JSON_SCHEMA = {
 
 // --- ESTRATEGIAS CONCRETAS ---
 
-class GeminiStrategy implements AIStrategy {
+export class GeminiStrategy implements AIStrategy {
   readonly name = 'Google Gemini (gemini-2.5-flash-lite)';
   private ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
 
   async extractRealEstateRequest(messageTexto: string, systemInstruction: string): Promise<any> {
-    const response = await this.ai.models.generateContent({
+    const response = await withTimeout(this.ai.models.generateContent({
       model: 'gemini-2.5-flash-lite',
       contents: `Analiza el mensaje de WhatsApp provisto estrictamente dentro de las etiquetas <USER_CHAT> y </USER_CHAT>:
 <USER_CHAT>
@@ -102,7 +115,7 @@ ${messageTexto}
         responseMimeType: 'application/json',
         responseSchema: AGENT1_GEMINI_RESPONSE_SCHEMA
       }
-    });
+    }), config.aiRequestTimeoutMs, 'Gemini generateContent (extractRealEstateRequest)');
 
     const responseText = response.text;
     if (!responseText) throw new Error('Respuesta de Gemini vacía');
@@ -110,7 +123,7 @@ ${messageTexto}
   }
 
   async extractFromFreeText(freeText: string, systemInstruction: string): Promise<any> {
-    const response = await this.ai.models.generateContent({
+    const response = await withTimeout(this.ai.models.generateContent({
       model: 'gemini-2.5-flash-lite',
       contents: `Analiza el texto libre provisto por el usuario en un formulario de búsqueda, estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:
 <USER_TEXT>
@@ -121,7 +134,7 @@ ${freeText}
         responseMimeType: 'application/json',
         responseSchema: AGENT1_GEMINI_RESPONSE_SCHEMA
       }
-    });
+    }), config.aiRequestTimeoutMs, 'Gemini generateContent (extractFromFreeText)');
 
     const responseText = response.text;
     if (!responseText) throw new Error('Respuesta de Gemini vacía');
@@ -133,7 +146,7 @@ ${freeText}
       ? `Operación identificada por el Agente 1: ${operacion}\n\nClasifica la zona e intención de este mensaje: "${messageTexto}"`
       : `Clasifica la zona e intención de este mensaje: "${messageTexto}"`;
 
-    const response = await this.ai.models.generateContent({
+    const response = await withTimeout(this.ai.models.generateContent({
       model: 'gemini-2.5-flash-lite',
       contents: userMsg,
       config: {
@@ -151,7 +164,7 @@ ${freeText}
           required: ['zona_id', 'texto_ubicacion_original', 'dormitorios_min', 'caracteristicas_claves', 'operacion']
         }
       }
-    });
+    }), config.aiRequestTimeoutMs, 'Gemini generateContent (extractZoneIntent)');
 
     const responseText = response.text;
     if (!responseText) throw new Error('Respuesta de Gemini vacía');
@@ -181,7 +194,7 @@ ${JSON.stringify(property)}
 </PROPIEDAD_SUGERIDA>
     `;
 
-    const response = await this.ai.models.generateContent({
+    const response = await withTimeout(this.ai.models.generateContent({
       model: 'gemini-2.5-flash-lite',
       contents: prompt,
       config: {
@@ -197,7 +210,7 @@ ${JSON.stringify(property)}
           required: ['score', 'isValid', 'reasoning']
         }
       }
-    });
+    }), config.aiRequestTimeoutMs, 'Gemini generateContent (validateMatch)');
 
     const responseText = response.text;
     if (!responseText) throw new Error('Respuesta de Gemini vacía');
@@ -205,7 +218,7 @@ ${JSON.stringify(property)}
   }
 }
 
-class OpenAIStrategy implements AIStrategy {
+export class OpenAIStrategy implements AIStrategy {
   readonly name = 'OpenAI (gpt-4o-mini)';
   private openai = config.openaiApiKey ? new OpenAI({ apiKey: config.openaiApiKey }) : null;
 
@@ -214,7 +227,7 @@ class OpenAIStrategy implements AIStrategy {
       throw new Error('OpenAI API key no está configurada.');
     }
 
-    const completion = await this.openai.chat.completions.create({
+    const completion = await withTimeout(this.openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         { role: 'system', content: systemInstruction },
@@ -233,7 +246,7 @@ ${messageTexto}
           schema: AGENT1_OPENAI_JSON_SCHEMA
         }
       }
-    });
+    }), config.aiRequestTimeoutMs, 'OpenAI chat.completions.create (extractRealEstateRequest)');
 
     const content = completion.choices[0]?.message?.content;
     if (!content) throw new Error('Respuesta de OpenAI vacía');
@@ -245,7 +258,7 @@ ${messageTexto}
       throw new Error('OpenAI API key no está configurada.');
     }
 
-    const completion = await this.openai.chat.completions.create({
+    const completion = await withTimeout(this.openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         { role: 'system', content: systemInstruction },
@@ -264,7 +277,7 @@ ${freeText}
           schema: AGENT1_OPENAI_JSON_SCHEMA
         }
       }
-    });
+    }), config.aiRequestTimeoutMs, 'OpenAI chat.completions.create (extractFromFreeText)');
 
     const content = completion.choices[0]?.message?.content;
     if (!content) throw new Error('Respuesta de OpenAI vacía');
@@ -280,7 +293,7 @@ ${freeText}
       ? `Operación identificada por el Agente 1: ${operacion}\n\nClasifica la zona e intención de este mensaje: "${messageTexto}"`
       : `Clasifica la zona e intención de este mensaje: "${messageTexto}"`;
 
-    const completion = await this.openai.chat.completions.create({
+    const completion = await withTimeout(this.openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         { role: 'system', content: systemInstruction },
@@ -305,7 +318,7 @@ ${freeText}
           }
         }
       }
-    });
+    }), config.aiRequestTimeoutMs, 'OpenAI chat.completions.create (extractZoneIntent)');
 
     const content = completion.choices[0]?.message?.content;
     if (!content) throw new Error('Respuesta de OpenAI vacía');
@@ -339,7 +352,7 @@ ${JSON.stringify(property)}
 </PROPIEDAD_SUGERIDA>
     `;
 
-    const completion = await this.openai.chat.completions.create({
+    const completion = await withTimeout(this.openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         { role: 'system', content: systemInstruction },
@@ -362,7 +375,7 @@ ${JSON.stringify(property)}
           }
         }
       }
-    });
+    }), config.aiRequestTimeoutMs, 'OpenAI chat.completions.create (validateMatch)');
 
     const content = completion.choices[0]?.message?.content;
     if (!content) throw new Error('Respuesta de OpenAI vacía');
@@ -424,15 +437,32 @@ class AIExtractorContext {
     };
   }
 
+  // KAN-70: único método de AIExtractorContext con un llamador síncrono de un request HTTP
+  // (POST /api/search, ver src/index.ts) — el usuario está esperando la respuesta en el
+  // dashboard. Si TODAS las estrategias agotaron su timeout (ninguna falló por otro motivo,
+  // ej. cuota o respuesta inválida), se relanza un AITimeoutError distinguible en vez de
+  // devolver el objeto por defecto en silencio, para que el endpoint pueda responder algo más
+  // específico que "no pudimos clasificar el texto" (que sonaría a error del usuario, no del
+  // proveedor de IA). Si hubo al menos un fallo de otro tipo, se mantiene el comportamiento
+  // previo (fallback silencioso) sin cambios.
   async extractFromTextInput(freeText: string): Promise<ExtractedRealEstateRequest> {
+    let allFailuresWereTimeouts = this.strategies.length > 0;
+
     for (const strategy of this.strategies) {
       try {
         console.log(`[AI STRATEGY] Intentando Extracción de Texto Libre con: ${strategy.name}`);
         const rawResult = await strategy.extractFromFreeText(freeText, SYSTEM_INSTRUCTIONS_AGENT1_TEXT_INPUT);
         return normalizeAgent1(rawResult);
       } catch (error) {
+        if (!(error instanceof TimeoutError)) {
+          allFailuresWereTimeouts = false;
+        }
         logFallbackWarning(strategy.name, error);
       }
+    }
+
+    if (allFailuresWereTimeouts) {
+      throw new AITimeoutError();
     }
 
     console.error('[AI STRATEGY] Todas las estrategias de extracción de texto libre fallaron.');
