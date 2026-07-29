@@ -402,5 +402,6 @@ export async function syncPropertiesToDatabase(properties: Property[], tenantId:
     }, '[SUPABASE] Sincronización de propiedades finalizada con éxito.');
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[SUPABASE] Error al sincronizar propiedades');
+    throw error;
   }
 }

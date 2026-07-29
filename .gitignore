@@ -18,6 +18,7 @@ yarn-error.log*
 /src/generated/prisma
 .claude/*
 !.claude/skills
+/postman
 
 # Archivos dinámicos de Tenants (Caché, Configuración y Sesiones)
 cache/
