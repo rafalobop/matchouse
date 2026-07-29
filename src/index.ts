@@ -21,6 +21,7 @@ import { coordinator } from './services/coordinator';
 import { extractFromTextInput } from './services/ai';
 import { findCrossTenantMatches } from './services/blindMatching';
 import { validateFreeSearchText } from './utils/searchValidation';
+import { calculateDaysRemaining } from './utils/activeSearches';
 import { messageQueue } from './utils/queue';
 import { startNotificationService } from './services/notifier';
 import { startEmailNotificationService } from './services/notifier-email';
@@ -435,6 +436,53 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[BUSQUEDA] Error al procesar búsqueda de matching ciego');
     res.status(500).json({ error: error.message || 'Error interno al procesar la búsqueda.' });
+  }
+});
+
+// KAN-39: listado de búsquedas activas propias con conteo de matches cross-tenant. El conteo se
+// recalcula en vivo reusando findCrossTenantMatches (mismo motor que POST /api/search) porque el
+// matching ciego, por decisión explícita de KAN-37, no persiste los matches cruzados (no hay
+// tabla que relacione active_searches con propiedades de otro tenant) — no hay un contador
+// guardado del que leer, y recalcularlo es lo que garantiza que quede "consistente con la base".
+app.get('/api/searches', tenantAuthMiddleware, async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const tenantSupabase = (req as any).supabaseClient;
+
+  try {
+    const { data: searches, error } = await tenantSupabase
+      .from('active_searches')
+      .select('id, raw_text, criteria, status, created_at, expires_at')
+      .eq('tenant_id', tenantId)
+      .eq('status', 'active')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    const results = await Promise.all((searches || []).map(async (search: any) => {
+      let matchesCount = 0;
+      try {
+        const matches = await findCrossTenantMatches(tenantId, search.criteria);
+        matchesCount = matches.length;
+      } catch (matchError: any) {
+        logger.error({ error: matchError.message || matchError, tenantId, searchId: search.id }, '[BUSQUEDAS] Error al calcular el conteo de matches de una búsqueda activa');
+      }
+
+      return {
+        id: search.id,
+        raw_text: search.raw_text,
+        criteria: search.criteria,
+        status: search.status,
+        created_at: search.created_at,
+        expires_at: search.expires_at,
+        days_remaining: calculateDaysRemaining(search.expires_at),
+        matches_count: matchesCount
+      };
+    }));
+
+    res.json({ searches: results });
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId }, '[BUSQUEDAS] Error al listar búsquedas activas');
+    res.status(500).json({ error: error.message || 'Error interno al listar las búsquedas.' });
   }
 });
 
