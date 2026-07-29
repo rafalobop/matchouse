@@ -4,13 +4,15 @@ import {
   buildEmailHtml,
   buildPropertyRowHtml,
   buildWhatsAppMessage,
+  buildBlindMatchEmailHtml,
+  buildBlindMatchPropertyRowHtml,
+  sendBlindMatchEmailFallback,
   groupMatchesByTenant,
   groupMatchesByWhatsAppGroup,
   sendConsolidatedEmailNotifications,
   startEmailNotificationService,
   __setResendClientForTests
 } from '../src/services/notifier-email';
-import { validateConfig } from '../src/config/env';
 
 const sampleProperty = {
   address: 'Av. Alem 500',
@@ -102,23 +104,106 @@ test('Notifier Email - groupMatchesByWhatsAppGroup agrupa correctamente por grup
   assert.strictEqual(grouped.get('Grupo A')!.length, 2, 'Grupo A debe tener 2 matches.');
 });
 
-test('Notifier Email - NOTIFICATION_CHANNEL respeta el flag de canal (default email, explícito whatsapp)', () => {
-  const originalValue = process.env.NOTIFICATION_CHANNEL;
-  try {
-    delete process.env.NOTIFICATION_CHANNEL;
-    const defaultConfig = validateConfig();
-    assert.strictEqual(defaultConfig.notificationChannel, 'email', 'Sin la variable definida, el canal primario debe ser email.');
+// KAN-48: matches del matching ciego (POST /api/search, src/index.ts) tienen otra forma que los
+// del match_queue legacy de WhatsApp usados más arriba en este archivo.
+function sampleBlindMatch(overrides: Partial<any> = {}) {
+  return {
+    tenant_id: 'tenant-b',
+    score: 90,
+    property: {
+      domicilio: 'Av. Alem 500',
+      pisoLote: '2 A',
+      precio: 150000,
+      moneda: 'ARS',
+      dormitorios: 2,
+      caracteristicas: 'Pileta',
+      operacion: 'venta',
+      tipo_propiedad: 'departamento'
+    },
+    ...overrides
+  };
+}
 
-    process.env.NOTIFICATION_CHANNEL = 'whatsapp';
-    const whatsappConfig = validateConfig();
-    assert.strictEqual(whatsappConfig.notificationChannel, 'whatsapp', 'Con NOTIFICATION_CHANNEL=whatsapp, el canal debe ser whatsapp.');
-  } finally {
-    if (originalValue === undefined) {
-      delete process.env.NOTIFICATION_CHANNEL;
-    } else {
-      process.env.NOTIFICATION_CHANNEL = originalValue;
+function makeProfileClient(options: { email?: string | null } = {}) {
+  const builder: any = {
+    select: () => builder,
+    eq: () => builder,
+    single: () => Promise.resolve({ data: options.email !== undefined ? { email: options.email } : null, error: null })
+  };
+  return { from: () => builder };
+}
+
+test('Notifier Email - buildBlindMatchPropertyRowHtml incluye domicilio, piso/lote, moneda y precio del match ciego', () => {
+  const html = buildBlindMatchPropertyRowHtml(sampleBlindMatch());
+  assert.ok(html.includes('Av. Alem 500'), 'Debe incluir el domicilio.');
+  assert.ok(html.includes('2 A'), 'Debe incluir piso/lote entre paréntesis.');
+  assert.ok(html.includes('ARS'), 'Debe incluir la moneda.');
+  assert.ok(html.includes('150000'), 'Debe incluir el precio.');
+});
+
+test('Notifier Email - buildBlindMatchEmailHtml consolida varios matches e incluye el texto de la búsqueda', () => {
+  const matches = [
+    sampleBlindMatch(),
+    sampleBlindMatch({ property: { ...sampleBlindMatch().property, domicilio: 'Mendoza 123' } })
+  ];
+  const html = buildBlindMatchEmailHtml('Busco depto 2 dormitorios en alquiler', matches);
+
+  assert.ok(html.includes('Av. Alem 500'), 'Debe incluir la primera propiedad.');
+  assert.ok(html.includes('Mendoza 123'), 'Debe incluir la segunda propiedad.');
+  assert.ok(html.includes('Busco depto 2 dormitorios en alquiler'), 'Debe incluir el texto original de la búsqueda.');
+});
+
+test('Notifier Email - sendBlindMatchEmailFallback (KAN-48) devuelve false sin tocar la DB si no hay matches', async () => {
+  const throwingClient = { from: () => { throw new Error('no debería consultarse la DB sin matches'); } };
+
+  const result = await sendBlindMatchEmailFallback('tenant-1', 'Busco depto', [], throwingClient as any);
+
+  assert.strictEqual(result, false);
+});
+
+test('Notifier Email - sendBlindMatchEmailFallback envía el email al address del profile y devuelve true', async () => {
+  let sentTo: string | undefined;
+  let sentSubject: string | undefined;
+  __setResendClientForTests({
+    emails: {
+      send: async (opts: any) => {
+        sentTo = opts.to;
+        sentSubject = opts.subject;
+        return { data: { id: 'mock-id' }, error: null };
+      }
     }
-  }
+  });
+
+  const client = makeProfileClient({ email: 'agente@example.com' });
+  const result = await sendBlindMatchEmailFallback('tenant-1', 'Busco depto', [sampleBlindMatch()], client as any);
+
+  assert.strictEqual(result, true);
+  assert.strictEqual(sentTo, 'agente@example.com');
+  assert.ok(sentSubject?.includes('1 match'), 'El asunto debe reflejar la cantidad de matches.');
+});
+
+test('Notifier Email - sendBlindMatchEmailFallback devuelve false si el tenant no tiene email en profiles (sin intentar enviar)', async () => {
+  let sendCalled = false;
+  __setResendClientForTests({
+    emails: { send: async () => { sendCalled = true; return { data: { id: 'x' }, error: null }; } }
+  });
+
+  const client = makeProfileClient({ email: null });
+  const result = await sendBlindMatchEmailFallback('tenant-1', 'Busco depto', [sampleBlindMatch()], client as any);
+
+  assert.strictEqual(result, false);
+  assert.strictEqual(sendCalled, false, 'No debe intentar enviar si no hay email registrado.');
+});
+
+test('Notifier Email - sendBlindMatchEmailFallback devuelve false si Resend responde con error', async () => {
+  __setResendClientForTests({
+    emails: { send: async () => ({ data: null, error: { message: 'fallo simulado de Resend' } }) }
+  });
+
+  const client = makeProfileClient({ email: 'agente@example.com' });
+  const result = await sendBlindMatchEmailFallback('tenant-1', 'Busco depto', [sampleBlindMatch()], client as any);
+
+  assert.strictEqual(result, false);
 });
 
 test('Notifier Email - __setResendClientForTests permite inyectar un mock (nunca se manda mail real en el test suite)', () => {

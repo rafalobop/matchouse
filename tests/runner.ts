@@ -1,5 +1,6 @@
 // Importar todas las pruebas para que el test runner de Node las ejecute en orden
 import './unit-tests';
+import './activeSearches.test';
 import './ai.test';
 import './blindMatching.test';
 import './coordinator.test';
@@ -13,12 +14,15 @@ import './graph-pm.test';
 import './graph-po.test';
 import './graph-taskcreation.test';
 import './graph-techlead.test';
+import './idValidation.test';
+import './iosOnboarding.test';
 import './logger.test';
 import './matcher.test';
-import './notifier.test';
+import './notifications.test';
 import './notifier-email.test';
+import './profileValidation.test';
+import './searchExpiration.test';
 import './searchValidation.test';
 import './supabase.test';
-import './supabaseAuth.test';
-import './whatsapp.test';
-import './sessionCleanup.test';
+import './sw.test';
+import './webPush.test';

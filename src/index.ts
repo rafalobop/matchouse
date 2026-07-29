@@ -7,25 +7,19 @@ import cookieParser from 'cookie-parser';
 import multer from 'multer';
 import * as path from 'path';
 import * as fs from 'fs';
-import { randomUUID } from 'crypto';
-import {
-  initTenantSession,
-  loadSettings,
-  saveSettings,
-  getActiveGroups,
-  sessionStatuses,
-  logoutTenantSession
-} from './services/whatsapp';
 import { Property, processExcelBuffer, syncPropertiesToDatabase } from './services/excel';
 import { coordinator } from './services/coordinator';
 import { extractFromTextInput } from './services/ai';
 import { findCrossTenantMatches } from './services/blindMatching';
 import { validateFreeSearchText } from './utils/searchValidation';
-import { messageQueue } from './utils/queue';
-import { startNotificationService } from './services/notifier';
-import { startEmailNotificationService } from './services/notifier-email';
+import { calculateDaysRemaining } from './utils/activeSearches';
+import { validateProfileInput } from './utils/profileValidation';
+import { isValidUUID } from './utils/idValidation';
+import { sendWebPushToTenant, buildMatchFoundPushPayload, hasActivePushSubscriptions } from './services/webPush';
+import { startEmailNotificationService, sendBlindMatchEmailFallback } from './services/notifier-email';
+import { notifyMatchFound } from './services/notifications';
 import { startDolarService } from './services/dolar';
-import { startSessionCleanupService } from './services/sessionCleanup';
+import { startSearchExpirationService } from './services/searchExpiration';
 import { config } from './config/env';
 import { logger } from './services/logger';
 
@@ -281,60 +275,67 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 // ==========================================
+// ENDPOINTS DE PERFIL DE TENANT (KAN-64)
+// ==========================================
+// Con el retiro de WhatsApp/Baileys como canal de entrada, el agente inmobiliario completa su
+// perfil (telefono, inmobiliaria, ciudad, pais) despues del magic link, no via WhatsApp OTP.
+
+app.get('/api/profile', tenantAuthMiddleware, async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const tenantSupabase = (req as any).supabaseClient;
+
+  try {
+    const { data: profile, error } = await tenantSupabase
+      .from('profiles')
+      .select('id, full_name, email, phone_number, agency_name, city, country, profile_completed, created_at')
+      .eq('id', tenantId)
+      .single();
+
+    if (error) throw error;
+
+    res.json({ profile });
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId }, '[PERFIL] Error al obtener el perfil del tenant');
+    res.status(500).json({ error: error.message || 'Error interno al obtener el perfil.' });
+  }
+});
+
+app.post('/api/profile', tenantAuthMiddleware, async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const tenantSupabase = (req as any).supabaseClient;
+  const { phone_number, agency_name, city, country } = req.body;
+
+  const validationError = validateProfileInput({ phone_number, agency_name, city, country });
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
+  }
+
+  try {
+    const { data: profile, error } = await tenantSupabase
+      .from('profiles')
+      .update({
+        phone_number: (phone_number as string).trim(),
+        agency_name: (agency_name as string).trim(),
+        city: (city as string).trim(),
+        country: (country as string).trim(),
+        profile_completed: true
+      })
+      .eq('id', tenantId)
+      .select('id, full_name, email, phone_number, agency_name, city, country, profile_completed, created_at')
+      .single();
+
+    if (error) throw error;
+
+    res.json({ success: true, profile });
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId }, '[PERFIL] Error al actualizar el perfil del tenant');
+    res.status(500).json({ error: error.message || 'Error interno al actualizar el perfil.' });
+  }
+});
+
+// ==========================================
 // ENDPOINTS DE API PROTEGIDOS POR IP (TENANT)
 // ==========================================
-
-app.get('/api/status', tenantAuthMiddleware, async (req, res) => {
-  const tenantId = (req as any).tenantId;
-  const { initTenantSession } = require('./services/whatsapp');
-
-  // Comprobar el estado de sesión de WhatsApp
-  const { activeSessions, sessionStatuses } = require('./services/whatsapp');
-  let tenantStatus = sessionStatuses.get(tenantId);
-
-  // Auto-sanado: Si el tenant no está en activeSessions, volver a iniciarlo
-  if (!activeSessions.has(tenantId)) {
-    console.log(`[STATUS] Inicializando sesión de WhatsApp (provisional o caída) para tenant ${tenantId}...`);
-    initTenantSession(tenantId, {
-      onMessage: async (message: any, senderName: any, groupName: any, senderPhone: any, tId: any) => {
-        messageQueue.enqueue(async () => {
-          await coordinator.handleIncomingMessage(message.body, senderName, groupName, senderPhone, message.id, tId);
-        }, tId);
-      }
-    }).catch((err: any) => {
-      console.error(`[STATUS] Fallo de inicio automático de WhatsApp para tenant ${tenantId}:`, err);
-    });
-
-    tenantStatus = { status: 'INITIALIZING' };
-  }
-
-  res.json(tenantStatus || { status: 'DISCONNECTED' });
-});
-
-
-app.get('/api/groups', tenantAuthMiddleware, async (req, res) => {
-  const tenantId = (req as any).tenantId;
-  try {
-    const groups = await getActiveGroups(tenantId);
-    const settings = loadSettings(tenantId);
-    res.json({
-      groups,
-      selected: settings.selectedGroups
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'No se pudieron recuperar los grupos.' });
-  }
-});
-
-app.post('/api/groups', tenantAuthMiddleware, (req, res) => {
-  const tenantId = (req as any).tenantId;
-  const { selectedGroups } = req.body;
-  if (!Array.isArray(selectedGroups)) {
-    return res.status(400).json({ error: 'selectedGroups debe ser un array' });
-  }
-  saveSettings(tenantId, { selectedGroups });
-  res.json({ success: true });
-});
 
 app.post('/api/upload', tenantAuthMiddleware, upload.single('excelFile'), async (req, res) => {
   const tenantId = (req as any).tenantId;
@@ -432,9 +433,192 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
       search: { id: search.id, criteria: search.criteria, expires_at: search.expires_at },
       matches: mappedMatches
     });
+
+    // KAN-44: evento "match encontrado" en el único punto donde hoy se genera en vivo (una
+    // búsqueda nueva). GET /api/searches recalcula el mismo conteo cada 10s vía polling del
+    // dashboard (KAN-42) — engancharlo ahí spamearía un push por poll mientras la búsqueda siga
+    // activa. Fire-and-forget: no bloquea ni puede hacer fallar la respuesta ya enviada.
+    // Payload sin datos de la propiedad/contacto (esos ya viajaron en la respuesta HTTP, detrás
+    // de auth) — el push es solo un aviso genérico para evitar filtrar info de otro tenant por un
+    // canal sin control de acceso propio.
+    // KAN-48: email como respaldo permanente, no como reemplazo — notifyMatchFound() solo lo
+    // dispara si el tenant no tiene ninguna suscripción push activa, para no duplicar el aviso.
+    if (mappedMatches.length > 0) {
+      notifyMatchFound({
+        hasActivePush: () => hasActivePushSubscriptions(tenantId),
+        sendPush: () => sendWebPushToTenant(tenantId, buildMatchFoundPushPayload(search.id)),
+        sendEmailFallback: () => sendBlindMatchEmailFallback(tenantId, text, mappedMatches)
+      }).catch((notifyErr: any) => {
+        logger.error({ error: notifyErr.message || notifyErr, tenantId, searchId: search.id }, '[BUSQUEDA] Error al notificar el match encontrado (no afecta la búsqueda ya confirmada)');
+      });
+    }
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[BUSQUEDA] Error al procesar búsqueda de matching ciego');
     res.status(500).json({ error: error.message || 'Error interno al procesar la búsqueda.' });
+  }
+});
+
+// KAN-39: listado de búsquedas activas propias con conteo de matches cross-tenant. El conteo se
+// recalcula en vivo reusando findCrossTenantMatches (mismo motor que POST /api/search) porque el
+// matching ciego, por decisión explícita de KAN-37, no persiste los matches cruzados (no hay
+// tabla que relacione active_searches con propiedades de otro tenant) — no hay un contador
+// guardado del que leer, y recalcularlo es lo que garantiza que quede "consistente con la base".
+// Incluye 'expired' además de 'active' (antes solo traía 'active') para que el dashboard pueda
+// ofrecer "Reactivar" sobre búsquedas vencidas — 'matched'/'cancelled' (archivadas) quedan afuera.
+app.get('/api/searches', tenantAuthMiddleware, async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const tenantSupabase = (req as any).supabaseClient;
+
+  try {
+    const { data: searches, error } = await tenantSupabase
+      .from('active_searches')
+      .select('id, raw_text, criteria, status, created_at, expires_at')
+      .eq('tenant_id', tenantId)
+      .in('status', ['active', 'expired'])
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    const results = await Promise.all((searches || []).map(async (search: any) => {
+      let matchesCount = 0;
+      try {
+        const matches = await findCrossTenantMatches(tenantId, search.criteria);
+        matchesCount = matches.length;
+      } catch (matchError: any) {
+        logger.error({ error: matchError.message || matchError, tenantId, searchId: search.id }, '[BUSQUEDAS] Error al calcular el conteo de matches de una búsqueda activa');
+      }
+
+      return {
+        id: search.id,
+        raw_text: search.raw_text,
+        criteria: search.criteria,
+        status: search.status,
+        created_at: search.created_at,
+        expires_at: search.expires_at,
+        days_remaining: calculateDaysRemaining(search.expires_at),
+        matches_count: matchesCount
+      };
+    }));
+
+    res.json({ searches: results });
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId }, '[BUSQUEDAS] Error al listar búsquedas activas');
+    res.status(500).json({ error: error.message || 'Error interno al listar las búsquedas.' });
+  }
+});
+
+// KAN-40: baja de una búsqueda activa antes de que venza. Necesita distinguir 403 (existe pero es
+// de otro tenant) de 404 (no existe para nadie) - el cliente tenant-scoped con RLS de KAN-63 nunca
+// podría hacer esa distinción por sí solo (una fila ajena simplemente no aparece, sin importar si
+// existe o no), así que el chequeo de existencia/dueño se hace con el cliente service-role antes
+// de mutar con el cliente tenant-scoped (mismo patrón de "chequeo privilegiado + mutación
+// tenant-scoped" que ya usan otros endpoints de este archivo).
+// Cambio de semántica (dashboard visual): "eliminar" ya no es un hard delete — pasa a
+// status='cancelled' (archivada). El registro se conserva para auditoría/historial y deja de
+// aparecer en GET /api/searches (que solo trae 'active'/'expired').
+app.delete('/api/searches/:id', tenantAuthMiddleware, async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const tenantSupabase = (req as any).supabaseClient;
+  const { id } = req.params;
+
+  if (!isValidUUID(id)) {
+    return res.status(400).json({ error: 'El ID de la búsqueda está mal formado.' });
+  }
+
+  try {
+    const { supabase } = require('./services/supabase');
+
+    const { data: search, error: fetchError } = await supabase
+      .from('active_searches')
+      .select('id, tenant_id')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (fetchError) throw fetchError;
+    if (!search) {
+      return res.status(404).json({ error: 'La búsqueda no existe.' });
+    }
+    if (search.tenant_id !== tenantId) {
+      return res.status(403).json({ error: 'No tenés permiso para archivar esta búsqueda.' });
+    }
+
+    const { error: archiveError } = await tenantSupabase
+      .from('active_searches')
+      .update({ status: 'cancelled' })
+      .eq('id', id)
+      .eq('tenant_id', tenantId);
+
+    if (archiveError) throw archiveError;
+
+    logger.info({ tenantId, searchId: id }, '[AUDITORIA] Búsqueda archivada por su propietario');
+
+    sendWebPushToTenant(tenantId, {
+      title: 'Búsqueda archivada',
+      body: 'Diste de baja una búsqueda antes de que venciera.',
+      tag: `search-deleted-${id}`,
+      data: { url: '/' }
+    }).catch((pushErr: any) => {
+      logger.error({ error: pushErr.message || pushErr, tenantId, searchId: id }, '[BUSQUEDAS] Error al enviar la notificación de baja (no afecta el archivado ya confirmado)');
+    });
+
+    res.json({ success: true });
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId, searchId: id }, '[BUSQUEDAS] Error al archivar la búsqueda');
+    res.status(500).json({ error: error.message || 'Error interno al archivar la búsqueda.' });
+  }
+});
+
+// Reactivación de una búsqueda vencida (dashboard visual): solo válida desde status='expired',
+// vuelve a 'active' con 7 días nuevos de vencimiento a partir de ahora (mismo plazo que el trigger
+// de creación, `set_active_searches_expires_at`, que no aplica en UPDATE). Mismo patrón de
+// "chequeo privilegiado + mutación tenant-scoped" que DELETE de arriba.
+app.post('/api/searches/:id/reactivate', tenantAuthMiddleware, async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const tenantSupabase = (req as any).supabaseClient;
+  const { id } = req.params;
+
+  if (!isValidUUID(id)) {
+    return res.status(400).json({ error: 'El ID de la búsqueda está mal formado.' });
+  }
+
+  try {
+    const { supabase } = require('./services/supabase');
+
+    const { data: search, error: fetchError } = await supabase
+      .from('active_searches')
+      .select('id, tenant_id, status')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (fetchError) throw fetchError;
+    if (!search) {
+      return res.status(404).json({ error: 'La búsqueda no existe.' });
+    }
+    if (search.tenant_id !== tenantId) {
+      return res.status(403).json({ error: 'No tenés permiso para reactivar esta búsqueda.' });
+    }
+    if (search.status !== 'expired') {
+      return res.status(400).json({ error: 'Solo se pueden reactivar búsquedas vencidas.' });
+    }
+
+    const newExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    const { data: updated, error: updateError } = await tenantSupabase
+      .from('active_searches')
+      .update({ status: 'active', expires_at: newExpiresAt })
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .select('id, expires_at')
+      .single();
+
+    if (updateError) throw updateError;
+
+    logger.info({ tenantId, searchId: id }, '[AUDITORIA] Búsqueda reactivada por su propietario');
+
+    res.json({ success: true, expires_at: updated.expires_at });
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId, searchId: id }, '[BUSQUEDAS] Error al reactivar la búsqueda');
+    res.status(500).json({ error: error.message || 'Error interno al reactivar la búsqueda.' });
   }
 });
 
@@ -625,21 +809,25 @@ async function main() {
 
   const { supabase } = require('./services/supabase');
 
-  let sessions: any[] = [];
+  // KAN-64: la lista de tenants para precargar el catalogo en memoria salia antes de
+  // whatsapp_sessions (una fila por tenant con sesion de Baileys alguna vez iniciada) - esa
+  // tabla se elimino junto con el retiro de WhatsApp como canal de entrada. La fuente correcta
+  // ahora es profiles (todo agente inmobiliario registrado), sin depender de si alguna vez
+  // conecto WhatsApp.
+  let tenantIds: string[] = [];
   try {
     const { data, error } = await supabase
-      .from('whatsapp_sessions')
-      .select('*');
+      .from('profiles')
+      .select('id');
 
     if (error) throw error;
-    sessions = data || [];
+    tenantIds = (data || []).map((row: any) => row.id);
   } catch (e) {
-    console.warn('[MAIN - SUPABASE] No se pudo recuperar sesiones para arranque inicial:', e);
+    console.warn('[MAIN - SUPABASE] No se pudo recuperar la lista de tenants para el arranque inicial:', e);
   }
 
-  // Inicializar sesiones y catálogos de cada sesión registrada
-  for (const session of sessions) {
-    const tenantId = session.tenant_id;
+  // Precargar el catalogo en memoria de cada tenant registrado
+  for (const tenantId of tenantIds) {
     if (tenantId === '00000000-0000-0000-0000-000000000000') {
       continue;
     }
@@ -680,31 +868,16 @@ async function main() {
     }
 
     coordinator.setCatalog(tenantId, propertyCatalog);
-
-    // Iniciar conexión de WhatsApp persistente para el Tenant
-    initTenantSession(tenantId, {
-      onMessage: async (message, senderName, groupName, senderPhone, tId) => {
-        messageQueue.enqueue(async () => {
-          await coordinator.handleIncomingMessage(message.body, senderName, groupName, senderPhone, message.id, tId);
-        }, tId);
-      }
-    }).catch(err => {
-      console.error(`[ARRANQUE] Fallo de inicio de WhatsApp para tenant ${tenantId}:`, err);
-    });
   }
 
   // Iniciar servicio de cotización de Dólar Blue (dinámico y horaria)
   startDolarService();
 
-  // Iniciar servicio de desconexión de sesiones de WhatsApp de prueba (KAN-53)
-  startSessionCleanupService();
+  // Iniciar servicio de vencimiento de búsquedas sin match a los 7 días (KAN-41)
+  startSearchExpirationService();
 
-  // Iniciar servicio notificador consolidado según el canal configurado (NOTIFICATION_CHANNEL)
-  if (config.notificationChannel === 'email') {
-    startEmailNotificationService();
-  } else {
-    startNotificationService();
-  }
+  // Iniciar servicio notificador consolidado por email (único canal desde el retiro de WhatsApp)
+  startEmailNotificationService();
 
   // Levantar servidor Express
   app.listen(PORT, () => {

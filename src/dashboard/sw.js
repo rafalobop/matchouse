@@ -10,16 +10,16 @@ self.addEventListener('push', function(event) {
         data: data.data || {},
         tag: data.tag || 'housematch-notification',
         actions: [
-          { action: 'open', title: 'Ver Matches' }
+          { action: 'open', title: 'Tocá para ver' }
         ]
       };
       event.waitUntil(
-        self.registration.showNotification(data.title || 'HouseMatch', options)
+        self.registration.showNotification(data.title || 'Matchouse', options)
       );
     } catch (e) {
       console.error('Error al decodificar JSON del push:', e);
       event.waitUntil(
-        self.registration.showNotification('HouseMatch', {
+        self.registration.showNotification('Matchouse', {
           body: event.data.text()
         })
       );
