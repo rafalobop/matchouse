@@ -432,6 +432,24 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
       search: { id: search.id, criteria: search.criteria, expires_at: search.expires_at },
       matches: mappedMatches
     });
+
+    // KAN-44: evento "match encontrado" en el único punto donde hoy se genera en vivo (una
+    // búsqueda nueva). GET /api/searches recalcula el mismo conteo cada 10s vía polling del
+    // dashboard (KAN-42) — engancharlo ahí spamearía un push por poll mientras la búsqueda siga
+    // activa. Fire-and-forget: no bloquea ni puede hacer fallar la respuesta ya enviada.
+    // Payload sin datos de la propiedad/contacto (esos ya viajaron en la respuesta HTTP, detrás
+    // de auth) — el push es solo un aviso genérico para evitar filtrar info de otro tenant por un
+    // canal sin control de acceso propio.
+    if (mappedMatches.length > 0) {
+      sendWebPushToTenant(tenantId, {
+        title: 'Encontramos matches para tu búsqueda',
+        body: `Hay ${mappedMatches.length} propiedad${mappedMatches.length === 1 ? '' : 'es'} que podría${mappedMatches.length === 1 ? '' : 'n'} interesarte.`,
+        tag: `search-match-${search.id}`,
+        data: { url: '/' }
+      }).catch((pushErr: any) => {
+        logger.error({ error: pushErr.message || pushErr, tenantId, searchId: search.id }, '[BUSQUEDA] Error al enviar la notificación de match encontrado (no afecta la búsqueda ya confirmada)');
+      });
+    }
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[BUSQUEDA] Error al procesar búsqueda de matching ciego');
     res.status(500).json({ error: error.message || 'Error interno al procesar la búsqueda.' });
