@@ -15,6 +15,7 @@ import './graph-po.test';
 import './graph-taskcreation.test';
 import './graph-techlead.test';
 import './idValidation.test';
+import './iosOnboarding.test';
 import './logger.test';
 import './matcher.test';
 import './notifier-email.test';

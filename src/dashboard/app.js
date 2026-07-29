@@ -836,6 +836,37 @@ confirmRejectBtn.addEventListener('click', async () => {
 });
 
 // ==========================================
+// ONBOARDING iOS: agregar a pantalla de inicio (KAN-47)
+// ==========================================
+// iOS Safari solo soporta la Web Push API para PWAs agregadas a la pantalla de inicio (no en una
+// pestaña normal) - sin este banner, un usuario de iOS que toca "Activar notificaciones" no ve
+// ningún error, simplemente no pasa nada (initPushNotifications ya corta en silencio si
+// PushManager no está disponible). Este banner se muestra ANTES de que el usuario llegue a pedir
+// el permiso, para explicar el paso previo necesario.
+
+const IOS_INSTALL_DISMISS_KEY = 'matchouse-ios-install-dismissed';
+
+function initIosInstallOnboarding() {
+  const banner = document.getElementById('ios-install-banner');
+  if (!banner || !window.MatchouseIosOnboarding) return;
+
+  if (!window.MatchouseIosOnboarding.shouldShowIosInstallOnboarding()) return;
+  if (localStorage.getItem(IOS_INSTALL_DISMISS_KEY) === 'true') return;
+
+  banner.classList.remove('hidden');
+
+  const dismissBtn = document.getElementById('ios-install-dismiss-btn');
+  if (dismissBtn) {
+    dismissBtn.addEventListener('click', () => {
+      banner.classList.add('hidden');
+      localStorage.setItem(IOS_INSTALL_DISMISS_KEY, 'true');
+    });
+  }
+}
+
+initIosInstallOnboarding();
+
+// ==========================================
 // NOTIFICACIONES WEB PUSH
 // ==========================================
 
