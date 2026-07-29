@@ -21,6 +21,8 @@ import { findCrossTenantMatches } from './services/blindMatching';
 import { validateFreeSearchText } from './utils/searchValidation';
 import { calculateDaysRemaining } from './utils/activeSearches';
 import { validateProfileInput } from './utils/profileValidation';
+import { isValidUUID } from './utils/idValidation';
+import { sendWebPushToTenant } from './services/webPush';
 import { startNotificationService } from './services/notifier';
 import { startEmailNotificationService } from './services/notifier-email';
 import { startDolarService } from './services/dolar';
@@ -523,6 +525,64 @@ app.get('/api/searches', tenantAuthMiddleware, async (req, res) => {
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[BUSQUEDAS] Error al listar búsquedas activas');
     res.status(500).json({ error: error.message || 'Error interno al listar las búsquedas.' });
+  }
+});
+
+// KAN-40: baja de una búsqueda activa antes de que venza. Necesita distinguir 403 (existe pero es
+// de otro tenant) de 404 (no existe para nadie) - el cliente tenant-scoped con RLS de KAN-63 nunca
+// podría hacer esa distinción por sí solo (una fila ajena simplemente no aparece, sin importar si
+// existe o no), así que el chequeo de existencia/dueño se hace con el cliente service-role antes
+// de borrar con el cliente tenant-scoped (mismo patrón de "chequeo privilegiado + mutación
+// tenant-scoped" que ya usan otros endpoints de este archivo).
+app.delete('/api/searches/:id', tenantAuthMiddleware, async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const tenantSupabase = (req as any).supabaseClient;
+  const { id } = req.params;
+
+  if (!isValidUUID(id)) {
+    return res.status(400).json({ error: 'El ID de la búsqueda está mal formado.' });
+  }
+
+  try {
+    const { supabase } = require('./services/supabase');
+
+    const { data: search, error: fetchError } = await supabase
+      .from('active_searches')
+      .select('id, tenant_id')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (fetchError) throw fetchError;
+    if (!search) {
+      return res.status(404).json({ error: 'La búsqueda no existe.' });
+    }
+    if (search.tenant_id !== tenantId) {
+      return res.status(403).json({ error: 'No tenés permiso para eliminar esta búsqueda.' });
+    }
+
+    const { error: deleteError } = await tenantSupabase
+      .from('active_searches')
+      .delete()
+      .eq('id', id)
+      .eq('tenant_id', tenantId);
+
+    if (deleteError) throw deleteError;
+
+    logger.info({ tenantId, searchId: id }, '[AUDITORIA] Búsqueda eliminada por su propietario');
+
+    sendWebPushToTenant(tenantId, {
+      title: 'Búsqueda eliminada',
+      body: 'Diste de baja una búsqueda antes de que venciera.',
+      tag: `search-deleted-${id}`,
+      data: { url: '/' }
+    }).catch((pushErr: any) => {
+      logger.error({ error: pushErr.message || pushErr, tenantId, searchId: id }, '[BUSQUEDAS] Error al enviar la notificación de baja (no afecta la eliminación ya confirmada)');
+    });
+
+    res.json({ success: true });
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId, searchId: id }, '[BUSQUEDAS] Error al eliminar la búsqueda');
+    res.status(500).json({ error: error.message || 'Error interno al eliminar la búsqueda.' });
   }
 });
 
