@@ -39,6 +39,10 @@ const matchesTbody = document.getElementById('matches-tbody');
 
 // Elementos del DOM - Mis Búsquedas Activas
 const activeSearchesList = document.getElementById('active-searches-list');
+const searchTextInput = document.getElementById('search-text-input');
+const searchCharCounter = document.getElementById('search-char-counter');
+const submitSearchBtn = document.getElementById('submit-search-btn');
+const searchFormStatus = document.getElementById('search-form-status');
 
 // Elementos del DOM - Auth Magic Link
 const authOverlay = document.getElementById('auth-overlay');
@@ -805,6 +809,79 @@ function buildSearchSummary(criteria) {
   }
 
   return parts.join(' · ');
+}
+
+// Formulario de nueva búsqueda (KAN-43). Mismo límite de caracteres de control que
+// src/utils/searchValidation.ts en el backend (\n y \r permitidos, el resto no) — se filtra en
+// vivo para que el usuario nunca llegue a intentar enviar algo que el backend va a rechazar.
+const MAX_SEARCH_TEXT_LENGTH = 200;
+const SEARCH_CONTROL_CHARS_REGEX = /[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/g;
+
+function showSearchFormStatus(msg, type) {
+  if (!searchFormStatus) return;
+  searchFormStatus.innerText = msg;
+  searchFormStatus.className = 'status-msg';
+  if (type) searchFormStatus.classList.add(type);
+}
+
+function updateSearchCharCounter() {
+  if (!searchTextInput || !searchCharCounter) return;
+  const length = searchTextInput.value.length;
+  searchCharCounter.innerText = `${length}/${MAX_SEARCH_TEXT_LENGTH}`;
+  searchCharCounter.classList.toggle('limit-reached', length >= MAX_SEARCH_TEXT_LENGTH);
+}
+
+if (searchTextInput) {
+  searchTextInput.addEventListener('input', () => {
+    const cleaned = searchTextInput.value.replace(SEARCH_CONTROL_CHARS_REGEX, '');
+    if (cleaned !== searchTextInput.value) {
+      const cursor = Math.min(searchTextInput.selectionStart, cleaned.length);
+      searchTextInput.value = cleaned;
+      searchTextInput.setSelectionRange(cursor, cursor);
+    }
+    updateSearchCharCounter();
+  });
+}
+
+if (submitSearchBtn) {
+  submitSearchBtn.addEventListener('click', async () => {
+    const text = searchTextInput.value.trim();
+
+    if (!text) {
+      showSearchFormStatus('Escribí qué estás buscando antes de guardar.', 'error');
+      return;
+    }
+
+    submitSearchBtn.disabled = true;
+    submitSearchBtn.innerText = 'Buscando...';
+    showSearchFormStatus('Procesando tu búsqueda...', '');
+
+    try {
+      const res = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        showSearchFormStatus('¡Búsqueda guardada! Ya aparece en "Mis búsquedas activas".', 'success');
+        searchTextInput.value = '';
+        updateSearchCharCounter();
+        loadActiveSearches();
+        setTimeout(() => searchFormStatus.classList.add('hidden'), 4000);
+      } else {
+        showSearchFormStatus(data.error || 'No se pudo guardar la búsqueda.', 'error');
+      }
+    } catch (error) {
+      console.error('Error al enviar la búsqueda:', error);
+      showSearchFormStatus('Error de red al enviar la búsqueda.', 'error');
+    } finally {
+      submitSearchBtn.disabled = false;
+      submitSearchBtn.innerText = 'Buscar';
+    }
+  });
 }
 
 async function loadActiveSearches() {

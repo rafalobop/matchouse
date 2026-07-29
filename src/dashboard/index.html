@@ -154,8 +154,18 @@
         <h2>Mis Búsquedas Activas</h2>
         <span class="pulse-indicator">En Vivo</span>
       </div>
-      <p class="section-desc">Búsquedas de matching ciego que cargaste y que todavía están activas, con la cantidad de
-        coincidencias encontradas en la cartera de otros agentes y los días que faltan para que venzan.</p>
+      <p class="section-desc">Describí en texto libre qué propiedad buscás para tus clientes y la cruzamos
+        automáticamente contra la cartera de otros agentes.</p>
+
+      <div class="new-search-form">
+        <textarea id="search-text-input" class="search-text-input" maxlength="200" rows="3"
+          placeholder="Ej: Busco depto de 2 dormitorios en alquiler en Barrio Sur, hasta 300 USD..."></textarea>
+        <div class="search-form-footer">
+          <span id="search-char-counter" class="char-counter">0/200</span>
+          <button id="submit-search-btn" class="btn btn-primary btn-small">Buscar</button>
+        </div>
+        <p id="search-form-status" class="status-msg hidden"></p>
+      </div>
 
       <div id="active-searches-list" class="active-searches-list">
         <p class="list-placeholder">Cargando búsquedas activas...</p>
