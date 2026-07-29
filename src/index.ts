@@ -9,12 +9,10 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { randomUUID } from 'crypto';
 import {
-  initTenantSession,
   loadSettings,
   saveSettings,
   getActiveGroups,
-  sessionStatuses,
-  logoutTenantSession
+  sessionStatuses
 } from './services/whatsapp';
 import { Property, processExcelBuffer, syncPropertiesToDatabase } from './services/excel';
 import { coordinator } from './services/coordinator';
@@ -22,7 +20,7 @@ import { extractFromTextInput } from './services/ai';
 import { findCrossTenantMatches } from './services/blindMatching';
 import { validateFreeSearchText } from './utils/searchValidation';
 import { calculateDaysRemaining } from './utils/activeSearches';
-import { messageQueue } from './utils/queue';
+import { validateProfileInput } from './utils/profileValidation';
 import { startNotificationService } from './services/notifier';
 import { startEmailNotificationService } from './services/notifier-email';
 import { startDolarService } from './services/dolar';
@@ -282,33 +280,75 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 // ==========================================
+// ENDPOINTS DE PERFIL DE TENANT (KAN-64)
+// ==========================================
+// Con el retiro de WhatsApp/Baileys como canal de entrada, el agente inmobiliario completa su
+// perfil (telefono, inmobiliaria, ciudad, pais) despues del magic link, no via WhatsApp OTP.
+
+app.get('/api/profile', tenantAuthMiddleware, async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const tenantSupabase = (req as any).supabaseClient;
+
+  try {
+    const { data: profile, error } = await tenantSupabase
+      .from('profiles')
+      .select('id, full_name, email, phone_number, agency_name, city, country, profile_completed, created_at')
+      .eq('id', tenantId)
+      .single();
+
+    if (error) throw error;
+
+    res.json({ profile });
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId }, '[PERFIL] Error al obtener el perfil del tenant');
+    res.status(500).json({ error: error.message || 'Error interno al obtener el perfil.' });
+  }
+});
+
+app.post('/api/profile', tenantAuthMiddleware, async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const tenantSupabase = (req as any).supabaseClient;
+  const { phone_number, agency_name, city, country } = req.body;
+
+  const validationError = validateProfileInput({ phone_number, agency_name, city, country });
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
+  }
+
+  try {
+    const { data: profile, error } = await tenantSupabase
+      .from('profiles')
+      .update({
+        phone_number: (phone_number as string).trim(),
+        agency_name: (agency_name as string).trim(),
+        city: (city as string).trim(),
+        country: (country as string).trim(),
+        profile_completed: true
+      })
+      .eq('id', tenantId)
+      .select('id, full_name, email, phone_number, agency_name, city, country, profile_completed, created_at')
+      .single();
+
+    if (error) throw error;
+
+    res.json({ success: true, profile });
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId }, '[PERFIL] Error al actualizar el perfil del tenant');
+    res.status(500).json({ error: error.message || 'Error interno al actualizar el perfil.' });
+  }
+});
+
+// ==========================================
 // ENDPOINTS DE API PROTEGIDOS POR IP (TENANT)
 // ==========================================
 
+// KAN-64: WhatsApp/Baileys queda retirado como canal de entrada (ver seccion de perfil mas abajo
+// y CONTEXT.md) - ya no se inicia ninguna sesion nueva, ni aca ni en main(). El endpoint se deja
+// simplificado (sin el auto-sanado que reconectaba Baileys) para no romper al dashboard, que
+// todavia puede estar consultando este estado.
 app.get('/api/status', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
-  const { initTenantSession } = require('./services/whatsapp');
-
-  // Comprobar el estado de sesión de WhatsApp
-  const { activeSessions, sessionStatuses } = require('./services/whatsapp');
-  let tenantStatus = sessionStatuses.get(tenantId);
-
-  // Auto-sanado: Si el tenant no está en activeSessions, volver a iniciarlo
-  if (!activeSessions.has(tenantId)) {
-    console.log(`[STATUS] Inicializando sesión de WhatsApp (provisional o caída) para tenant ${tenantId}...`);
-    initTenantSession(tenantId, {
-      onMessage: async (message: any, senderName: any, groupName: any, senderPhone: any, tId: any) => {
-        messageQueue.enqueue(async () => {
-          await coordinator.handleIncomingMessage(message.body, senderName, groupName, senderPhone, message.id, tId);
-        }, tId);
-      }
-    }).catch((err: any) => {
-      console.error(`[STATUS] Fallo de inicio automático de WhatsApp para tenant ${tenantId}:`, err);
-    });
-
-    tenantStatus = { status: 'INITIALIZING' };
-  }
-
+  const tenantStatus = sessionStatuses.get(tenantId);
   res.json(tenantStatus || { status: 'DISCONNECTED' });
 });
 
@@ -673,21 +713,25 @@ async function main() {
 
   const { supabase } = require('./services/supabase');
 
-  let sessions: any[] = [];
+  // KAN-64: la lista de tenants para precargar el catalogo en memoria salia antes de
+  // whatsapp_sessions (una fila por tenant con sesion de Baileys alguna vez iniciada) - esa
+  // tabla se elimino junto con el retiro de WhatsApp como canal de entrada. La fuente correcta
+  // ahora es profiles (todo agente inmobiliario registrado), sin depender de si alguna vez
+  // conecto WhatsApp.
+  let tenantIds: string[] = [];
   try {
     const { data, error } = await supabase
-      .from('whatsapp_sessions')
-      .select('*');
+      .from('profiles')
+      .select('id');
 
     if (error) throw error;
-    sessions = data || [];
+    tenantIds = (data || []).map((row: any) => row.id);
   } catch (e) {
-    console.warn('[MAIN - SUPABASE] No se pudo recuperar sesiones para arranque inicial:', e);
+    console.warn('[MAIN - SUPABASE] No se pudo recuperar la lista de tenants para el arranque inicial:', e);
   }
 
-  // Inicializar sesiones y catálogos de cada sesión registrada
-  for (const session of sessions) {
-    const tenantId = session.tenant_id;
+  // Precargar el catalogo en memoria de cada tenant registrado
+  for (const tenantId of tenantIds) {
     if (tenantId === '00000000-0000-0000-0000-000000000000') {
       continue;
     }
@@ -728,17 +772,6 @@ async function main() {
     }
 
     coordinator.setCatalog(tenantId, propertyCatalog);
-
-    // Iniciar conexión de WhatsApp persistente para el Tenant
-    initTenantSession(tenantId, {
-      onMessage: async (message, senderName, groupName, senderPhone, tId) => {
-        messageQueue.enqueue(async () => {
-          await coordinator.handleIncomingMessage(message.body, senderName, groupName, senderPhone, message.id, tId);
-        }, tId);
-      }
-    }).catch(err => {
-      console.error(`[ARRANQUE] Fallo de inicio de WhatsApp para tenant ${tenantId}:`, err);
-    });
   }
 
   // Iniciar servicio de cotización de Dólar Blue (dinámico y horaria)
