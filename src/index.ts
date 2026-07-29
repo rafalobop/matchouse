@@ -27,6 +27,7 @@ import { startNotificationService } from './services/notifier';
 import { startEmailNotificationService } from './services/notifier-email';
 import { startDolarService } from './services/dolar';
 import { startSessionCleanupService } from './services/sessionCleanup';
+import { startSearchExpirationService } from './services/searchExpiration';
 import { config } from './config/env';
 import { logger } from './services/logger';
 
@@ -839,6 +840,9 @@ async function main() {
 
   // Iniciar servicio de desconexión de sesiones de WhatsApp de prueba (KAN-53)
   startSessionCleanupService();
+
+  // Iniciar servicio de vencimiento de búsquedas sin match a los 7 días (KAN-41)
+  startSearchExpirationService();
 
   // Iniciar servicio notificador consolidado según el canal configurado (NOTIFICATION_CHANNEL)
   if (config.notificationChannel === 'email') {
