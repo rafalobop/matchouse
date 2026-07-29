@@ -37,6 +37,9 @@ const saveStatus = document.getElementById('save-status');
 
 const matchesTbody = document.getElementById('matches-tbody');
 
+// Elementos del DOM - Mis Búsquedas Activas
+const activeSearchesList = document.getElementById('active-searches-list');
+
 // Elementos del DOM - Auth Magic Link
 const authOverlay = document.getElementById('auth-overlay');
 const authCardStep1 = document.getElementById('auth-card-step1');
@@ -74,6 +77,7 @@ let authCheckInterval = null;
 let statusInterval = null;
 let matchesInterval = null;
 let catalogInterval = null;
+let activeSearchesInterval = null;
 let isUserAuthenticated = false;
 let currentTenantInfo = null;
 
@@ -195,10 +199,12 @@ function startDashboardPolling() {
   checkStatus();
   loadCatalogInfo();
   loadMatches();
+  loadActiveSearches();
 
   statusInterval = setInterval(checkStatus, 1500);
   matchesInterval = setInterval(loadMatches, 2000);
   catalogInterval = setInterval(loadCatalogInfo, 5000);
+  activeSearchesInterval = setInterval(loadActiveSearches, 10000);
 }
 
 function stopDashboardPolling() {
@@ -213,6 +219,10 @@ function stopDashboardPolling() {
   if (catalogInterval) {
     clearInterval(catalogInterval);
     catalogInterval = null;
+  }
+  if (activeSearchesInterval) {
+    clearInterval(activeSearchesInterval);
+    activeSearchesInterval = null;
   }
 }
 
@@ -755,6 +765,86 @@ async function loadMatches() {
     });
   } catch (error) {
     console.error('Error al cargar historial de matches:', error);
+  }
+}
+
+// ==========================================
+// MIS BÚSQUEDAS ACTIVAS (MATCHING CIEGO - KAN-42)
+// ==========================================
+
+const SEARCH_STATUS_LABELS = {
+  active: 'Activa',
+  expired: 'Vencida',
+  matched: 'Con match confirmado',
+  cancelled: 'Cancelada'
+};
+
+const OPERATION_LABELS = {
+  venta: 'Venta',
+  alquiler: 'Alquiler',
+  desconocido: 'Operación sin especificar'
+};
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.innerText = str;
+  return div.innerHTML;
+}
+
+function buildSearchSummary(criteria) {
+  if (!criteria) return 'Búsqueda sin criterios detectados.';
+
+  const parts = [];
+  parts.push(OPERATION_LABELS[criteria.operation] || 'Operación sin especificar');
+
+  if (criteria.property_type) parts.push(criteria.property_type);
+  if (Array.isArray(criteria.zones) && criteria.zones.length > 0) parts.push(`en ${criteria.zones.join(', ')}`);
+  if (criteria.bedrooms) parts.push(`${criteria.bedrooms} dorm.`);
+  if (criteria.max_budget && criteria.currency && criteria.currency !== 'desconocido') {
+    parts.push(`hasta ${criteria.currency} ${criteria.max_budget}`);
+  }
+
+  return parts.join(' · ');
+}
+
+async function loadActiveSearches() {
+  if (!activeSearchesList) return;
+
+  try {
+    const res = await fetch('/api/searches');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const searches = data.searches || [];
+
+    if (searches.length === 0) {
+      activeSearchesList.innerHTML = '<p class="list-placeholder">No tenés búsquedas activas en este momento.</p>';
+      return;
+    }
+
+    activeSearchesList.innerHTML = '';
+    searches.forEach(search => {
+      const item = document.createElement('div');
+      item.className = 'active-search-item';
+
+      const statusKey = search.status || 'active';
+      const statusLabel = SEARCH_STATUS_LABELS[statusKey] || statusKey;
+      const isUrgent = search.days_remaining <= 2;
+
+      item.innerHTML = `
+        <div class="active-search-summary">${escapeHtml(buildSearchSummary(search.criteria))}</div>
+        <div class="active-search-raw-text">"${escapeHtml(search.raw_text)}"</div>
+        <div class="active-search-badges">
+          <span class="search-badge status-${statusKey}">${escapeHtml(statusLabel)}</span>
+          <span class="search-badge matches-count">🔎 ${search.matches_count} match${search.matches_count === 1 ? '' : 'es'}</span>
+          <span class="search-badge days-remaining${isUrgent ? ' urgent' : ''}">⏳ ${search.days_remaining} día${search.days_remaining === 1 ? '' : 's'} restante${search.days_remaining === 1 ? '' : 's'}</span>
+        </div>
+      `;
+
+      activeSearchesList.appendChild(item);
+    });
+  } catch (error) {
+    console.error('Error al cargar búsquedas activas:', error);
+    activeSearchesList.innerHTML = '<p class="list-placeholder error">Error al obtener tus búsquedas activas.</p>';
   }
 }
 
