@@ -1,6 +1,6 @@
 {
-  "short_name": "HouseMatch",
-  "name": "HouseMatch Dashboard",
+  "short_name": "Matchouse",
+  "name": "Matchouse Dashboard",
   "description": "WhatsApp Real Estate Pipeline",
   "start_url": "/",
   "background_color": "#0b1329",

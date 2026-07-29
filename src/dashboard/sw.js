@@ -14,12 +14,12 @@ self.addEventListener('push', function(event) {
         ]
       };
       event.waitUntil(
-        self.registration.showNotification(data.title || 'HouseMatch', options)
+        self.registration.showNotification(data.title || 'Matchouse', options)
       );
     } catch (e) {
       console.error('Error al decodificar JSON del push:', e);
       event.waitUntil(
-        self.registration.showNotification('HouseMatch', {
+        self.registration.showNotification('Matchouse', {
           body: event.data.text()
         })
       );

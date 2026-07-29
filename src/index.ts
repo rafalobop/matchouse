@@ -7,13 +7,6 @@ import cookieParser from 'cookie-parser';
 import multer from 'multer';
 import * as path from 'path';
 import * as fs from 'fs';
-import { randomUUID } from 'crypto';
-import {
-  loadSettings,
-  saveSettings,
-  getActiveGroups,
-  sessionStatuses
-} from './services/whatsapp';
 import { Property, processExcelBuffer, syncPropertiesToDatabase } from './services/excel';
 import { coordinator } from './services/coordinator';
 import { extractFromTextInput } from './services/ai';
@@ -23,10 +16,8 @@ import { calculateDaysRemaining } from './utils/activeSearches';
 import { validateProfileInput } from './utils/profileValidation';
 import { isValidUUID } from './utils/idValidation';
 import { sendWebPushToTenant } from './services/webPush';
-import { startNotificationService } from './services/notifier';
 import { startEmailNotificationService } from './services/notifier-email';
 import { startDolarService } from './services/dolar';
-import { startSessionCleanupService } from './services/sessionCleanup';
 import { startSearchExpirationService } from './services/searchExpiration';
 import { config } from './config/env';
 import { logger } from './services/logger';
@@ -345,41 +336,6 @@ app.post('/api/profile', tenantAuthMiddleware, async (req, res) => {
 // ENDPOINTS DE API PROTEGIDOS POR IP (TENANT)
 // ==========================================
 
-// KAN-64: WhatsApp/Baileys queda retirado como canal de entrada (ver seccion de perfil mas abajo
-// y CONTEXT.md) - ya no se inicia ninguna sesion nueva, ni aca ni en main(). El endpoint se deja
-// simplificado (sin el auto-sanado que reconectaba Baileys) para no romper al dashboard, que
-// todavia puede estar consultando este estado.
-app.get('/api/status', tenantAuthMiddleware, async (req, res) => {
-  const tenantId = (req as any).tenantId;
-  const tenantStatus = sessionStatuses.get(tenantId);
-  res.json(tenantStatus || { status: 'DISCONNECTED' });
-});
-
-
-app.get('/api/groups', tenantAuthMiddleware, async (req, res) => {
-  const tenantId = (req as any).tenantId;
-  try {
-    const groups = await getActiveGroups(tenantId);
-    const settings = loadSettings(tenantId);
-    res.json({
-      groups,
-      selected: settings.selectedGroups
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'No se pudieron recuperar los grupos.' });
-  }
-});
-
-app.post('/api/groups', tenantAuthMiddleware, (req, res) => {
-  const tenantId = (req as any).tenantId;
-  const { selectedGroups } = req.body;
-  if (!Array.isArray(selectedGroups)) {
-    return res.status(400).json({ error: 'selectedGroups debe ser un array' });
-  }
-  saveSettings(tenantId, { selectedGroups });
-  res.json({ success: true });
-});
-
 app.post('/api/upload', tenantAuthMiddleware, upload.single('excelFile'), async (req, res) => {
   const tenantId = (req as any).tenantId;
   if (!req.file) {
@@ -487,6 +443,8 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
 // matching ciego, por decisión explícita de KAN-37, no persiste los matches cruzados (no hay
 // tabla que relacione active_searches con propiedades de otro tenant) — no hay un contador
 // guardado del que leer, y recalcularlo es lo que garantiza que quede "consistente con la base".
+// Incluye 'expired' además de 'active' (antes solo traía 'active') para que el dashboard pueda
+// ofrecer "Reactivar" sobre búsquedas vencidas — 'matched'/'cancelled' (archivadas) quedan afuera.
 app.get('/api/searches', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
   const tenantSupabase = (req as any).supabaseClient;
@@ -496,7 +454,7 @@ app.get('/api/searches', tenantAuthMiddleware, async (req, res) => {
       .from('active_searches')
       .select('id, raw_text, criteria, status, created_at, expires_at')
       .eq('tenant_id', tenantId)
-      .eq('status', 'active')
+      .in('status', ['active', 'expired'])
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -533,8 +491,11 @@ app.get('/api/searches', tenantAuthMiddleware, async (req, res) => {
 // de otro tenant) de 404 (no existe para nadie) - el cliente tenant-scoped con RLS de KAN-63 nunca
 // podría hacer esa distinción por sí solo (una fila ajena simplemente no aparece, sin importar si
 // existe o no), así que el chequeo de existencia/dueño se hace con el cliente service-role antes
-// de borrar con el cliente tenant-scoped (mismo patrón de "chequeo privilegiado + mutación
+// de mutar con el cliente tenant-scoped (mismo patrón de "chequeo privilegiado + mutación
 // tenant-scoped" que ya usan otros endpoints de este archivo).
+// Cambio de semántica (dashboard visual): "eliminar" ya no es un hard delete — pasa a
+// status='cancelled' (archivada). El registro se conserva para auditoría/historial y deja de
+// aparecer en GET /api/searches (que solo trae 'active'/'expired').
 app.delete('/api/searches/:id', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
   const tenantSupabase = (req as any).supabaseClient;
@@ -558,32 +519,86 @@ app.delete('/api/searches/:id', tenantAuthMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'La búsqueda no existe.' });
     }
     if (search.tenant_id !== tenantId) {
-      return res.status(403).json({ error: 'No tenés permiso para eliminar esta búsqueda.' });
+      return res.status(403).json({ error: 'No tenés permiso para archivar esta búsqueda.' });
     }
 
-    const { error: deleteError } = await tenantSupabase
+    const { error: archiveError } = await tenantSupabase
       .from('active_searches')
-      .delete()
+      .update({ status: 'cancelled' })
       .eq('id', id)
       .eq('tenant_id', tenantId);
 
-    if (deleteError) throw deleteError;
+    if (archiveError) throw archiveError;
 
-    logger.info({ tenantId, searchId: id }, '[AUDITORIA] Búsqueda eliminada por su propietario');
+    logger.info({ tenantId, searchId: id }, '[AUDITORIA] Búsqueda archivada por su propietario');
 
     sendWebPushToTenant(tenantId, {
-      title: 'Búsqueda eliminada',
+      title: 'Búsqueda archivada',
       body: 'Diste de baja una búsqueda antes de que venciera.',
       tag: `search-deleted-${id}`,
       data: { url: '/' }
     }).catch((pushErr: any) => {
-      logger.error({ error: pushErr.message || pushErr, tenantId, searchId: id }, '[BUSQUEDAS] Error al enviar la notificación de baja (no afecta la eliminación ya confirmada)');
+      logger.error({ error: pushErr.message || pushErr, tenantId, searchId: id }, '[BUSQUEDAS] Error al enviar la notificación de baja (no afecta el archivado ya confirmado)');
     });
 
     res.json({ success: true });
   } catch (error: any) {
-    logger.error({ error: error.message || error, tenantId, searchId: id }, '[BUSQUEDAS] Error al eliminar la búsqueda');
-    res.status(500).json({ error: error.message || 'Error interno al eliminar la búsqueda.' });
+    logger.error({ error: error.message || error, tenantId, searchId: id }, '[BUSQUEDAS] Error al archivar la búsqueda');
+    res.status(500).json({ error: error.message || 'Error interno al archivar la búsqueda.' });
+  }
+});
+
+// Reactivación de una búsqueda vencida (dashboard visual): solo válida desde status='expired',
+// vuelve a 'active' con 7 días nuevos de vencimiento a partir de ahora (mismo plazo que el trigger
+// de creación, `set_active_searches_expires_at`, que no aplica en UPDATE). Mismo patrón de
+// "chequeo privilegiado + mutación tenant-scoped" que DELETE de arriba.
+app.post('/api/searches/:id/reactivate', tenantAuthMiddleware, async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const tenantSupabase = (req as any).supabaseClient;
+  const { id } = req.params;
+
+  if (!isValidUUID(id)) {
+    return res.status(400).json({ error: 'El ID de la búsqueda está mal formado.' });
+  }
+
+  try {
+    const { supabase } = require('./services/supabase');
+
+    const { data: search, error: fetchError } = await supabase
+      .from('active_searches')
+      .select('id, tenant_id, status')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (fetchError) throw fetchError;
+    if (!search) {
+      return res.status(404).json({ error: 'La búsqueda no existe.' });
+    }
+    if (search.tenant_id !== tenantId) {
+      return res.status(403).json({ error: 'No tenés permiso para reactivar esta búsqueda.' });
+    }
+    if (search.status !== 'expired') {
+      return res.status(400).json({ error: 'Solo se pueden reactivar búsquedas vencidas.' });
+    }
+
+    const newExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    const { data: updated, error: updateError } = await tenantSupabase
+      .from('active_searches')
+      .update({ status: 'active', expires_at: newExpiresAt })
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .select('id, expires_at')
+      .single();
+
+    if (updateError) throw updateError;
+
+    logger.info({ tenantId, searchId: id }, '[AUDITORIA] Búsqueda reactivada por su propietario');
+
+    res.json({ success: true, expires_at: updated.expires_at });
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId, searchId: id }, '[BUSQUEDAS] Error al reactivar la búsqueda');
+    res.status(500).json({ error: error.message || 'Error interno al reactivar la búsqueda.' });
   }
 });
 
@@ -838,18 +853,11 @@ async function main() {
   // Iniciar servicio de cotización de Dólar Blue (dinámico y horaria)
   startDolarService();
 
-  // Iniciar servicio de desconexión de sesiones de WhatsApp de prueba (KAN-53)
-  startSessionCleanupService();
-
   // Iniciar servicio de vencimiento de búsquedas sin match a los 7 días (KAN-41)
   startSearchExpirationService();
 
-  // Iniciar servicio notificador consolidado según el canal configurado (NOTIFICATION_CHANNEL)
-  if (config.notificationChannel === 'email') {
-    startEmailNotificationService();
-  } else {
-    startNotificationService();
-  }
+  // Iniciar servicio notificador consolidado por email (único canal desde el retiro de WhatsApp)
+  startEmailNotificationService();
 
   // Levantar servidor Express
   app.listen(PORT, () => {

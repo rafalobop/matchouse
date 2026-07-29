@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HouseMatch Dashboard</title>
+  <title>Matchouse Dashboard</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -13,28 +13,6 @@
 </head>
 
 <body>
-  <!-- Overlay de Sincronización en Pantalla Completa -->
-  <div id="loading-overlay" class="loading-overlay hidden">
-    <div class="overlay-card">
-      <div class="logo-area" style="justify-content: center; margin-bottom: 1.5rem; width: 100%;">
-        <span class="logo-icon">🏠</span>
-        <div>
-          <h1 style="font-size: 2rem;">HouseMatch</h1>
-          <p class="tagline" style="text-align: center;">WhatsApp Real Estate Pipeline</p>
-        </div>
-      </div>
-      <div class="spinner" style="width: 60px; height: 60px; border-width: 5px; margin: 0 auto 1.5rem;"></div>
-      <h3 id="overlay-title" style="margin-bottom: 0.5rem; font-size: 1.25rem;">Sincronizando WhatsApp...</h3>
-      <p id="overlay-desc" class="section-desc" style="text-align: center; margin-bottom: 1.5rem;">
-        Por favor espera mientras conectamos con WhatsApp Web.
-      </p>
-      <div class="progress-bar-container" style="width: 100%; height: 8px; background: rgba(255,255,255,0.05); border-radius: 4px; overflow: hidden; margin-top: 1rem; border: 1px solid var(--card-border);">
-        <div id="progress-bar" class="progress-bar" style="width: 0%; height: 100%; background: linear-gradient(to right, var(--accent), #8b5cf6); transition: width 0.3s ease-out;"></div>
-      </div>
-      <span id="progress-text" style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.5rem; display: block; text-align: center; font-weight: 600;">0%</span>
-    </div>
-  </div>
-
   <div class="background-decorations">
     <div class="blob blob-1"></div>
     <div class="blob blob-2"></div>
@@ -45,124 +23,57 @@
       <div class="logo-area">
         <span class="logo-icon">🏠</span>
         <div>
-          <h1>HouseMatch</h1>
-          <p class="tagline">WhatsApp Real Estate Pipeline</p>
+          <h1>Matchouse</h1>
+          <p class="tagline">Matching Inmobiliario entre Agentes</p>
         </div>
       </div>
-      <div style="display: flex; align-items: center; gap: 0.75rem;">
+      <div class="header-actions">
         <button id="btn-push-subscribe" class="btn btn-secondary btn-small hidden" style="display: flex; align-items: center; gap: 6px; font-weight: 600; padding: 0.4rem 0.8rem; border-radius: 8px;">🔔 Activar Notificaciones</button>
-        <div class="system-badge" id="system-badge">
-          <span class="badge-dot"></span>
-          <span class="badge-text" id="status-text">Conectando...</span>
+        <div id="tenant-session" class="tenant-session hidden">
+          <span id="tenant-email-text" class="tenant-email"></span>
+          <button id="logout-btn" class="btn btn-secondary btn-small">🚪 Cerrar Sesión</button>
         </div>
       </div>
     </header>
 
     <main class="dashboard-grid">
-      <!-- Sección izquierda: Conexión de WhatsApp -->
-      <section class="card connection-card">
-        <h2>Conexión de WhatsApp</h2>
-        <p class="section-desc">Escanea el código QR para autenticar tu cuenta de WhatsApp Web.</p>
-
-        <div class="qr-container" id="qr-container">
-          <div class="spinner"></div>
-          <p class="qr-placeholder-text">Cargando estado...</p>
-        </div>
-
-        <div id="user-info" class="user-info-box hidden" style="flex-direction: column; align-items: stretch; gap: 1rem;">
-          <div style="display: flex; align-items: center; gap: 1rem; width: 100%;">
-            <div class="user-avatar">💬</div>
-            <div class="user-details" style="flex: 1;">
-              <h3 id="user-name">Usuario Conectado</h3>
-              <p id="user-phone">+54 9 ...</p>
-            </div>
+      <!-- Inventario de Propiedades: widget compacto tipo stat-tile -->
+      <section class="card inventory-tile">
+        <div id="dropzone" class="dropzone inventory-dropzone">
+          <div class="inventory-icon">📊</div>
+          <div class="inventory-stat">
+            <strong id="properties-count">0</strong>
+            <span>Propiedades en tu cartera</span>
           </div>
-          <button id="logout-btn" class="btn btn-danger btn-small" style="width: 100%; margin-top: 0.5rem; display: flex; align-items: center; justify-content: center; gap: 6px;">🚪 Cerrar Sesión</button>
-        </div>
-      </section>
-
-      <!-- Sección central: Catálogo / Inventario -->
-      <section class="card upload-card">
-        <h2>Inventario de Propiedades</h2>
-        <p class="section-desc">Arrastra tu archivo Excel (.xlsx) con la cartera de propiedades. Se procesará en memoria
-          de forma segura.</p>
-
-        <div class="dropzone" id="dropzone">
-          <div class="dropzone-icon">📊</div>
-          <p class="dropzone-text">Arrastra tu archivo Excel aquí o haz clic para buscar</p>
+          <button id="upload-trigger-btn" class="btn btn-secondary btn-small" type="button">Cargar Excel (.xlsx)</button>
           <input type="file" id="file-input" accept=".xlsx" style="display: none;">
         </div>
-
         <div id="upload-status" class="status-msg hidden"></div>
-
-        <div class="catalog-info" id="catalog-info">
-          <div class="stat-row">
-            <span>Propiedades cargadas:</span>
-            <strong id="properties-count">0</strong>
-          </div>
-        </div>
-      </section>
-
-      <!-- Sección derecha: Filtro de Grupos -->
-      <section class="card groups-card">
-        <div class="card-header-actions">
-          <h2>Grupos a Monitorear</h2>
-          <button id="toggle-edit-groups-btn" class="btn btn-secondary btn-small" disabled>✏️ Editar Grupos</button>
-        </div>
-        <p class="section-desc">Selecciona los grupos de WhatsApp que el bot debe escuchar para procesar pedidos.</p>
-
-        <!-- Vista de Grupos Seleccionados (Lectura) -->
-        <div id="groups-view-section">
-          <div id="selected-groups-summary" class="selected-groups-summary hidden">
-            <strong>Grupos activos siendo escuchados:</strong>
-            <div id="selected-groups-tags" class="selected-groups-tags"></div>
-          </div>
-          <p id="no-groups-selected-msg" class="list-placeholder">Conecta WhatsApp para ver tus grupos...</p>
-        </div>
-
-        <!-- Sección de Edición (Oculta por defecto) -->
-        <div id="groups-edit-section" class="groups-edit-section hidden">
-          <div class="search-box">
-            <input type="text" id="group-search" placeholder="Buscar grupo por nombre...">
-          </div>
-
-          <div class="groups-list-container">
-            <div id="groups-list" class="groups-list">
-              <p class="list-placeholder">Cargando grupos de WhatsApp...</p>
-            </div>
-          </div>
-
-          <div style="margin-top: 1rem; border-top: 1px solid var(--card-border); padding-top: 1rem;">
-            <label style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem; display: block; font-weight: 500;">
-              O escribe los nombres de los grupos manualmente (uno por línea):
-            </label>
-            <textarea id="manual-groups-input" rows="3" style="width: 100%; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--card-border); border-radius: 8px; padding: 0.75rem; color: var(--text-primary); font-family: var(--font-family); font-size: 0.85rem; outline: none; resize: vertical; box-sizing: border-box;" placeholder="Ejemplo:&#10;Grupo Matchhouse&#10;Negocios Inmobiliarios"></textarea>
-          </div>
-
-          <div class="groups-edit-actions">
-            <button id="save-groups-btn" class="btn btn-primary">Guardar</button>
-            <button id="cancel-edit-groups-btn" class="btn btn-secondary">Cancelar</button>
-          </div>
-          <span id="save-status" class="save-status-msg"></span>
-        </div>
       </section>
     </main>
 
     <!-- Sección: Mis Búsquedas Activas (Matching Ciego) -->
     <section class="card active-searches-card">
-      <div class="card-header-actions">
-        <h2>Mis Búsquedas Activas</h2>
-        <span class="pulse-indicator">En Vivo</span>
+      <h2>Mis Búsquedas Activas</h2>
+      <p class="section-desc">Describí en texto libre qué propiedad buscás para tus clientes y la cruzamos
+        automáticamente contra la cartera de otros agentes.</p>
+
+      <div class="new-search-form">
+        <textarea id="search-text-input" class="search-text-input" maxlength="200" rows="3"
+          placeholder="Ej: Busco depto de 2 dormitorios en alquiler en Barrio Sur, hasta 300 USD..."></textarea>
+        <div class="search-form-footer">
+          <span id="search-char-counter" class="char-counter">0/200</span>
+          <button id="submit-search-btn" class="btn btn-primary btn-small">Buscar</button>
+        </div>
+        <p id="search-form-status" class="status-msg hidden"></p>
       </div>
-      <p class="section-desc">Búsquedas de matching ciego que cargaste y que todavía están activas, con la cantidad de
-        coincidencias encontradas en la cartera de otros agentes y los días que faltan para que venzan.</p>
 
       <div id="active-searches-list" class="active-searches-list">
         <p class="list-placeholder">Cargando búsquedas activas...</p>
       </div>
     </section>
 
-    <!-- Sección Inferior: Logs en Tiempo Real -->
+    <!-- Sección Inferior: Últimos Matches -->
     <section class="card matches-card">
       <div class="matches-header">
         <h2>Últimos Matches Encontrados</h2>
@@ -176,30 +87,12 @@
               <option value="score-asc">Score (Menor primero)</option>
             </select>
           </div>
-          <span class="pulse-indicator">En Vivo</span>
         </div>
       </div>
-      <p class="section-desc">Aquí se muestran las últimas coincidencias encontradas por el sistema antes de registrarse
-        en Sheets.</p>
+      <p class="section-desc">Hacé clic en cada match para ver el detalle completo.</p>
 
-      <div class="table-container">
-        <table id="matches-table">
-          <thead>
-            <tr>
-              <th>Fecha/Hora</th>
-              <th>Propiedad Cartera</th>
-              <th>Pedido WhatsApp</th>
-              <th>Solicitante</th>
-              <th>Score y Razones</th>
-              <th>Curación</th>
-            </tr>
-          </thead>
-          <tbody id="matches-tbody">
-            <tr>
-              <td colspan="5" class="table-placeholder">No se han registrado matches en esta sesión.</td>
-            </tr>
-          </tbody>
-        </table>
+      <div id="matches-list" class="matches-list">
+        <p class="table-placeholder">No se han registrado matches en esta sesión.</p>
       </div>
 
       <!-- Paginación -->
@@ -221,7 +114,7 @@
     <div class="modal-card">
       <h3>Rechazar Match</h3>
       <p class="section-desc">Selecciona el motivo de rechazo para ayudarnos a entrenar el modelo:</p>
-      
+
       <div class="rejection-options">
         <label class="radio-option">
           <input type="radio" name="rejection-reason" value="mal_filtrado" checked>
@@ -262,11 +155,11 @@
       <div class="logo-area" style="justify-content: center; margin-bottom: 1.5rem; width: 100%;">
         <span class="logo-icon">🏠</span>
         <div>
-          <h1 style="font-size: 2rem;">HouseMatch</h1>
-          <p class="tagline" style="text-align: center;">WhatsApp Real Estate Pipeline</p>
+          <h1 style="font-size: 2rem;">Matchouse</h1>
+          <p class="tagline" style="text-align: center;">Matching Inmobiliario entre Agentes</p>
         </div>
       </div>
-      <h3 style="margin-bottom: 0.5rem; font-size: 1.25rem; text-align: center;">Acceder a HouseMatch</h3>
+      <h3 style="margin-bottom: 0.5rem; font-size: 1.25rem; text-align: center;">Acceder a Matchouse</h3>
       <p class="section-desc" style="text-align: center; margin-bottom: 1.5rem;">
         Ingresá tu email para recibir un link de acceso instantáneo.
       </p>
