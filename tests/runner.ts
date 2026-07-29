@@ -22,3 +22,4 @@ import './profileValidation.test';
 import './searchExpiration.test';
 import './searchValidation.test';
 import './supabase.test';
+import './webPush.test';

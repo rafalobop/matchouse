@@ -9,6 +9,18 @@ import { logger } from './logger';
 
 webpush.setVapidDetails(config.vapidEmail, config.vapidPublicKey, config.vapidPrivateKey);
 
+// KAN-45: texto minimizado y fijo (no depende del conteo de matches ni de datos de la propiedad)
+// para que la notificación nunca filtre dirección/precio/contacto por un canal sin control de
+// acceso propio, sin importar quién la dispare.
+export function buildMatchFoundPushPayload(searchId: string): Record<string, unknown> {
+  return {
+    title: 'Matchouse',
+    body: 'Tenés un match nuevo — tocá para ver',
+    tag: `search-match-${searchId}`,
+    data: { url: '/' }
+  };
+}
+
 export async function sendWebPushToTenant(tenantId: string, payload: Record<string, unknown>): Promise<void> {
   try {
     const { data: subs, error } = await supabase
