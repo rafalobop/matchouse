@@ -23,11 +23,17 @@ import { startSearchExpirationService } from './services/searchExpiration';
 import { config } from './config/env';
 import { logger } from './services/logger';
 import { withTimeout } from './utils/withTimeout';
+import { createRateLimiter } from './utils/rateLimit';
 
 // Express Setup
 const app = express();
 const PORT = process.env.PORT || 3000;
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  // KAN-71: mitigación DoS complementaria al rate limit — sin este límite, memoryStorage()
+  // acepta un archivo de cualquier tamaño en memoria del proceso.
+  limits: { fileSize: config.uploadMaxFileSizeBytes }
+});
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('[PROCESO] Promesa no capturada (Unhandled Rejection):', reason);
@@ -80,6 +86,12 @@ function checkAuthRateLimit(ip: string): boolean {
   entry.count++;
   return true;
 }
+
+// KAN-71: rate limit por tenantId (no por IP) para POST /api/search y POST /api/upload — ambos
+// ya están detrás de tenantAuthMiddleware, así que la identidad estable a limitar es el tenant,
+// no la IP. Ver src/utils/rateLimit.ts y src/config/env.ts para los límites/ventanas.
+const searchRateLimiter = createRateLimiter(config.searchRateLimitMax, config.searchRateLimitWindowMs);
+const uploadRateLimiter = createRateLimiter(config.uploadRateLimitMax, config.uploadRateLimitWindowMs);
 
 // Cache en memoria de sesiones ya validadas contra Supabase. El dashboard pollea /api/status,
 // /api/matches y /api/catalog cada 1.5-5s; sin este cache, cada poll disparaba una llamada de red
@@ -324,7 +336,30 @@ app.post('/api/profile', tenantAuthMiddleware, async (req, res) => {
 // ENDPOINTS DE API PROTEGIDOS POR IP (TENANT)
 // ==========================================
 
-app.post('/api/upload', tenantAuthMiddleware, upload.single('excelFile'), async (req, res) => {
+app.post('/api/upload', tenantAuthMiddleware, (req, res, next) => {
+  // KAN-71: rate limit por tenant antes de invertir tiempo/memoria en parsear el archivo.
+  const tenantId = (req as any).tenantId;
+  if (!uploadRateLimiter.check(tenantId)) {
+    logger.warn({ tenantId }, '[UPLOAD] Rate limit excedido en POST /api/upload');
+    return res.status(429).json({ error: 'Demasiadas subidas de archivo. Esperá un minuto e intentá de nuevo.' });
+  }
+  next();
+}, (req, res, next) => {
+  // KAN-71: upload.single() envuelto a mano (en vez de pasarlo directo como middleware) para
+  // poder capturar el error de multer si el archivo supera uploadMaxFileSizeBytes y responder
+  // 413 con un mensaje claro, en vez de dejar que reviente como un 500 genérico sin manejar.
+  upload.single('excelFile')(req, res, (err: any) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        const maxMb = Math.floor(config.uploadMaxFileSizeBytes / (1024 * 1024));
+        return res.status(413).json({ error: `El archivo supera el tamaño máximo permitido (${maxMb}MB).` });
+      }
+      logger.error({ error: err.message, tenantId: (req as any).tenantId }, '[UPLOAD] Error de multer al procesar el archivo subido');
+      return res.status(400).json({ error: 'No se pudo procesar el archivo subido.' });
+    }
+    next();
+  });
+}, async (req, res) => {
   const tenantId = (req as any).tenantId;
   if (!req.file) {
     return res.status(400).json({ error: 'No se subió ningún archivo' });
@@ -361,6 +396,13 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
   const tenantSupabase = (req as any).supabaseClient;
   const { text } = req.body;
+
+  // KAN-71: rate limit por tenant — este endpoint dispara llamadas pagas a Gemini/OpenAI por
+  // request (extractFromTextInput), así que abuso acá tiene costo real, no solo carga de CPU.
+  if (!searchRateLimiter.check(tenantId)) {
+    logger.warn({ tenantId }, '[BUSQUEDA] Rate limit excedido en POST /api/search');
+    return res.status(429).json({ error: 'Demasiadas búsquedas. Esperá un minuto e intentá de nuevo.' });
+  }
 
   if (!text || typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'El texto de búsqueda es requerido.' });

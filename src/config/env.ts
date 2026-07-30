@@ -24,6 +24,11 @@ export interface Config {
   freeTextExtractionEnabled: boolean;
   searchExpirationIntervalMinutes: number;
   aiRequestTimeoutMs: number;
+  searchRateLimitMax: number;
+  searchRateLimitWindowMs: number;
+  uploadRateLimitMax: number;
+  uploadRateLimitWindowMs: number;
+  uploadMaxFileSizeBytes: number;
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -65,6 +70,25 @@ export function validateConfig(): Config {
   // espera la respuesta en el dashboard), así que no puede quedar colgado indefinidamente si el
   // proveedor de IA no responde.
   const aiRequestTimeoutMs = parseInt(cleanEnvVar(process.env.AI_REQUEST_TIMEOUT_MS) || '20000', 10);
+  // KAN-71: POST /api/search y POST /api/upload ya están detrás de tenantAuthMiddleware, pero
+  // eso no los protege de un tenant legítimo (o su token robado/filtrado) haciendo un uso
+  // abusivo — /api/search dispara llamadas pagas a Gemini/OpenAI por request, /api/upload hace
+  // un diff completo contra `properties`. Rate limit por tenantId (no por IP, a diferencia del
+  // limiter de /api/auth/*): son endpoints ya autenticados, así que la identidad real y estable
+  // es el tenant, no la IP (que puede ser compartida en una oficina o rotar).
+  // Búsqueda: uso normal es de a una por vez desde el formulario; 10/min dan margen amplio sin
+  // habilitar un loop de scraping.
+  const searchRateLimitMax = parseInt(cleanEnvVar(process.env.SEARCH_RATE_LIMIT_MAX) || '10', 10);
+  const searchRateLimitWindowMs = parseInt(cleanEnvVar(process.env.SEARCH_RATE_LIMIT_WINDOW_MS) || '60000', 10);
+  // Upload: cargar el catálogo completo es una acción administrativa poco frecuente (se sube el
+  // Excel entero de la cartera) — mismo cupo que el limiter de auth existente (5/min) por ser
+  // igual de infrecuente en tráfico legítimo.
+  const uploadRateLimitMax = parseInt(cleanEnvVar(process.env.UPLOAD_RATE_LIMIT_MAX) || '5', 10);
+  const uploadRateLimitWindowMs = parseInt(cleanEnvVar(process.env.UPLOAD_RATE_LIMIT_WINDOW_MS) || '60000', 10);
+  // Límite de tamaño del archivo Excel subido (mitigación DoS complementaria al rate limit: sin
+  // esto, multer.memoryStorage() acepta un archivo de cualquier tamaño en memoria del proceso).
+  // 10MB es generoso para un Excel de cartera de propiedades (formato de texto/celdas, no medios).
+  const uploadMaxFileSizeBytes = parseInt(cleanEnvVar(process.env.UPLOAD_MAX_FILE_SIZE_BYTES) || String(10 * 1024 * 1024), 10);
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
@@ -97,7 +121,12 @@ export function validateConfig(): Config {
     atlassianApiKey,
     freeTextExtractionEnabled,
     searchExpirationIntervalMinutes,
-    aiRequestTimeoutMs
+    aiRequestTimeoutMs,
+    searchRateLimitMax,
+    searchRateLimitWindowMs,
+    uploadRateLimitMax,
+    uploadRateLimitWindowMs,
+    uploadMaxFileSizeBytes
   };
 }
 
