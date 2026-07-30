@@ -44,20 +44,6 @@ export function groupMatchesByWhatsAppGroup(matches: any[]): Map<string, any[]> 
   return byGroup;
 }
 
-/**
- * Agrupa matches por mensaje de origen (mismo remitente + mismo texto), que es la unidad
- * que se consolida en un único email.
- */
-export function groupMatchesByMessage(matches: any[]): Map<string, any[]> {
-  const byMessage = new Map<string, any[]>();
-  matches.forEach((match) => {
-    const messageKey = `${match.whatsapp_sender_phone}|${match.raw_message_text}`;
-    if (!byMessage.has(messageKey)) byMessage.set(messageKey, []);
-    byMessage.get(messageKey)!.push(match);
-  });
-  return byMessage;
-}
-
 export function buildWhatsAppMessage(groupName: string, property: any, senderName?: string, requestText?: string): string {
   const greeting = senderName ? `Hola ${senderName}` : 'Hola';
 
@@ -109,125 +95,6 @@ export function buildEmailHtml(groupName: string, originalText: string, sender: 
   <img src="${pixelUrl}" width="1" height="1" alt="" style="display:none;" />
 </body>
 </html>`;
-}
-
-/**
- * Envía un único email consolidado con todos los matches de un mismo mensaje (mismo remitente +
- * mismo texto) y marca esos matches como notificados. Se usa tanto para el envío inmediato
- * (disparado apenas el coordinador termina de procesar un mensaje) como para el ciclo de
- * respaldo que reintenta matches que quedaron pendientes por algún error transitorio.
- */
-export async function sendEmailForMatchGroup(tenantId: string, matchGroup: any[]): Promise<boolean> {
-  if (!matchGroup || matchGroup.length === 0) return false;
-
-  const { data: profile, error: profileError } = await supabase
-    .from('profiles')
-    .select('email')
-    .eq('id', tenantId)
-    .single();
-
-  if (profileError || !profile?.email) {
-    logger.warn({ tenantId }, '[NOTIFIER-EMAIL] Tenant sin email registrado en profiles. Omitiendo.');
-    return false;
-  }
-
-  const first = matchGroup[0];
-  const html = buildEmailHtml(first.whatsapp_group_name, first.raw_message_text, first.whatsapp_sender_name, matchGroup);
-
-  try {
-    const resend = getResendClient();
-    const result = await resend.emails.send({
-      from: FROM_ADDRESS,
-      to: profile.email,
-      subject: `🏠 HouseMatch: ${matchGroup.length} match(es) para ${first.whatsapp_sender_name}`,
-      html
-    });
-
-    if (result.error) {
-      logger.error({ error: result.error, tenantId }, '[NOTIFIER-EMAIL] Resend devolvió un error al enviar.');
-      return false;
-    }
-
-    logger.info({ tenantId, matchCount: matchGroup.length, emailId: result.data?.id }, '[NOTIFIER-EMAIL] Email consolidado enviado con éxito.');
-
-    const { error: updateErr } = await supabase
-      .from('match_queue')
-      .update({ is_notified: true })
-      .in('id', matchGroup.map(m => m.id));
-
-    if (updateErr) {
-      logger.error({ error: updateErr.message, tenantId }, '[NOTIFIER-EMAIL] Error al actualizar estado de notificación en base de datos.');
-    }
-
-    return true;
-  } catch (sendErr: any) {
-    logger.error({ error: sendErr.message || sendErr, tenantId }, '[NOTIFIER-EMAIL] Error al despachar email consolidado.');
-    return false;
-  }
-}
-
-/**
- * Ciclo de respaldo: reintenta matches calificados que quedaron sin notificar (por ejemplo, por
- * un fallo transitorio en el envío inmediato). El envío primario ocurre apenas el coordinador
- * termina de procesar cada mensaje, ver `sendEmailForMatchGroup`.
- */
-export async function sendConsolidatedEmailNotifications(): Promise<void> {
-  logger.info('[NOTIFIER-EMAIL] Ejecutando ciclo de respaldo de notificación por email...');
-
-  try {
-    const { data: pendingMatches, error } = await supabase
-      .from('match_queue')
-      .select(`
-        id,
-        tenant_id,
-        score,
-        whatsapp_group_name,
-        whatsapp_sender_name,
-        whatsapp_sender_phone,
-        raw_message_text,
-        property:properties(*)
-      `)
-      .eq('is_notified', false)
-      .eq('is_valid', true)
-      .gte('score', 70);
-
-    if (error) throw error;
-
-    if (!pendingMatches || pendingMatches.length === 0) {
-      logger.info('[NOTIFIER-EMAIL] No hay matches pendientes de notificación.');
-      return;
-    }
-
-    const matchesByTenant = groupMatchesByTenant(pendingMatches);
-
-    for (const [tenantId, matches] of matchesByTenant.entries()) {
-      const matchesByMessage = groupMatchesByMessage(matches);
-      for (const matchGroup of matchesByMessage.values()) {
-        await sendEmailForMatchGroup(tenantId, matchGroup);
-      }
-    }
-  } catch (error: any) {
-    logger.error({ error: error.message || error }, '[NOTIFIER-EMAIL] Error general en el servicio notificador por email.');
-  }
-}
-
-let emailInterval: NodeJS.Timeout | null = null;
-
-/**
- * Inicia el loop en segundo plano del Notificador Consolidado por Email
- */
-export function startEmailNotificationService(): void {
-  const intervalMs = config.notificationIntervalMinutes * 60 * 1000;
-
-  logger.info({ intervalMinutes: config.notificationIntervalMinutes }, '[NOTIFIER-EMAIL] Iniciando servicio de notificaciones consolidadas por email.');
-
-  setTimeout(() => {
-    sendConsolidatedEmailNotifications();
-  }, 10000);
-
-  emailInterval = setInterval(() => {
-    sendConsolidatedEmailNotifications();
-  }, intervalMs);
 }
 
 // KAN-48: email como canal de respaldo permanente para el evento "match encontrado" del matching
@@ -308,9 +175,69 @@ export async function sendBlindMatchEmailFallback(tenantId: string, searchText: 
   }
 }
 
-export function stopEmailNotificationService(): void {
-  if (emailInterval) {
-    clearInterval(emailInterval);
-    emailInterval = null;
+// KAN-78: aviso al dueño de la propiedad matcheada de que un agente la buscó — dirección
+// recíproca a sendBlindMatchEmailFallback (que avisa al buscador). A diferencia del push
+// (genérico por privacidad, ver buildIncomingMatchPushPayload en webPush.ts), el email SÍ incluye
+// el contacto completo del buscador (nombre/teléfono/inmobiliaria) porque es un canal privado 1:1
+// con el dueño de la propiedad — sin este dato, el dueño no tiene forma de contactar al
+// interesado si no revisa el dashboard a tiempo (gap identificado en KAN-78).
+export function buildIncomingMatchEmailHtml(searcherSnapshot: { full_name: string | null; phone_number: string | null; agency_name: string | null }, searchText: string, matches: any[]): string {
+  const truncatedText = searchText.length > 150 ? `${searchText.substring(0, 150)}...` : searchText;
+  const rows = matches.map(buildBlindMatchPropertyRowHtml).join('\n');
+  const contactoLinea = [searcherSnapshot.full_name, searcherSnapshot.agency_name, searcherSnapshot.phone_number]
+    .filter(Boolean)
+    .join(' · ');
+
+  return `<!DOCTYPE html>
+<html>
+<body style="font-family:Arial,Helvetica,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px;margin:0;">
+  <div style="max-width:600px;margin:0 auto;">
+    <h2 style="color:#ffffff;">🏠 Matchouse — Un agente busca una propiedad como una de las tuyas</h2>
+    <p style="color:#94a3b8;">Búsqueda: "${truncatedText}"</p>
+    <p style="color:#f1f5f9;font-weight:600;">Contacto: ${contactoLinea || 'Sin datos de contacto disponibles'}</p>
+    <table style="width:100%;border-collapse:collapse;background:#1e293b;border-radius:8px;overflow:hidden;">
+      ${rows}
+    </table>
+    <p style="color:#64748b;font-size:12px;margin-top:16px;">Entrá a tu Dashboard de Matchouse para ver el detalle completo.</p>
+  </div>
+</body>
+</html>`;
+}
+
+export async function sendIncomingMatchEmailFallback(matchedTenantId: string, searcherSnapshot: { full_name: string | null; phone_number: string | null; agency_name: string | null }, searchText: string, matches: any[], client = supabase): Promise<boolean> {
+  if (!matches || matches.length === 0) return false;
+
+  const { data: profile, error: profileError } = await client
+    .from('profiles')
+    .select('email')
+    .eq('id', matchedTenantId)
+    .single();
+
+  if (profileError || !profile?.email) {
+    logger.warn({ matchedTenantId }, '[NOTIFIER-EMAIL] Dueño de propiedad matcheada sin email registrado en profiles. Omitiendo aviso entrante.');
+    return false;
+  }
+
+  const html = buildIncomingMatchEmailHtml(searcherSnapshot, searchText, matches);
+
+  try {
+    const resend = getResendClient();
+    const result = await resend.emails.send({
+      from: FROM_ADDRESS,
+      to: profile.email,
+      subject: `🏠 Matchouse: un agente busca ${matches.length} de tus propiedades`,
+      html
+    });
+
+    if (result.error) {
+      logger.error({ error: result.error, matchedTenantId }, '[NOTIFIER-EMAIL] Resend devolvió un error al enviar el aviso entrante.');
+      return false;
+    }
+
+    logger.info({ matchedTenantId, matchCount: matches.length, emailId: result.data?.id }, '[NOTIFIER-EMAIL] Email de aviso entrante (dueño de propiedad) enviado con éxito.');
+    return true;
+  } catch (sendErr: any) {
+    logger.error({ error: sendErr.message || sendErr, matchedTenantId }, '[NOTIFIER-EMAIL] Error al despachar el email de aviso entrante.');
+    return false;
   }
 }

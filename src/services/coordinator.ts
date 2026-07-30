@@ -1,17 +1,16 @@
 import { Property } from './excel';
 
 /**
- * Cachés en memoria por tenant: catálogo de propiedades cargado vía Excel/Sheets, y los últimos
- * matches conocidos (fallback de GET /api/matches si la consulta a match_queue falla).
+ * Caché en memoria por tenant del catálogo de propiedades cargado vía Excel/Sheets.
  *
- * El pipeline de ingesta que antes poblaba `recentMatches` (`handleIncomingMessage`, disparado por
- * mensajes entrantes de WhatsApp/Baileys) se retiró junto con `src/services/whatsapp.ts` — el
- * matching ahora es 100% web vía `active_searches`/`POST /api/search` (`src/services/blindMatching.ts`).
- * `recentMatches` queda como caché vacía y `getRecentMatches` solo se usa como fallback de lectura
- * de `match_queue` (datos históricos de la era WhatsApp).
+ * KAN-78: se eliminó `getRecentMatches`/`recentMatches` (Map en memoria que servía de fallback a
+ * GET /api/matches si la consulta a `match_queue` fallaba) — era dead code, permanentemente vacío
+ * desde que `handleIncomingMessage` (su único escritor, disparado por mensajes entrantes de
+ * WhatsApp/Baileys) se retiró junto con `src/services/whatsapp.ts`. `GET /api/matches` ahora lee
+ * directo de `blind_matches` y responde 500 real ante un error de DB, en vez de degradar en
+ * silencio a una lista vacía.
  */
 export class CoordinatorAgent {
-  private recentMatches = new Map<string, any[]>();
   private propertyCatalogs = new Map<string, Property[]>();
 
   /**
@@ -26,13 +25,6 @@ export class CoordinatorAgent {
    */
   getCatalog(tenantId: string): Property[] {
     return this.propertyCatalogs.get(tenantId) || [];
-  }
-
-  /**
-   * Obtiene los últimos matches registrados en memoria para un tenant
-   */
-  getRecentMatches(tenantId: string): any[] {
-    return this.recentMatches.get(tenantId) || [];
   }
 }
 

@@ -11,6 +11,7 @@ const uploadStatus = document.getElementById('upload-status');
 const propertiesCount = document.getElementById('properties-count');
 
 const matchesList = document.getElementById('matches-list');
+const incomingMatchesList = document.getElementById('incoming-matches-list');
 
 // Elementos del DOM - Mis Búsquedas Activas
 const activeSearchesList = document.getElementById('active-searches-list');
@@ -88,6 +89,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 15000, logTag = '
 let matchesInterval = null;
 let catalogInterval = null;
 let activeSearchesInterval = null;
+let incomingMatchesInterval = null;
 let isUserAuthenticated = false;
 let currentTenantInfo = null;
 
@@ -220,10 +222,12 @@ function startDashboardPolling() {
   loadCatalogInfo();
   loadMatches();
   loadActiveSearches();
+  loadIncomingMatches();
 
   matchesInterval = setInterval(loadMatches, 2000);
   catalogInterval = setInterval(loadCatalogInfo, 5000);
   activeSearchesInterval = setInterval(loadActiveSearches, 10000);
+  incomingMatchesInterval = setInterval(loadIncomingMatches, 10000);
 }
 
 function stopDashboardPolling() {
@@ -238,6 +242,10 @@ function stopDashboardPolling() {
   if (activeSearchesInterval) {
     clearInterval(activeSearchesInterval);
     activeSearchesInterval = null;
+  }
+  if (incomingMatchesInterval) {
+    clearInterval(incomingMatchesInterval);
+    incomingMatchesInterval = null;
   }
 }
 
@@ -393,9 +401,10 @@ let currentPage = 1;
 const pageSize = 10;
 let sortOption = 'fecha-desc';
 
+// KAN-78: blind_matches ya guarda el score como número — sin el regex sobre matchDetails
+// (texto libre del match_queue legacy) que hacía falta antes.
 function getScore(match) {
-  const m = match.matchDetails.match(/Score:\s*(\d+)%/i);
-  return m ? parseInt(m[1], 10) : 0;
+  return match.score || 0;
 }
 
 async function loadMatches() {
@@ -471,12 +480,12 @@ function buildMatchItem(m) {
 
   summary.innerHTML = `
     <div class="match-summary-main">
-      <strong>${m.property.domicilio}</strong>
-      <span class="match-summary-price">${m.property.moneda} ${m.property.precio} (${m.property.operacion})</span>
+      <strong>${escapeHtml(m.property.domicilio)}</strong>
+      <span class="match-summary-price">${escapeHtml(m.property.moneda)} ${m.property.precio} (${escapeHtml(m.property.operacion)})</span>
     </div>
     <div class="match-summary-meta">
       <span class="match-summary-date">${m.fecha}</span>
-      <span class="match-group-tag">${m.groupName || 'Grupo Desconocido'}</span>
+      <span class="match-score-badge">${m.score}%</span>
       ${statusBadgeHtml}
     </div>
   `;
@@ -486,27 +495,21 @@ function buildMatchItem(m) {
 
   const tdPedido = document.createElement('p');
   tdPedido.className = 'match-original-text';
-  tdPedido.innerText = `"${m.originalText}"`;
-
-  const tdSolicitante = document.createElement('p');
-  let contactHtml = m.contactSender;
-  const matchNumber = m.contactSender.match(/@(\d+)/);
-  if (matchNumber) {
-    const phone = matchNumber[1];
-    const name = m.contactSender.replace(`@${phone}`, '').replace(/[()]/g, '').trim();
-    contactHtml = `<a href="https://wa.me/${phone}" target="_blank" class="contact-link" title="Contactar por WhatsApp" style="color: #25d366; text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; gap: 4px;">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="display: inline-block; vertical-align: middle;"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946C.06 5.348 5.397.01 12.008.01c3.202.001 6.212 1.246 8.477 3.514 2.266 2.268 3.507 5.28 3.505 8.484-.004 6.657-5.34 11.997-11.953 11.997-2.005-.001-3.973-.502-5.724-1.455L0 24zm6.59-4.846c1.6.95 3.488 1.459 5.407 1.461 5.485.002 9.948-4.41 9.952-9.863.002-2.643-1.027-5.127-2.9-7c-1.873-1.873-4.365-2.905-7.008-2.906-5.485 0-9.94 4.41-9.947 9.86-.002 1.964.512 3.88 1.49 5.59L1.657 21.8l6.088-1.597c.001-.001.001-.001.002-.001zm10.182-7.872c-.299-.149-1.771-.875-2.045-.974-.275-.098-.476-.149-.675.149-.199.299-.771.974-.946 1.173-.174.199-.349.224-.648.075-1.137-.57-1.9-.943-2.654-2.24-.199-.349-.199-.567-.05-.716.134-.134.299-.349.448-.523.149-.174.199-.299.299-.497.099-.199.049-.373-.025-.522-.075-.149-.675-1.628-.925-2.227-.243-.584-.489-.505-.675-.514-.175-.008-.375-.01-.575-.01-.199 0-.523.075-.797.373-.274.299-1.047 1.022-1.047 2.49 0 1.468 1.069 2.887 1.219 3.086.149.199 2.099 3.205 5.087 4.496.71.307 1.265.49 1.696.627.713.227 1.362.195 1.875.118.571-.085 1.771-.724 2.02-1.42.249-.697.249-1.295.174-1.42-.075-.125-.274-.199-.573-.349z"/></svg>
-       @${phone}
-     </a> (${name})`;
-  }
-  tdSolicitante.innerHTML = `<strong>Solicitante:</strong> ${contactHtml}`;
+  tdPedido.innerText = `"${m.searchText}"`;
 
   const divDetails = document.createElement('div');
   divDetails.className = 'match-reasons';
-  divDetails.innerText = m.matchDetails;
+  if (Array.isArray(m.reasons) && m.reasons.length > 0) {
+    const ul = document.createElement('ul');
+    m.reasons.forEach(reason => {
+      const li = document.createElement('li');
+      li.innerText = reason;
+      ul.appendChild(li);
+    });
+    divDetails.appendChild(ul);
+  }
 
   body.appendChild(tdPedido);
-  body.appendChild(tdSolicitante);
   body.appendChild(divDetails);
 
   if (m.userReviewStatus === 'REJECTED') {
@@ -532,6 +535,95 @@ function buildMatchItem(m) {
     actionsDiv.appendChild(rejectBtn);
     body.appendChild(actionsDiv);
   }
+
+  details.appendChild(summary);
+  details.appendChild(body);
+  return details;
+}
+
+// ==========================================
+// INTERESADOS EN TUS PROPIEDADES (KAN-78) — dirección recíproca de "Últimos Matches
+// Encontrados": acá se ve quién buscó (y matcheó con) alguna de las propiedades propias, con sus
+// datos de contacto, para no depender 100% de que ese agente revise su propia notificación/email
+// a tiempo. Solo lectura: la curación (Aceptar/Rechazar) es exclusiva del buscador.
+// ==========================================
+
+async function loadIncomingMatches() {
+  if (!incomingMatchesList) return;
+
+  try {
+    const res = await fetch('/api/matches/incoming');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const matches = data.matches || [];
+
+    if (matches.length === 0) {
+      incomingMatchesList.innerHTML = '<p class="list-placeholder">Todavía nadie buscó ninguna de tus propiedades.</p>';
+      return;
+    }
+
+    incomingMatchesList.innerHTML = '';
+    matches.forEach(m => {
+      incomingMatchesList.appendChild(buildIncomingMatchItem(m));
+    });
+  } catch (error) {
+    console.error('Error al cargar matches entrantes:', error);
+    incomingMatchesList.innerHTML = '<p class="list-placeholder error">Error al obtener los interesados en tus propiedades.</p>';
+  }
+}
+
+function buildIncomingMatchItem(m) {
+  const details = document.createElement('details');
+  details.className = 'match-item';
+
+  const summary = document.createElement('summary');
+  summary.className = 'match-summary';
+  summary.innerHTML = `
+    <div class="match-summary-main">
+      <strong>${escapeHtml(m.property.domicilio)}</strong>
+      <span class="match-summary-price">${escapeHtml(m.property.moneda)} ${m.property.precio} (${escapeHtml(m.property.operacion)})</span>
+    </div>
+    <div class="match-summary-meta">
+      <span class="match-summary-date">${m.fecha}</span>
+      <span class="match-score-badge">${m.score}%</span>
+    </div>
+  `;
+
+  const body = document.createElement('div');
+  body.className = 'match-body';
+
+  const tdBusqueda = document.createElement('p');
+  tdBusqueda.className = 'match-original-text';
+  tdBusqueda.innerText = `"${m.searchText}"`;
+
+  const contact = m.searcherContact || {};
+  const phone = (contact.phone_number || '').replace(/\D/g, '');
+  const contactParts = [];
+  if (contact.full_name) contactParts.push(escapeHtml(contact.full_name));
+  if (contact.agency_name) contactParts.push(escapeHtml(contact.agency_name));
+  const contactLabel = contactParts.join(' · ') || 'Sin datos de contacto';
+  const phoneHtml = phone
+    ? `<a href="https://wa.me/${phone}" target="_blank" class="contact-link">${escapeHtml(contact.phone_number)}</a>`
+    : (contact.phone_number ? escapeHtml(contact.phone_number) : '');
+
+  const tdContacto = document.createElement('p');
+  tdContacto.innerHTML = `<strong>Interesado:</strong> ${contactLabel}${phoneHtml ? ` — ${phoneHtml}` : ''}`;
+
+  const divDetails = document.createElement('div');
+  divDetails.className = 'match-reasons';
+  if (Array.isArray(m.reasons) && m.reasons.length > 0) {
+    const ul = document.createElement('ul');
+    m.reasons.forEach(reason => {
+      const li = document.createElement('li');
+      li.innerText = reason;
+      ul.appendChild(li);
+    });
+    divDetails.appendChild(ul);
+  }
+
+  body.appendChild(tdBusqueda);
+  body.appendChild(tdContacto);
+  body.appendChild(divDetails);
 
   details.appendChild(summary);
   details.appendChild(body);
