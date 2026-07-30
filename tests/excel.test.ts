@@ -2,13 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert';
 import * as xlsx from 'xlsx';
 import { processExcelBuffer, syncPropertiesToDatabase, Property } from '../src/services/excel';
+import { GeocodeResult } from '../src/services/geocoding';
 
 // Mock mínimo del builder encadenable de Supabase, mismo patrón que tests/searchExpiration.test.ts.
 // `selectResult` controla la respuesta del fetch inicial (paso 1); `mutationResult` controla
-// la respuesta de upsert/delete (paso 5).
+// la respuesta de upsert/delete (paso 5). `upsertedRows` (KAN-80) captura el payload real
+// mandado a `.upsert()` para poder assertear las coordenadas resueltas.
 function buildMockSupabaseClient(options: {
   selectResult: { data: any[] | null; error: any };
   mutationResult?: { error: any };
+  upsertedRows?: any[];
 }) {
   const mutationResult = options.mutationResult ?? { error: null };
   return {
@@ -16,7 +19,10 @@ function buildMockSupabaseClient(options: {
       select: () => ({
         eq: () => Promise.resolve(options.selectResult)
       }),
-      upsert: () => Promise.resolve(mutationResult),
+      upsert: (rows: any[]) => {
+        options.upsertedRows?.push(...rows);
+        return Promise.resolve(mutationResult);
+      },
       delete: () => ({
         in: () => ({
           eq: () => Promise.resolve(mutationResult)
@@ -26,6 +32,10 @@ function buildMockSupabaseClient(options: {
   } as any;
 }
 
+// KAN-80: la mayoría de los tests preexistentes no le importa la geocodificación — se les da
+// lat/lng explícitas por default para que syncPropertiesToDatabase nunca dispare el path de
+// geocoding (que sin un `geocodeFn` inyectado pegaría a la red real). Los tests dedicados de
+// geocoding más abajo pisan `latitude`/`longitude` a `undefined` a propósito.
 function buildSampleProperty(overrides: Partial<Property> = {}): Property {
   return {
     address: 'Calle Falsa 123',
@@ -35,8 +45,14 @@ function buildSampleProperty(overrides: Partial<Property> = {}): Property {
     property_type: 'departamento',
     operation: 'venta',
     sheet_name: 'Hoja1',
+    latitude: -26.82,
+    longitude: -65.2,
     ...overrides
   } as Property;
+}
+
+function buildFakeGeocodeFn(result: GeocodeResult): (query: string) => Promise<GeocodeResult> {
+  return async () => result;
 }
 
 test('Excel Service - Debería retornar catálogo vacío o lanzar error para buffers sin datos', () => {
@@ -166,4 +182,96 @@ test('Excel Service - el endpoint de upload responde 200 cuando syncPropertiesTo
 
   assert.strictEqual(res.statusCode, 200, 'El endpoint debe responder 200 cuando la sincronización es exitosa.');
   assert.deepStrictEqual(res.body, { success: true, count: 1 });
+});
+
+// --- KAN-80: GeocodingService integrado en syncPropertiesToDatabase ---
+
+test('Excel Service - geocodifica una propiedad sin lat/lng en el Excel y persiste el resultado', async () => {
+  const upsertedRows: any[] = [];
+  const client = buildMockSupabaseClient({ selectResult: { data: [], error: null }, upsertedRows });
+  const property = buildSampleProperty({ latitude: undefined, longitude: undefined });
+
+  let calledWith: string | undefined;
+  const geocodeFn = async (query: string): Promise<GeocodeResult> => {
+    calledWith = query;
+    return { success: true, latitude: -26.83, longitude: -65.21 };
+  };
+
+  await syncPropertiesToDatabase([property], 'tenant-1', client, geocodeFn);
+
+  assert.ok(calledWith?.includes('Calle Falsa 123'), 'Debe geocodificar usando la dirección de la propiedad.');
+  assert.strictEqual(upsertedRows.length, 1);
+  assert.strictEqual(upsertedRows[0].latitude, -26.83);
+  assert.strictEqual(upsertedRows[0].longitude, -65.21);
+});
+
+test('Excel Service - una propiedad con geocoding fallido se persiste con lat/lng null (no 0/0)', async () => {
+  const upsertedRows: any[] = [];
+  const client = buildMockSupabaseClient({ selectResult: { data: [], error: null }, upsertedRows });
+  const property = buildSampleProperty({ latitude: undefined, longitude: undefined });
+
+  await syncPropertiesToDatabase(
+    [property],
+    'tenant-1',
+    client,
+    buildFakeGeocodeFn({ success: false, reason: 'No se encontraron coordenadas para la dirección' })
+  );
+
+  assert.strictEqual(upsertedRows.length, 1);
+  assert.strictEqual(upsertedRows[0].latitude, null, 'Debe quedar null, nunca 0, para que quede excluida del matching espacial.');
+  assert.strictEqual(upsertedRows[0].longitude, null);
+});
+
+test('Excel Service - no re-geocodifica una propiedad sin cambios que ya tenía coordenadas en la base', async () => {
+  const upsertedRows: any[] = [];
+  const client = buildMockSupabaseClient({
+    selectResult: {
+      data: [{
+        id: 'prop-1',
+        address: 'Calle Falsa 123',
+        floor: null,
+        unit: null,
+        block: null,
+        lot: null,
+        price: 100000,
+        contact_info: null,
+        sheet_name: 'Hoja1',
+        latitude: -26.9,
+        longitude: -65.3
+      }],
+      error: null
+    },
+    upsertedRows
+  });
+  const property = buildSampleProperty({ latitude: undefined, longitude: undefined });
+
+  let geocodeCalls = 0;
+  const geocodeFn = async (): Promise<GeocodeResult> => {
+    geocodeCalls++;
+    return { success: true, latitude: 0, longitude: 0 };
+  };
+
+  await syncPropertiesToDatabase([property], 'tenant-1', client, geocodeFn);
+
+  assert.strictEqual(geocodeCalls, 0, 'No debe llamar al geocoder si la propiedad ya existe con coordenadas resueltas.');
+  assert.strictEqual(upsertedRows[0].latitude, -26.9, 'Debe reutilizar la coordenada ya guardada en la base.');
+  assert.strictEqual(upsertedRows[0].longitude, -65.3);
+});
+
+test('Excel Service - respeta lat/lng explícitas del Excel sin llamar al geocoder', async () => {
+  const upsertedRows: any[] = [];
+  const client = buildMockSupabaseClient({ selectResult: { data: [], error: null }, upsertedRows });
+  const property = buildSampleProperty({ latitude: -26.5, longitude: -65.1 });
+
+  let geocodeCalls = 0;
+  const geocodeFn = async (): Promise<GeocodeResult> => {
+    geocodeCalls++;
+    return { success: true, latitude: 0, longitude: 0 };
+  };
+
+  await syncPropertiesToDatabase([property], 'tenant-1', client, geocodeFn);
+
+  assert.strictEqual(geocodeCalls, 0, 'Una columna de coordenadas explícita en el Excel no debe disparar geocoding.');
+  assert.strictEqual(upsertedRows[0].latitude, -26.5);
+  assert.strictEqual(upsertedRows[0].longitude, -65.1);
 });
