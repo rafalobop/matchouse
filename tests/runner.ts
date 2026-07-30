@@ -28,3 +28,4 @@ import './supabase.test';
 import './sw.test';
 import './webPush.test';
 import './withTimeout.test';
+import './zonesService.test';
