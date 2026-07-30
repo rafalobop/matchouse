@@ -93,7 +93,46 @@ CREATE POLICY "blind_matches_matched_tenant_read" ON public.blind_matches
 --   - blind_matches (KAN-78, reemplaza a match_queue, eliminada): ver política propia más arriba
 --     (tenant_id = auth.uid() para todo, matched_tenant_id = auth.uid() solo lectura)
 --   - neighborhood_groups/neighborhoods/neighborhood_aliases: RLS habilitado,
---     sin políticas (deny-all) — no hay código en src/ que las use hoy.
+--     sin políticas (deny-all) — leídas solo por src/services/zonesService.ts (KAN-85, ver
+--     entry en CONTEXT.md sección 5) con el cliente service-role, que bypassea RLS. No son
+--     datos de tenant: es taxonomía compartida de solo lectura, deny-all es intencional para
+--     bloquear acceso directo vía anon/authenticated key.
+--
+-- public.neighborhood_groups (KAN-85, poblada — 4 filas): id uuid PK, name text UNIQUE,
+--   description text nullable, created_at. Agrupa neighborhoods por heurística de prefijo de
+--   nombre ('Zonas', 'Barrios', 'Countries y Barrios Privados', 'Otros / Puntos de Interés') —
+--   zones.ts no tenía agrupación explícita, se infirió del nombre de cada zona.
+--
+-- public.neighborhoods (KAN-85, poblada — 189 filas, 1:1 con las 189 zonas de
+--   src/utils/constants/zones.ts): id uuid PK, group_id uuid FK -> neighborhood_groups
+--   (ON DELETE SET NULL, nullable), name text UNIQUE (mismo string que la key de zones.ts,
+--   ej. "ZONA_MATE_DE_LUNA"), boundary geometry(Polygon, 4326) NOT NULL (índice GiST
+--   idx_neighborhoods_spatial_boundary), created_at. Datos migrados y validados con
+--   scripts/gen-neighborhoods-migration.ts (script generador, no desechado — vuelve a correr
+--   si zones.ts cambia) + reparación manual post-seed de 4 polígonos con auto-intersección
+--   real (bowtie) detectada vía ST_IsValid/ST_MakeValid, no detectable por el generador (no
+--   corre GEOS). SQL aplicado íntegro en
+--   docs/evolucion_proyecto/neighborhoods_seed_kan85_2026-07-30.sql. 0 anomalías de
+--   cierre-de-anillo o fuera de bounding box tras la limpieza automática del generador.
+--
+-- public.neighborhood_aliases (KAN-85, poblada — 21 filas): id uuid PK, neighborhood_id uuid
+--   FK -> neighborhoods (ON DELETE CASCADE), alias text UNIQUE global (un alias mapea a un
+--   único neighborhood), índice btree sobre lower(alias). Migrados 1:1 solo los keywords NO
+--   ambiguos de classifyPropertyZoneId (src/utils/matcher.ts) — se excluyó a propósito el
+--   bloque `centroKeywords` (santiago/corrientes/laprida/...), que en el código original
+--   resuelve a ZONA_CENTRO o BARRIO_NORTE según una condición secundaria compuesta,
+--   irrepresentable como alias 1:1 con un UNIQUE global sobre `alias`; queda documentado en
+--   el SQL de seed para quien integre esto a resolvePropertyZoneId() a futuro. Anomalía real
+--   corregida en los datos: el keyword legacy 'san pablo' resolvía a YERBA_BUENA pese a
+--   existir un polígono SAN_PABLO propio y más preciso — el alias ahora apunta a SAN_PABLO.
+--
+-- public.neighborhood_for_point(lat double precision, lon double precision) (KAN-85, función
+--   SQL SECURITY DEFINER, solo EXECUTE para service_role): resuelve qué neighborhood contiene
+--   un punto vía ST_Contains, consumida por zonesService.ts#findNeighborhoodByPoint(). Sin
+--   invocadores en src/ todavía más allá de zonesService — no está enganchada a
+--   resolvePropertyZoneId()/matcher.ts (ver deuda técnica "Matching espacial PostGIS" en
+--   CONTEXT.md sección 5, deliberadamente fuera de alcance de KAN-85, que es solo
+--   taxonomía/datos, no el reemplazo del motor de matching en vivo).
 --   - spatial_ref_sys: deliberadamente NO se tocó (catálogo del sistema PostGIS,
 --     no datos de la app; algunas funciones de PostGIS lo consultan internamente).
 --
