@@ -5,6 +5,8 @@ import { randomUUID } from 'crypto';
 import { logger } from './logger';
 import { supabase as serviceRoleSupabase } from './supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { geocodeAddress, GeocodeResult } from './geocoding';
+import { buildGeocodableQuery } from '../utils/addressParser';
 export interface Property {
   // Address components (era: domicilio + pisoLote)
   address: string;
@@ -34,8 +36,12 @@ export interface Property {
 
   // Metadata
   sheet_name: string;          // era: sheetName
-  latitude?: number;           // era: latitud
-  longitude?: number;          // era: longitud
+  // KAN-80: nullable — `undefined` en un Property recién parseado del Excel significa "sin
+  // columna de coordenadas en la hoja" (se resuelve vía geocoding en syncPropertiesToDatabase);
+  // `null` en un Property rehidratado desde la base significa "se intentó geocodificar y falló"
+  // (ver GeocodingService). Nunca se cae a 0/0 como fallback silencioso (bug corregido en KAN-80).
+  latitude?: number | null;    // era: latitud
+  longitude?: number | null;   // era: longitud
 }
 
 // KAN-72: fila donde la celda de precio tenía contenido pero no se pudo interpretar como un
@@ -333,14 +339,22 @@ export function processExcelBuffer(buffer: Buffer): ProcessExcelResult {
 // única ruta HTTP autenticada que escribe en `properties` (/api/upload). Si no se pasa
 // ninguno, usa el cliente service-role (comportamiento previo, para no romper otros
 // llamadores hipotéticos fuera de un request HTTP).
-export async function syncPropertiesToDatabase(properties: Property[], tenantId: string, client: SupabaseClient = serviceRoleSupabase): Promise<void> {
+export async function syncPropertiesToDatabase(
+  properties: Property[],
+  tenantId: string,
+  client: SupabaseClient = serviceRoleSupabase,
+  // KAN-80: inyectable (mismo patrón que `client`) para poder testear sin pegarle a Nominatim
+  // real ni quedar atado a su límite de 1 request/seg durante la suite.
+  geocodeFn: (query: string) => Promise<GeocodeResult> = geocodeAddress
+): Promise<void> {
   try {
     logger.info({ propertiesCount: properties.length, tenantId }, '[SUPABASE] Iniciando sincronización de propiedades...');
 
-    // 1. Obtener todas las propiedades actuales de Supabase filtradas por tenant_id
+    // 1. Obtener todas las propiedades actuales de Supabase filtradas por tenant_id (incluye
+    // lat/lng ya resueltas para no re-geocodificar en cada subida una propiedad sin cambios).
     const { data: dbProps, error: fetchErr } = await client
       .from('properties')
-      .select('id, address, floor, unit, block, lot, price, contact_info, sheet_name')
+      .select('id, address, floor, unit, block, lot, price, contact_info, sheet_name, latitude, longitude')
       .eq('tenant_id', tenantId);
 
     if (fetchErr) {
@@ -351,18 +365,45 @@ export async function syncPropertiesToDatabase(properties: Property[], tenantId:
 
     // 2. Mapear en memoria los registros actuales
     const dbPropsMap = new Map<string, string>(); // clave -> id
+    const dbCoordsMap = new Map<string, { latitude: number | null; longitude: number | null }>(); // id -> coords ya resueltas
     dbProperties.forEach((p: any) => {
       const key = `${p.address}_${p.floor || ''}_${p.unit || ''}_${p.block || ''}_${p.lot || ''}_${p.price}_${p.contact_info || ''}_${p.sheet_name}`.toLowerCase().trim();
       dbPropsMap.set(key, p.id);
+      dbCoordsMap.set(p.id, { latitude: p.latitude ?? null, longitude: p.longitude ?? null });
     });
 
-    // 3. Iterar las propiedades frescas y clasificarlas
+    // 3. Iterar las propiedades frescas, clasificarlas y resolver lat/lng
     const upsertList: any[] = [];
     const matchedIds = new Set<string>();
 
-    properties.forEach(p => {
+    for (const p of properties) {
       const key = `${p.address}_${p.floor || ''}_${p.unit || ''}_${p.block || ''}_${p.lot || ''}_${p.price}_${p.contact_info || ''}_${p.sheet_name}`.toLowerCase().trim();
       const existingId = dbPropsMap.get(key);
+
+      let latitude: number | null = p.latitude ?? null;
+      let longitude: number | null = p.longitude ?? null;
+
+      if (latitude === null || longitude === null) {
+        const existingCoords = existingId ? dbCoordsMap.get(existingId) : undefined;
+        if (existingCoords && existingCoords.latitude !== null && existingCoords.longitude !== null) {
+          // Propiedad sin cambios y ya geocodificada en una sincronización previa: se reutiliza
+          // en vez de volver a consultar el servicio de geocoding (evita gasto/latencia inútil).
+          latitude = existingCoords.latitude;
+          longitude = existingCoords.longitude;
+        } else {
+          const { normalized } = buildGeocodableQuery({ address: p.address, zone_display_name: p.zone_display_name });
+          const geocodeResult = await geocodeFn(normalized);
+          if (geocodeResult.success) {
+            latitude = geocodeResult.latitude;
+            longitude = geocodeResult.longitude;
+            logger.info({ tenantId, address: p.address, latitude, longitude }, '[EXCEL] Propiedad geocodificada correctamente al sincronizar');
+          } else {
+            latitude = null;
+            longitude = null;
+            logger.warn({ tenantId, address: p.address, reason: geocodeResult.reason }, '[EXCEL] No se pudo geocodificar la propiedad, se guarda sin coordenadas');
+          }
+        }
+      }
 
       const propertyPayload = {
         id: existingId || randomUUID(),
@@ -380,8 +421,8 @@ export async function syncPropertiesToDatabase(properties: Property[], tenantId:
         operation: p.operation,
         property_type: p.property_type,
         sheet_name: p.sheet_name,
-        latitude: p.latitude || 0,
-        longitude: p.longitude || 0,
+        latitude,
+        longitude,
         tenant_id: tenantId
       };
 
@@ -389,7 +430,7 @@ export async function syncPropertiesToDatabase(properties: Property[], tenantId:
         matchedIds.add(existingId);
       }
       upsertList.push(propertyPayload);
-    });
+    }
 
     // 4. Generar lista de eliminaciones
     const deleteList: string[] = [];

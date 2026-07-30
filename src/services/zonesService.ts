@@ -169,8 +169,8 @@ export async function resolveNeighborhoodIdByText(text: string, client: Supabase
 }
 
 interface PropertyLocationFields {
-  latitude?: number;
-  longitude?: number;
+  latitude?: number | null;
+  longitude?: number | null;
   address: string;
   features?: string;
   sheet_name: string;
@@ -180,13 +180,15 @@ interface PropertyLocationFields {
 /**
  * Resuelve el id de zona (`neighborhoods.id`) de una propiedad (KAN-22): primero por punto
  * (`findNeighborhoodByPoint`, si tiene lat/lng válidas y distintas de 0/0), y si no hay coincidencia
- * (o no tiene coordenadas), cae a resolución por texto (`resolveNeighborhoodIdByText`) sobre
- * dirección + características + hoja + zona de origen. Devuelve `null` si ninguna de las dos vías
- * resuelve una zona — el llamador debe tratar eso como "zona desconocida", no como error.
+ * (o no tiene coordenadas — `undefined`/`null`, este último el caso de un geocoding fallido,
+ * KAN-80), cae a resolución por texto (`resolveNeighborhoodIdByText`) sobre dirección +
+ * características + hoja + zona de origen. Devuelve `null` si ninguna de las dos vías resuelve
+ * una zona — el llamador debe tratar eso como "zona desconocida", no como error.
  */
 export async function resolvePropertyZoneId(property: PropertyLocationFields, client: SupabaseClient = supabase): Promise<string | null> {
   if (
-    property.latitude !== undefined && property.longitude !== undefined &&
+    property.latitude !== undefined && property.latitude !== null &&
+    property.longitude !== undefined && property.longitude !== null &&
     property.latitude !== 0 && property.longitude !== 0
   ) {
     const byPoint = await findNeighborhoodByPoint(property.latitude, property.longitude, client);

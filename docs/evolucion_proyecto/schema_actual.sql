@@ -78,9 +78,10 @@ CREATE POLICY "blind_matches_matched_tenant_read" ON public.blind_matches
 --   price double precision, currency text CHECK (currency IN ('USD','ARS')),
 --   maintenance_fees double precision DEFAULT 0, bedrooms integer DEFAULT 0,
 --   features text, contact_info text, sheet_name text,
---   latitude double precision NOT NULL, longitude double precision NOT NULL (sin default —
---   confirmado por introspección real en KAN-63; el código siempre manda 0/0 como fallback,
---   ver excel.ts syncPropertiesToDatabase),
+--   latitude double precision NULL, longitude double precision NULL (sin default — eran NOT NULL
+--   desde KAN-63, con 0/0 como fallback silencioso del código; migración "make_properties_lat_lng_nullable"
+--   de KAN-80 las vuelve nullable: `null` ahora significa "geocoding falló", ver GeocodingService
+--   en src/services/geocoding.ts y syncPropertiesToDatabase en excel.ts),
 --   location geometry (PostGIS, nullable, no usada aún por resolvePropertyZoneId()),
 --   created_at timestamptz DEFAULT timezone('utc', now())
 --

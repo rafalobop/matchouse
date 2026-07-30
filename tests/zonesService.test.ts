@@ -307,6 +307,26 @@ test('resolvePropertyZoneId - sin coordenadas (o lat/lng en 0,0) cae directo al 
   assert.ok(!mockClient.calls.some((c) => c.method === 'rpc'), 'lat/lng en (0,0) debe tratarse como "sin coordenadas", sin llamar al RPC espacial.');
 });
 
+// KAN-80: lat/lng null es el estado real de una propiedad cuyo geocoding falló (ver
+// GeocodingService/syncPropertiesToDatabase) — no debe romper resolvePropertyZoneId ni intentar
+// llamar al RPC espacial con coordenadas inválidas; debe excluirse del matching espacial y caer
+// directo al fallback de texto, igual que "sin coordenadas".
+test('resolvePropertyZoneId - lat/lng null (geocoding fallido) no rompe y cae al fallback de texto', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const result = await resolvePropertyZoneId(
+    { latitude: null, longitude: null, address: 'Yerba Buena 1500', sheet_name: 'Ventas' },
+    mockClient as any
+  );
+
+  assert.strictEqual(result, 'n-yb');
+  assert.ok(!mockClient.calls.some((c) => c.method === 'rpc'), 'lat/lng null (geocoding fallido) no debe llamar al RPC espacial.');
+});
+
 test('resolvePropertyZoneId - si el punto no resuelve ninguna zona, cae al fallback de texto', async () => {
   __clearZoneKeywordCacheForTests();
   const mockClient = makeTableAwareMockClient(
