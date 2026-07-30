@@ -1,6 +1,5 @@
 import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../services/ai';
 import { Property } from '../services/excel';
-import { zones } from './constants/zones';
 import { getDolarBlueRate } from '../services/dolar';
 
 export interface MatchResult {
@@ -26,98 +25,8 @@ export interface IMatchingStrategy {
 
 
 
-/**
- * Ray-casting algorithm for Point-in-Polygon detection
- */
-function isPointInPolygon(latitude: number, longitude: number, polygon: number[][]): boolean {
-  let inside = false;
-  const x = longitude;
-  const y = latitude;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const xi = polygon[i][0], yi = polygon[i][1];
-    const xj = polygon[j][0], yj = polygon[j][1];
-
-    const intersect = ((yi > y) !== (yj > y))
-      && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
-    if (intersect) inside = !inside;
-  }
-  return inside;
-}
-
 function getPisoLoteText(p: Pick<Property, 'floor' | 'unit' | 'block' | 'lot'>): string {
   return [p.floor, p.unit, p.block, p.lot].filter(Boolean).join(' ');
-}
-
-/**
- * Clasifica de manera local el domicilio y características de una propiedad en un zona_id
- */
-export function classifyPropertyZoneId(property: Property): string {
-  if (property.latitude !== undefined && property.longitude !== undefined && property.latitude !== 0 && property.longitude !== 0) {
-    for (const [zoneId, zoneData] of Object.entries(zones)) {
-      if (zoneData.coordinates && isPointInPolygon(property.latitude, property.longitude, zoneData.coordinates)) {
-        return zoneId;
-      }
-    }
-  }
-
-  const text = `${property.address} ${property.features ?? ''} ${property.sheet_name} ${property.zone_display_name ?? ''}`.toLowerCase();
-
-  if (text.includes('mate de luna') || text.includes('parque avellaneda')) {
-    return 'ZONA_MATE_DE_LUNA';
-  }
-  if (
-    text.includes('yerba buena') ||
-    text.includes('aconquija') ||
-    text.includes('peron') ||
-    text.includes('perón') ||
-    text.includes('yb') ||
-    text.includes('las arboledas') ||
-    text.includes('san patricio') ||
-    text.includes('las cañas') ||
-    text.includes('san pablo') ||
-    text.includes('la arboleda')
-  ) {
-    return 'YERBA_BUENA';
-  }
-  if (text.includes('nogales')) {
-    return 'ZONA_LOS_NOGALES';
-  }
-  if (text.includes('tafi viejo') || text.includes('tafí viejo')) {
-    return 'ZONA_TAFI_VIEJO';
-  }
-  if (text.includes('lomas de tafi') || text.includes('lomas de tafí')) {
-    return 'ZONA_LOMAS_DE_TAFI';
-  }
-  if (text.includes('sur') || text.includes('barrio sur') || text.includes('b° sur')) {
-    return 'BARRIO_SUR';
-  }
-  if (text.includes('norte') || text.includes('barrio norte') || text.includes('b° norte')) {
-    return 'BARRIO_NORTE';
-  }
-
-  const centroKeywords = [
-    'santiago',
-    'corrientes',
-    'laprida',
-    'balcarce',
-    'muñecas',
-    'maipu',
-    'maipú',
-    '25 de mayo',
-    'santa fe',
-    'san martin',
-    'san martín',
-    'centro'
-  ];
-
-  if (centroKeywords.some(keyword => text.includes(keyword))) {
-    if (text.includes('9 de julio') || text.includes('congreso') || text.includes('las heras') || text.includes('ayacucho')) {
-      return 'ZONA_CENTRO';
-    }
-    return 'BARRIO_NORTE';
-  }
-
-  return 'DESCONOCIDO';
 }
 
 /**
@@ -197,26 +106,24 @@ export class CountryMatchingStrategy implements IMatchingStrategy {
   }
 }
 
-/**
- * Extension point for spatial zone matching.
- * TODO(spatial): Replace with PostGIS centroid+radius lookup when available.
- */
-export function resolvePropertyZoneId(property: Property): string {
-  return classifyPropertyZoneId(property);
-}
-
 export class ZoneMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Zona';
 
   evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
-    // 1. Validar por el Agente 2 (Geolocalización Inexacta / Intenciones) si existe
+    // 1. Validar por el Agente 2 (Geolocalización Inexacta / Intenciones) si existe. KAN-22: la
+    // zona real (PostGIS + alias, ver zonesService.resolvePropertyZoneId) se resuelve ANTES de
+    // llegar acá — esta estrategia es sync/sin red por diseño (matchRequestAgainstProperties se
+    // testea sin Supabase), así que solo compara el `neighborhood_id` ya estampado en la
+    // property (ver blindMatching.ts#findCrossTenantMatches) contra el del pedido.
     if (zoneIntent && zoneIntent.zona_id !== 'DESCONOCIDO') {
-      const propZoneId = resolvePropertyZoneId(property);
+      const propZoneId = property.neighborhood_id ?? null;
       if (propZoneId !== zoneIntent.zona_id) {
         return {
           isMatch: false,
           scoreDeduction: 0,
-          reason: `Zona de la propiedad (${propZoneId}) no coincide con la zona del pedido (${zoneIntent.zona_id})`
+          reason: propZoneId
+            ? `Zona de la propiedad (${propZoneId}) no coincide con la zona del pedido (${zoneIntent.zona_id})`
+            : `No se pudo determinar la zona de la propiedad para compararla con la del pedido (${zoneIntent.zona_id})`
         };
       }
       return { isMatch: true, scoreDeduction: 0, reason: `Coincidencia de Zona Geográfica: ${zoneIntent.zona_id}` };

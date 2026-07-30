@@ -5,6 +5,9 @@ import {
   listNeighborhoods,
   findNeighborhoodByAlias,
   findNeighborhoodByPoint,
+  resolveNeighborhoodIdByText,
+  resolvePropertyZoneId,
+  __clearZoneKeywordCacheForTests,
   ZonesServiceError
 } from '../src/services/zonesService';
 
@@ -138,4 +141,183 @@ test('findNeighborhoodByPoint - propaga errores del RPC como ZonesServiceError',
   const mockClient = makeMockClient({ error: { message: 'fallo simulado' } });
 
   await assert.rejects(() => findNeighborhoodByPoint(-26.82, -65.24, mockClient as any), ZonesServiceError);
+});
+
+// --- KAN-22: ST_Within + ST_DWithin (maxDistanceMeters opcional) ---
+
+test('findNeighborhoodByPoint (KAN-22) - sin maxDistanceMeters, no lo incluye en los params del RPC (usa el DEFAULT de la función en la base)', async () => {
+  const mockClient = makeMockClient({ rows: [] });
+
+  await findNeighborhoodByPoint(-26.82, -65.24, mockClient as any);
+
+  assert.deepStrictEqual(mockClient.calls[0], { method: 'rpc', args: ['neighborhood_for_point', { lat: -26.82, lon: -65.24 }] });
+});
+
+test('findNeighborhoodByPoint (KAN-22) - con maxDistanceMeters explícito, lo incluye en los params del RPC', async () => {
+  const mockClient = makeMockClient({ rows: [{ id: 'n1', name: 'YERBA_BUENA', group_id: 'g1', match_type: 'nearby' }] });
+
+  const result = await findNeighborhoodByPoint(-26.82, -65.24, mockClient as any, 300);
+
+  assert.deepStrictEqual(mockClient.calls[0], { method: 'rpc', args: ['neighborhood_for_point', { lat: -26.82, lon: -65.24, max_distance_meters: 300 }] });
+  assert.strictEqual(result?.id, 'n1');
+});
+
+// --- KAN-22: resolveNeighborhoodIdByText / resolvePropertyZoneId ---
+// Mock table-aware: a diferencia de makeMockClient (una sola tabla implícita por test), acá
+// getZoneKeywordIndex hace dos SELECT en paralelo (neighborhoods + neighborhood_aliases) que
+// necesitan devolver datos distintos en el mismo test.
+function makeTableAwareMockClient(tables: Record<string, { rows?: any[]; error?: any }>, rpc?: { rows?: any[]; error?: any }) {
+  const calls: { method: string; table?: string; args: any[] }[] = [];
+  return {
+    from: (table: string) => {
+      calls.push({ method: 'from', args: [table] });
+      const cfg = tables[table] || {};
+      return {
+        select: (...args: any[]) => {
+          calls.push({ method: 'select', table, args });
+          return Promise.resolve({ data: cfg.rows ?? [], error: cfg.error ?? null });
+        }
+      };
+    },
+    rpc: (fn: string, params: any) => {
+      calls.push({ method: 'rpc', args: [fn, params] });
+      return Promise.resolve({ data: rpc?.rows ?? [], error: rpc?.error ?? null });
+    },
+    calls
+  };
+}
+
+test('resolveNeighborhoodIdByText - resuelve por el nombre de una zona contenido en el texto', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }, { id: 'n-norte', name: 'Barrio Norte' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const result = await resolveNeighborhoodIdByText('busco depto 2 dorm en yerba buena con cochera', mockClient as any);
+
+  assert.strictEqual(result, 'n-yb');
+});
+
+test('resolveNeighborhoodIdByText - resuelve por alias cuando el nombre canónico no aparece en el texto', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
+    neighborhood_aliases: { rows: [{ alias: 'yb', neighborhood_id: 'n-yb' }] }
+  });
+
+  const result = await resolveNeighborhoodIdByText('busco algo por yb urgente', mockClient as any);
+
+  assert.strictEqual(result, 'n-yb');
+});
+
+test('resolveNeighborhoodIdByText - prioriza el keyword más largo/específico (evita que uno corto y genérico gane)', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-norte', name: 'Norte' }, { id: 'n-barrio-norte', name: 'Barrio Norte' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const result = await resolveNeighborhoodIdByText('busco en barrio norte', mockClient as any);
+
+  assert.strictEqual(result, 'n-barrio-norte', 'Debe preferir "barrio norte" (más específico) sobre "norte".');
+});
+
+test('resolveNeighborhoodIdByText (AC KAN-22) - Barrio Norte y Barrio Sur resuelven a ids distintos', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-norte', name: 'Barrio Norte' }, { id: 'n-sur', name: 'Barrio Sur' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const norte = await resolveNeighborhoodIdByText('busco en barrio norte', mockClient as any);
+  const sur = await resolveNeighborhoodIdByText('busco en barrio sur', mockClient as any);
+
+  assert.strictEqual(norte, 'n-norte');
+  assert.strictEqual(sur, 'n-sur');
+  assert.notStrictEqual(norte, sur, 'Barrio Norte y Barrio Sur deben resolver a zonas distintas.');
+});
+
+test('resolveNeighborhoodIdByText - devuelve null (no error) si ningún keyword conocido aparece en el texto', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const result = await resolveNeighborhoodIdByText('busco algo en marte', mockClient as any);
+
+  assert.strictEqual(result, null);
+});
+
+test('resolveNeighborhoodIdByText - texto vacío devuelve null sin consultar la base', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({ neighborhoods: { rows: [] }, neighborhood_aliases: { rows: [] } });
+
+  const result = await resolveNeighborhoodIdByText('   ', mockClient as any);
+
+  assert.strictEqual(result, null);
+  assert.deepStrictEqual(mockClient.calls, [], 'No debe consultar la base con texto vacío.');
+});
+
+test('resolveNeighborhoodIdByText - cachea el índice de keywords entre llamadas (no repite las 2 queries)', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  await resolveNeighborhoodIdByText('yerba buena', mockClient as any);
+  await resolveNeighborhoodIdByText('otra busqueda en yerba buena', mockClient as any);
+
+  const fromCalls = mockClient.calls.filter((c) => c.method === 'from');
+  assert.strictEqual(fromCalls.length, 2, 'Las 2 tablas (neighborhoods/neighborhood_aliases) deben consultarse una sola vez gracias al cache.');
+});
+
+test('resolvePropertyZoneId - resuelve por punto cuando la propiedad tiene lat/lng válidas', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient(
+    { neighborhoods: { rows: [] }, neighborhood_aliases: { rows: [] } },
+    { rows: [{ id: 'n-punto', name: 'ZONA_POR_PUNTO', group_id: 'g1', match_type: 'contains' }] }
+  );
+
+  const result = await resolvePropertyZoneId(
+    { latitude: -26.82, longitude: -65.24, address: 'Cualquier dirección', sheet_name: 'Ventas' },
+    mockClient as any
+  );
+
+  assert.strictEqual(result, 'n-punto');
+  assert.ok(mockClient.calls.some((c) => c.method === 'rpc'), 'Debe intentar resolver por punto primero.');
+  assert.ok(!mockClient.calls.some((c) => c.method === 'from'), 'No debe caer al fallback de texto si el punto ya resolvió.');
+});
+
+test('resolvePropertyZoneId - sin coordenadas (o lat/lng en 0,0) cae directo al fallback de texto', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const result = await resolvePropertyZoneId(
+    { latitude: 0, longitude: 0, address: 'Yerba Buena 1500', sheet_name: 'Ventas' },
+    mockClient as any
+  );
+
+  assert.strictEqual(result, 'n-yb');
+  assert.ok(!mockClient.calls.some((c) => c.method === 'rpc'), 'lat/lng en (0,0) debe tratarse como "sin coordenadas", sin llamar al RPC espacial.');
+});
+
+test('resolvePropertyZoneId - si el punto no resuelve ninguna zona, cae al fallback de texto', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient(
+    { neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] }, neighborhood_aliases: { rows: [] } },
+    { rows: [] } // RPC no encuentra nada (ni exacto ni cercano)
+  );
+
+  const result = await resolvePropertyZoneId(
+    { latitude: -26.82, longitude: -65.24, address: 'Yerba Buena 1500', sheet_name: 'Ventas' },
+    mockClient as any
+  );
+
+  assert.strictEqual(result, 'n-yb', 'Debe caer al fallback de texto cuando el punto no cae dentro ni cerca de ninguna zona.');
 });
