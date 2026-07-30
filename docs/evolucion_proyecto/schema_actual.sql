@@ -213,3 +213,26 @@ CREATE POLICY "blind_matches_matched_tenant_read" ON public.blind_matches
 -- confirmó Bitmap Index Scan sobre active_searches_tenant_id_idx (tenant_id, ~2%
 -- selectividad) e Index Scan sobre active_searches_status_idx (status='cancelled',
 -- ~10% selectividad) — ambos índices se usan y evitan el seq scan sobre 30k filas.
+--
+-- KAN-79 (2026-07-30): dirección cartera->búsqueda del matching bidireccional — hasta acá,
+-- `active_searches` solo se leía en la dirección búsqueda->cartera (KAN-37/38/39, `criteria`
+-- comparado en memoria contra properties de otros tenants). Cambios: `blind_matches` gana
+-- `property_id uuid` (nullable, SIN FK a properties — mismo criterio de KAN-78, solo para dedup
+-- de `POST /internal/property-match-check`) + índice parcial `idx_blind_matches_dedup
+-- (search_id, property_id) WHERE property_id IS NOT NULL`. Nuevos índices de expresión sobre
+-- `active_searches`: `idx_active_searches_criteria_operation`/`idx_active_searches_criteria_
+-- property_type` sobre `(criteria->>'operation')`/`(criteria->>'property_type')` WHERE
+-- status='active' — prefiltro SQL para `findMatchingActiveSearchesForProperty`
+-- (src/services/blindMatching.ts), simétrico a `idx_properties_meta_filters` del otro lado.
+--
+-- Extensión nueva: `pg_net` (async HTTP desde Postgres). Función `public.notify_property_uploaded()`
+-- (SECURITY DEFINER, `search_path` fijo, EXECUTE revocado a PUBLIC/anon/authenticated — ver
+-- docs/evolucion_proyecto/kan79_bidirectional_trigger_2026-07-30.sql) + trigger
+-- `property_uploaded_trigger` (AFTER INSERT ON properties, no UPDATE — decisión explícita)
+-- disparan `net.http_post` hacia `POST /internal/property-match-check` (endpoint nuevo en
+-- src/index.ts, sin sesión de usuario, protegido por un secreto compartido) cada vez que entra
+-- una propiedad nueva — 100% async, no bloquea el INSERT de /api/upload. Secreto y APP_URL viven
+-- en Supabase Vault (`internal_webhook_secret`/`app_url`, no en un GUC — `ALTER DATABASE ... SET
+-- app.settings.*` no está permitido para el rol de migraciones de este proyecto gestionado).
+-- **APP_URL sigue en el placeholder `http://localhost:3000`** — actualizar en Vault antes de
+-- confiar en el trigger contra producción real (ver el .sql de arriba para el comando exacto).

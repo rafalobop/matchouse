@@ -15,9 +15,11 @@ import { validateFreeSearchText } from './utils/searchValidation';
 import { calculateDaysRemaining } from './utils/activeSearches';
 import { validateProfileInput } from './utils/profileValidation';
 import { isValidUUID } from './utils/idValidation';
+import { isValidInternalWebhookSecret } from './utils/internalWebhookAuth';
 import { sendWebPushToTenant, buildMatchFoundPushPayload, buildIncomingMatchPushPayload, hasActivePushSubscriptions } from './services/webPush';
 import { sendBlindMatchEmailFallback, sendIncomingMatchEmailFallback } from './services/notifier-email';
 import { notifyMatchFound } from './services/notifications';
+import { processPropertyUploaded } from './services/propertyMatchWebhook';
 import { startDolarService } from './services/dolar';
 import { startSearchExpirationService } from './services/searchExpiration';
 import { config } from './config/env';
@@ -28,6 +30,7 @@ import {
   buildBlindMatchInsertRows,
   mapBlindMatchRowToDashboardShape,
   mapIncomingMatchRowToDashboardShape,
+  mapPropertyToBlindMatchShape,
   groupMatchesByMatchedTenant,
   SearcherSnapshot
 } from './utils/blindMatchPersistence';
@@ -456,19 +459,7 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
       tenant_id: m.tenant_id,
       score: m.score,
       reasons: m.reasons,
-      property: {
-        domicilio: m.property.address,
-        pisoLote: [m.property.floor, m.property.unit, m.property.block, m.property.lot].filter(Boolean).join(' '),
-        precio: m.property.price,
-        moneda: m.property.currency,
-        expensas: m.property.maintenance_fees || 0,
-        dormitorios: m.property.bedrooms,
-        caracteristicas: m.property.features || '',
-        contacto: m.property.contact_info || '',
-        operacion: m.property.operation,
-        tipo_propiedad: m.property.property_type,
-        sheetName: m.property.sheet_name
-      }
+      property: mapPropertyToBlindMatchShape(m.property)
     }));
 
     // KAN-78: persistencia del resultado del matching ciego — hasta este ticket, findCrossTenantMatches
@@ -773,6 +764,32 @@ app.get('/api/matches/incoming', tenantAuthMiddleware, async (req, res) => {
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[MATCHES] Error al recuperar matches entrantes de blind_matches');
     res.status(500).json({ error: error.message || 'Error interno al recuperar matches entrantes.' });
+  }
+});
+
+// KAN-79: endpoint interno SIN sesión de usuario — lo llama el trigger de Postgres
+// (property_uploaded_trigger, AFTER INSERT ON properties) vía pg_net cuando entra una propiedad
+// nueva, para la dirección cartera→búsqueda del matching bidireccional (complementaria a
+// POST /api/search, que ya cubre búsqueda→cartera). No usa tenantAuthMiddleware porque no hay JWT
+// de tenant en esta llamada — se protege con un secreto compartido en vez de una sesión.
+app.post('/internal/property-match-check', async (req, res) => {
+  const providedSecret = req.header('x-internal-secret');
+  if (!isValidInternalWebhookSecret(providedSecret, config.internalWebhookSecret)) {
+    logger.warn('[PROPERTY MATCH WEBHOOK] Intento de acceso sin secreto válido a /internal/property-match-check.');
+    return res.status(401).json({ error: 'No autorizado.' });
+  }
+
+  const { property_id } = req.body;
+  if (!isValidUUID(property_id)) {
+    return res.status(400).json({ error: 'property_id inválido.' });
+  }
+
+  try {
+    const result = await processPropertyUploaded(property_id);
+    res.status(200).json({ success: true, ...result });
+  } catch (error: any) {
+    logger.error({ error: error.message || error, propertyId: property_id }, '[PROPERTY MATCH WEBHOOK] Error al procesar el matching cartera→búsqueda.');
+    res.status(500).json({ error: 'Error interno al procesar el matching.' });
   }
 });
 

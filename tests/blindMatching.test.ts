@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import { matchRequestAgainstProperties, mapDbRowToProperty } from '../src/services/blindMatching';
+import {
+  matchRequestAgainstProperties,
+  mapDbRowToProperty,
+  matchActiveSearchesAgainstProperty,
+  findCrossTenantMatches,
+  findMatchingActiveSearchesForProperty,
+  ActiveSearchCandidate
+} from '../src/services/blindMatching';
 import { ExtractedRealEstateRequest } from '../src/services/ai';
 import { Property } from '../src/services/excel';
 
@@ -116,4 +123,173 @@ test('BlindMatching - findCrossTenantMatches (regresión QA KAN-37): una búsque
 
   assert.strictEqual(result.length, 1, 'Antes del fix, esta búsqueda con zona no devolvía ningún match aunque coincidiera en todo lo demás.');
   assert.strictEqual(result[0].tenant_id, 'tenant-b');
+});
+
+// KAN-79: mock mínimo de query builder encadenable, mismo estilo que tests/searchExpiration.ts —
+// distingue entre la tabla 'properties' (termina en .single()) y 'active_searches' (thenable, el
+// query builder real de supabase-js se puede awaitear directo sin .select()/.single() final).
+function makeCrossTenantMockClient(options: {
+  propertyRow?: any;
+  propertyError?: any;
+  searchRows?: any[];
+  searchError?: any;
+} = {}) {
+  const calls: { table: string; method: string; args: any[] }[] = [];
+
+  function propertiesBuilder() {
+    const builder: any = {
+      select: (...args: any[]) => { calls.push({ table: 'properties', method: 'select', args }); return builder; },
+      eq: (...args: any[]) => { calls.push({ table: 'properties', method: 'eq', args }); return builder; },
+      single: () => {
+        calls.push({ table: 'properties', method: 'single', args: [] });
+        return Promise.resolve({ data: options.propertyRow ?? null, error: options.propertyError ?? null });
+      }
+    };
+    return builder;
+  }
+
+  function activeSearchesBuilder() {
+    const builder: any = {
+      select: (...args: any[]) => { calls.push({ table: 'active_searches', method: 'select', args }); return builder; },
+      eq: (...args: any[]) => { calls.push({ table: 'active_searches', method: 'eq', args }); return builder; },
+      neq: (...args: any[]) => { calls.push({ table: 'active_searches', method: 'neq', args }); return builder; },
+      or: (...args: any[]) => { calls.push({ table: 'active_searches', method: 'or', args }); return builder; },
+      then: (resolve: any, reject: any) =>
+        Promise.resolve({ data: options.searchRows ?? [], error: options.searchError ?? null }).then(resolve, reject)
+    };
+    return builder;
+  }
+
+  return {
+    from: (table: string) => (table === 'properties' ? propertiesBuilder() : activeSearchesBuilder()),
+    calls
+  };
+}
+
+// Mock análogo, pero para findCrossTenantMatches (una sola tabla, 'properties', thenable directo
+// sin .single()).
+function makePropertiesOnlyMockClient(options: { rows?: any[]; error?: any } = {}) {
+  const calls: { method: string; args: any[] }[] = [];
+  const builder: any = {
+    select: (...args: any[]) => { calls.push({ method: 'select', args }); return builder; },
+    neq: (...args: any[]) => { calls.push({ method: 'neq', args }); return builder; },
+    eq: (...args: any[]) => { calls.push({ method: 'eq', args }); return builder; },
+    then: (resolve: any, reject: any) =>
+      Promise.resolve({ data: options.rows ?? [], error: options.error ?? null }).then(resolve, reject)
+  };
+  return {
+    from: (table: string) => { calls.push({ method: 'from', args: [table] }); return builder; },
+    calls
+  };
+}
+
+test('BlindMatching (KAN-79 AC1) - findCrossTenantMatches agrega el filtro SQL property_type cuando el pedido especifica un tipo concreto', async () => {
+  const mockClient = makePropertiesOnlyMockClient({ rows: [] });
+  const request = baseRequest({ operation: 'venta', property_type: 'casa' });
+
+  await findCrossTenantMatches('tenant-a', request, undefined, mockClient as any);
+
+  const eqCalls = mockClient.calls.filter(c => c.method === 'eq');
+  assert.deepStrictEqual(eqCalls.map(c => c.args), [['operation', 'venta'], ['property_type', 'casa']]);
+});
+
+test('BlindMatching (KAN-79 AC1) - findCrossTenantMatches NO filtra property_type en SQL cuando el pedido es "otro" (comodín)', async () => {
+  const mockClient = makePropertiesOnlyMockClient({ rows: [] });
+  const request = baseRequest({ operation: 'venta', property_type: 'otro' });
+
+  await findCrossTenantMatches('tenant-a', request, undefined, mockClient as any);
+
+  const eqCalls = mockClient.calls.filter(c => c.method === 'eq');
+  assert.deepStrictEqual(eqCalls.map(c => c.args), [['operation', 'venta']]);
+});
+
+test('BlindMatching (KAN-79) - matchActiveSearchesAgainstProperty: descarta candidatos que no matchean', () => {
+  const property = baseProperty({ operation: 'venta' });
+  const candidates: ActiveSearchCandidate[] = [
+    { tenant_id: 'tenant-b', search_id: 'search-1', raw_text: 'busco algo', criteria: baseRequest({ operation: 'alquiler' }) }
+  ];
+
+  const result = matchActiveSearchesAgainstProperty(property, candidates);
+
+  assert.strictEqual(result.length, 0, 'Una búsqueda con operación distinta no debe aparecer en los resultados.');
+});
+
+test('BlindMatching (KAN-79) - matchActiveSearchesAgainstProperty: atribuye tenant_id/search_id/raw_text correctos y ordena por score', () => {
+  // La propiedad tiene pileta pero no cochera: la búsqueda que pide 'cochera' (característica
+  // faltante) debe puntuar peor que la que pide 'pileta' (característica presente).
+  const property = baseProperty({ features: 'Cuenta con pileta climatizada' });
+  const candidates: ActiveSearchCandidate[] = [
+    { tenant_id: 'tenant-low', search_id: 'search-low', raw_text: 'busco con cochera', criteria: baseRequest({ key_features: ['cochera'] }) },
+    { tenant_id: 'tenant-high', search_id: 'search-high', raw_text: 'busco con pileta', criteria: baseRequest({ key_features: ['pileta'] }) }
+  ];
+
+  const result = matchActiveSearchesAgainstProperty(property, candidates);
+
+  assert.strictEqual(result.length, 2);
+  assert.strictEqual(result[0].tenant_id, 'tenant-high');
+  assert.strictEqual(result[0].search_id, 'search-high');
+  assert.strictEqual(result[0].raw_text, 'busco con pileta');
+  assert.ok(result[0].score > result[1].score);
+});
+
+test('BlindMatching (KAN-79) - matchActiveSearchesAgainstProperty: array vacío si no hay candidatos', () => {
+  const property = baseProperty();
+  assert.deepStrictEqual(matchActiveSearchesAgainstProperty(property, []), []);
+});
+
+test('BlindMatching (KAN-79) - findMatchingActiveSearchesForProperty: devuelve null y no consulta active_searches si la propiedad no existe', async () => {
+  const mockClient = makeCrossTenantMockClient({ propertyRow: null, propertyError: { message: 'no encontrada' } });
+
+  const result = await findMatchingActiveSearchesForProperty('prop-1', mockClient as any);
+
+  assert.strictEqual(result, null);
+  assert.ok(!mockClient.calls.some(c => c.table === 'active_searches'), 'No debe consultar active_searches si la propiedad no se pudo cargar.');
+});
+
+test('BlindMatching (KAN-79) - findMatchingActiveSearchesForProperty: prefiltra por status=active, tenant_id != dueño, y el comodín operation/property_type', async () => {
+  const propertyRow = {
+    id: 'prop-1', tenant_id: 'tenant-owner', address: 'Calle Nueva 100', price: 100000, currency: 'USD',
+    bedrooms: 2, operation: 'venta', property_type: 'casa', sheet_name: 'Ventas'
+  };
+  const mockClient = makeCrossTenantMockClient({ propertyRow, searchRows: [] });
+
+  await findMatchingActiveSearchesForProperty('prop-1', mockClient as any);
+
+  const searchCalls = mockClient.calls.filter(c => c.table === 'active_searches');
+  assert.deepStrictEqual(searchCalls.find(c => c.method === 'eq')?.args, ['status', 'active']);
+  assert.deepStrictEqual(searchCalls.find(c => c.method === 'neq')?.args, ['tenant_id', 'tenant-owner']);
+  const orArgs = searchCalls.filter(c => c.method === 'or').map(c => c.args[0]);
+  assert.deepStrictEqual(orArgs, [
+    'criteria->>operation.eq.desconocido,criteria->>operation.eq.venta',
+    'criteria->>property_type.eq.otro,criteria->>property_type.eq.casa'
+  ]);
+});
+
+test('BlindMatching (KAN-79) - findMatchingActiveSearchesForProperty: mapea las filas de active_searches y devuelve los matches', async () => {
+  const propertyRow = {
+    id: 'prop-1', tenant_id: 'tenant-owner', address: 'Calle Nueva 100', price: 100000, currency: 'USD',
+    bedrooms: 2, operation: 'venta', property_type: 'casa', sheet_name: 'Ventas'
+  };
+  const searchRows = [
+    { id: 'search-1', tenant_id: 'tenant-searcher', raw_text: 'busco casa', criteria: baseRequest({ operation: 'venta', property_type: 'casa' }) }
+  ];
+  const mockClient = makeCrossTenantMockClient({ propertyRow, searchRows });
+
+  const result = await findMatchingActiveSearchesForProperty('prop-1', mockClient as any);
+
+  assert.ok(result);
+  assert.strictEqual(result!.tenantId, 'tenant-owner');
+  assert.strictEqual(result!.matches.length, 1);
+  assert.strictEqual(result!.matches[0].tenant_id, 'tenant-searcher');
+  assert.strictEqual(result!.matches[0].search_id, 'search-1');
+});
+
+test('BlindMatching (KAN-79) - findMatchingActiveSearchesForProperty: propaga errores de la query de active_searches', async () => {
+  const propertyRow = {
+    id: 'prop-1', tenant_id: 'tenant-owner', address: 'Calle Nueva 100', price: 100000, currency: 'USD',
+    bedrooms: 2, operation: 'venta', property_type: 'casa', sheet_name: 'Ventas'
+  };
+  const mockClient = makeCrossTenantMockClient({ propertyRow, searchError: { message: 'fallo simulado' } });
+
+  await assert.rejects(() => findMatchingActiveSearchesForProperty('prop-1', mockClient as any));
 });

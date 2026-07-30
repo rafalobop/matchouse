@@ -29,6 +29,7 @@ export interface Config {
   uploadRateLimitMax: number;
   uploadRateLimitWindowMs: number;
   uploadMaxFileSizeBytes: number;
+  internalWebhookSecret: string;
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -89,6 +90,11 @@ export function validateConfig(): Config {
   // esto, multer.memoryStorage() acepta un archivo de cualquier tamaño en memoria del proceso).
   // 10MB es generoso para un Excel de cartera de propiedades (formato de texto/celdas, no medios).
   const uploadMaxFileSizeBytes = parseInt(cleanEnvVar(process.env.UPLOAD_MAX_FILE_SIZE_BYTES) || String(10 * 1024 * 1024), 10);
+  // KAN-79: secreto compartido de POST /internal/property-match-check — sin sesión de usuario (lo
+  // llama el trigger de Postgres vía pg_net, no un tenant), así que sin este secreto el endpoint
+  // quedaría abierto a cualquiera que adivine la URL. El mismo valor debe estar guardado en
+  // Supabase Vault (secret 'internal_webhook_secret'), leído por la función del trigger.
+  const internalWebhookSecret = cleanEnvVar(process.env.INTERNAL_WEBHOOK_SECRET);
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
@@ -100,6 +106,10 @@ export function validateConfig(): Config {
 
   if (!supabaseAnonKey) {
     throw new Error('Falta la variable de entorno SUPABASE_ANON_KEY. Por favor, configúrala en el archivo .env.');
+  }
+
+  if (!internalWebhookSecret) {
+    throw new Error('Falta la variable de entorno INTERNAL_WEBHOOK_SECRET. Por favor, configúrala en el archivo .env.');
   }
 
   return {
@@ -126,7 +136,8 @@ export function validateConfig(): Config {
     searchRateLimitWindowMs,
     uploadRateLimitMax,
     uploadRateLimitWindowMs,
-    uploadMaxFileSizeBytes
+    uploadMaxFileSizeBytes,
+    internalWebhookSecret
   };
 }
 
