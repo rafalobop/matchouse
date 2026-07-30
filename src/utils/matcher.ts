@@ -179,6 +179,19 @@ export class BudgetMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Presupuesto';
 
   evaluate(request: ExtractedRealEstateRequest, property: Property): MatchingResult {
+    // KAN-72: price <= 0 es dato faltante (celda vacía o precio no parseable en el Excel, ver
+    // processExcelBuffer), no un precio real de $0. Tratarlo como "sin datos de precio para
+    // comparar" en vez de dejar que la propiedad se salte el filtro de presupuesto sin dejar
+    // rastro — no se descarta (no hay base para asumir que excede el presupuesto), pero el
+    // motivo queda explícito para quien lea el match.
+    if (request.max_budget !== null && property.price <= 0) {
+      return {
+        isMatch: true,
+        scoreDeduction: 0,
+        reason: 'No se pudo comparar contra el presupuesto: la propiedad no tiene un precio cargado'
+      };
+    }
+
     if (request.max_budget !== null && property.price > 0) {
       let propertyPriceInReqCurrency = property.price;
       let conversionReason = '';

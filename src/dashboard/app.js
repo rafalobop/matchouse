@@ -365,7 +365,21 @@ async function handleFileUpload(file) {
     const data = await res.json();
 
     if (res.ok) {
-      showUploadStatus(`¡Éxito! Se cargaron ${data.count} propiedades.`, 'success');
+      if (data.priceParseErrors && data.priceParseErrors.length > 0) {
+        const preview = data.priceParseErrors
+          .slice(0, 5)
+          .map(e => `${e.address} ("${e.rawValue}")`)
+          .join(', ');
+        const extra = data.priceParseErrors.length > 5
+          ? ` y ${data.priceParseErrors.length - 5} más`
+          : '';
+        showUploadStatus(
+          `Se cargaron ${data.count} propiedades. ${data.priceParseErrors.length} con precio no reconocido (se cargaron sin precio): ${preview}${extra}.`,
+          'warning'
+        );
+      } else {
+        showUploadStatus(`¡Éxito! Se cargaron ${data.count} propiedades.`, 'success');
+      }
       loadCatalogInfo();
     } else {
       showUploadStatus(`Error: ${data.error || 'No se pudo procesar el archivo.'}`, 'error');

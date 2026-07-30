@@ -330,6 +330,12 @@ h1, h2, h3 {
   border: 1px solid var(--error-border);
 }
 
+.status-msg.warning {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border: 1px solid var(--warning-border);
+}
+
 /* Onboarding iOS: agregar la PWA a la pantalla de inicio (KAN-47) */
 .ios-install-banner {
   position: relative;
