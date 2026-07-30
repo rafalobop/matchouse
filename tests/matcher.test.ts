@@ -7,8 +7,7 @@ import {
   ZoneMatchingStrategy,
   BedroomsMatchingStrategy,
   BudgetMatchingStrategy,
-  FeaturesMatchingStrategy,
-  resolvePropertyZoneId
+  FeaturesMatchingStrategy
 } from '../src/utils/matcher';
 import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../src/services/ai';
 import { Property } from '../src/services/excel';
@@ -80,37 +79,54 @@ test('Matcher - CountryMatchingStrategy: rechaza cuando se pide country y la pro
   assert.strictEqual(result.isMatch, false);
 });
 
-// --- 4. Zone / resolvePropertyZoneId ---
-// Nota: resolvePropertyZoneId() NO es un stub que devuelve null (como afirma spec_0012) —
-// delega en classifyPropertyZoneId(), un heurístico real de keywords. Se testea ese comportamiento real.
-test('Matcher - resolvePropertyZoneId: no es un stub, clasifica por keywords reales', () => {
-  assert.strictEqual(resolvePropertyZoneId(baseProperty({ address: 'Nogales 123' })), 'ZONA_LOS_NOGALES');
-  assert.strictEqual(resolvePropertyZoneId(baseProperty({ address: 'Sin ninguna keyword conocida' })), 'DESCONOCIDO');
-});
+// --- 4. Zone (KAN-22) ---
+// Desde KAN-22, ZoneMatchingStrategy ya NO resuelve la zona de la propiedad por su cuenta (era un
+// heurístico de keywords hardcodeado, classifyPropertyZoneId, borrado en este ticket). Ahora es
+// puramente sync: compara zoneIntent.zona_id (UUID de neighborhoods.id, resuelto por PostGIS/alias
+// en zonesService.ts) contra property.neighborhood_id, que ya viene pre-estampado por
+// blindMatching.ts#findCrossTenantMatches ANTES de llegar acá. Estos tests simulan ese
+// pre-estampado seteando neighborhood_id directamente en la property, sin tocar Supabase.
+const BARRIO_NORTE_ID = 'a1a1a1a1-0000-0000-0000-000000000001';
+const BARRIO_SUR_ID = 'b2b2b2b2-0000-0000-0000-000000000002';
 
-test('Matcher - ZoneMatchingStrategy: matchea cuando la zona resuelta coincide con la del zoneIntent', () => {
-  const strategy = new ZoneMatchingStrategy();
-  const zoneIntent: ZoneIntentRequest = {
-    zona_id: 'ZONA_LOS_NOGALES',
-    texto_ubicacion_original: 'nogales',
+function zoneIntentFor(zonaId: string): ZoneIntentRequest {
+  return {
+    zona_id: zonaId,
+    texto_ubicacion_original: 'texto de prueba',
     dormitorios_min: null,
     caracteristicas_claves: [],
     operacion: 'DESCONOCIDO'
   };
-  const result = strategy.evaluate(baseRequest(), baseProperty({ address: 'Nogales 123' }), zoneIntent);
+}
+
+test('Matcher - ZoneMatchingStrategy: matchea cuando el neighborhood_id de la propiedad coincide con el del zoneIntent', () => {
+  const strategy = new ZoneMatchingStrategy();
+  const result = strategy.evaluate(
+    baseRequest(),
+    baseProperty({ neighborhood_id: BARRIO_NORTE_ID }),
+    zoneIntentFor(BARRIO_NORTE_ID)
+  );
   assert.strictEqual(result.isMatch, true);
 });
 
-test('Matcher - ZoneMatchingStrategy: rechaza cuando la zona resuelta no coincide con la del zoneIntent', () => {
+// AC KAN-22: una búsqueda de Barrio Norte no debe matchear una propiedad en Barrio Sur.
+test('Matcher - ZoneMatchingStrategy (AC KAN-22): una búsqueda en Barrio Norte NO matchea una propiedad en Barrio Sur', () => {
   const strategy = new ZoneMatchingStrategy();
-  const zoneIntent: ZoneIntentRequest = {
-    zona_id: 'ZONA_LOS_NOGALES',
-    texto_ubicacion_original: 'nogales',
-    dormitorios_min: null,
-    caracteristicas_claves: [],
-    operacion: 'DESCONOCIDO'
-  };
-  const result = strategy.evaluate(baseRequest(), baseProperty({ address: 'Yerba Buena 500' }), zoneIntent);
+  const result = strategy.evaluate(
+    baseRequest(),
+    baseProperty({ address: 'Barrio Sur 456', neighborhood_id: BARRIO_SUR_ID }),
+    zoneIntentFor(BARRIO_NORTE_ID)
+  );
+  assert.strictEqual(result.isMatch, false, 'Barrio Norte y Barrio Sur son zonas distintas, no deben matchear entre sí.');
+});
+
+test('Matcher - ZoneMatchingStrategy: rechaza cuando la propiedad no tiene zona resuelta (neighborhood_id null/undefined) y el pedido pide una zona concreta', () => {
+  const strategy = new ZoneMatchingStrategy();
+  const result = strategy.evaluate(
+    baseRequest(),
+    baseProperty({ neighborhood_id: null }),
+    zoneIntentFor(BARRIO_NORTE_ID)
+  );
   assert.strictEqual(result.isMatch, false);
 });
 

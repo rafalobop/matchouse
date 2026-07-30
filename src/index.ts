@@ -9,7 +9,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { Property, processExcelBuffer, syncPropertiesToDatabase } from './services/excel';
 import { coordinator } from './services/coordinator';
-import { extractFromTextInput, AITimeoutError } from './services/ai';
+import { extractFromTextInput, extractZoneIntent, AITimeoutError } from './services/ai';
 import { findCrossTenantMatches } from './services/blindMatching';
 import { validateFreeSearchText } from './utils/searchValidation';
 import { calculateDaysRemaining } from './utils/activeSearches';
@@ -443,7 +443,14 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
 
     if (insertErr) throw insertErr;
 
-    const matches = await findCrossTenantMatches(tenantId, extractedData);
+    // KAN-22: zoneIntent (Agente 2) resuelve zona_id vía PostGIS/alias contra `neighborhoods`
+    // (ver ai.ts#extractZoneIntent) — antes de este ticket nunca se calculaba ni se pasaba acá,
+    // así que ZoneMatchingStrategy solo podía usar el branch de `request.zones` (Agente 1,
+    // comparación textual contra sheet_name). extractZoneIntent nunca lanza (ídem
+    // extractFromTextInput con fallback silencioso), así que no necesita try/catch propio.
+    const zoneIntent = await extractZoneIntent(text, extractedData.operation);
+
+    const matches = await findCrossTenantMatches(tenantId, extractedData, zoneIntent);
 
     const mappedMatches = matches.map(m => ({
       tenant_id: m.tenant_id,

@@ -27,6 +27,10 @@ export interface Property {
 
   // Zone (solo runtime — NO se persiste en BD)
   zone_display_name?: string;  // era: zona
+  // KAN-22: id de neighborhoods.id resuelto vía PostGIS/alias (zonesService.resolvePropertyZoneId),
+  // estampado por findCrossTenantMatches SOLO cuando la búsqueda trae un zoneIntent concreto —
+  // no se resuelve en el resto de los flujos (upload, arranque). Solo runtime, no se persiste en BD.
+  neighborhood_id?: string | null;
 
   // Metadata
   sheet_name: string;          // era: sheetName

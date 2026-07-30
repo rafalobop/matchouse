@@ -78,18 +78,28 @@ export async function findNeighborhoodByAlias(alias: string, client: SupabaseCli
 
 /**
  * Resuelve qué zona contiene un punto geográfico (lat/lon), vía la función PostGIS
- * `neighborhood_for_point` (ST_Contains, ver migración KAN-85). Devuelve `null` si el punto
- * no cae dentro de ninguna zona conocida.
+ * `neighborhood_for_point` (KAN-22): primero intenta `ST_Within` exacto (punto dentro del
+ * polígono); si ninguno lo contiene, cae a `ST_DWithin` (geography, metros) para tolerar
+ * imprecisión de geocodificación cerca de un límite. `maxDistanceMeters` es opcional — si no
+ * se pasa, se omite del payload del RPC y se usa el DEFAULT de la función en la base (150m).
+ * Devuelve `null` si el punto no cae dentro ni cerca de ninguna zona conocida.
  */
-export async function findNeighborhoodByPoint(latitude: number, longitude: number, client: SupabaseClient = supabase): Promise<Neighborhood | null> {
+export async function findNeighborhoodByPoint(
+  latitude: number,
+  longitude: number,
+  client: SupabaseClient = supabase,
+  maxDistanceMeters?: number
+): Promise<Neighborhood | null> {
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
     throw new ZonesServiceError(`Coordenadas inválidas: lat=${latitude}, lon=${longitude}`);
   }
 
-  const { data, error } = await client.rpc('neighborhood_for_point', {
-    lat: latitude,
-    lon: longitude
-  });
+  const params: Record<string, number> = { lat: latitude, lon: longitude };
+  if (maxDistanceMeters !== undefined) {
+    params.max_distance_meters = maxDistanceMeters;
+  }
+
+  const { data, error } = await client.rpc('neighborhood_for_point', params);
 
   if (error) {
     throw new ZonesServiceError(`No se pudo resolver la zona para (${latitude}, ${longitude}): ${error.message}`, error);
@@ -97,4 +107,97 @@ export async function findNeighborhoodByPoint(latitude: number, longitude: numbe
   if (!data || data.length === 0) return null;
 
   return data[0] as Neighborhood;
+}
+
+// --- KAN-22: resolución por texto libre (fallback para propiedades/búsquedas sin coordenadas) ---
+
+interface ZoneKeyword {
+  keyword: string;
+  neighborhoodId: string;
+}
+
+// Referencia compartida entre tenants, baja tasa de cambio (151 zonas / 21 alias a la fecha) —
+// mismo criterio de cacheo en memoria que sessionCache en src/index.ts, TTL más largo porque acá
+// no hay riesgo de servir una sesión vencida, solo datos de catálogo.
+const ZONE_KEYWORD_CACHE_TTL_MS = 5 * 60 * 1000;
+let zoneKeywordCache: { entries: ZoneKeyword[]; expiresAt: number } | null = null;
+
+async function getZoneKeywordIndex(client: SupabaseClient): Promise<ZoneKeyword[]> {
+  if (zoneKeywordCache && zoneKeywordCache.expiresAt > Date.now()) {
+    return zoneKeywordCache.entries;
+  }
+
+  const [{ data: neighborhoods, error: neighborhoodsError }, { data: aliases, error: aliasesError }] = await Promise.all([
+    client.from('neighborhoods').select('id, name'),
+    client.from('neighborhood_aliases').select('alias, neighborhood_id')
+  ]);
+
+  if (neighborhoodsError) {
+    throw new ZonesServiceError(`No se pudo cargar el índice de zonas (neighborhoods): ${neighborhoodsError.message}`, neighborhoodsError);
+  }
+  if (aliasesError) {
+    throw new ZonesServiceError(`No se pudo cargar el índice de zonas (neighborhood_aliases): ${aliasesError.message}`, aliasesError);
+  }
+
+  const entries: ZoneKeyword[] = [
+    ...(neighborhoods ?? []).map((n: any) => ({ keyword: String(n.name).toLowerCase(), neighborhoodId: n.id })),
+    ...(aliases ?? []).map((a: any) => ({ keyword: String(a.alias).toLowerCase(), neighborhoodId: a.neighborhood_id }))
+  ]
+    .filter((entry) => entry.keyword.trim().length > 0)
+    // Coincidencias más largas/específicas primero (ej. "barrio norte" antes que "norte") para
+    // evitar que un alias corto y genérico le gane a uno más preciso contenido en el mismo texto.
+    .sort((a, b) => b.keyword.length - a.keyword.length);
+
+  zoneKeywordCache = { entries, expiresAt: Date.now() + ZONE_KEYWORD_CACHE_TTL_MS };
+  return entries;
+}
+
+/**
+ * Resuelve el id de zona (`neighborhoods.id`) a partir de texto libre, buscando el nombre de zona
+ * o alias más específico (más largo) contenido en el texto. Reemplaza al heurístico hardcodeado
+ * que antes vivía en `utils/matcher.ts` (`classifyPropertyZoneId`) — ahora la normalización sale
+ * de `neighborhoods`/`neighborhood_aliases` (151/21 filas a la fecha) en vez de una lista estática
+ * de ~15 zonas. Devuelve `null` (no es un error) si ningún keyword conocido aparece en el texto.
+ */
+export async function resolveNeighborhoodIdByText(text: string, client: SupabaseClient = supabase): Promise<string | null> {
+  const normalized = text.toLowerCase();
+  if (!normalized.trim()) return null;
+
+  const keywords = await getZoneKeywordIndex(client);
+  const match = keywords.find((entry) => normalized.includes(entry.keyword));
+  return match ? match.neighborhoodId : null;
+}
+
+interface PropertyLocationFields {
+  latitude?: number;
+  longitude?: number;
+  address: string;
+  features?: string;
+  sheet_name: string;
+  zone_display_name?: string;
+}
+
+/**
+ * Resuelve el id de zona (`neighborhoods.id`) de una propiedad (KAN-22): primero por punto
+ * (`findNeighborhoodByPoint`, si tiene lat/lng válidas y distintas de 0/0), y si no hay coincidencia
+ * (o no tiene coordenadas), cae a resolución por texto (`resolveNeighborhoodIdByText`) sobre
+ * dirección + características + hoja + zona de origen. Devuelve `null` si ninguna de las dos vías
+ * resuelve una zona — el llamador debe tratar eso como "zona desconocida", no como error.
+ */
+export async function resolvePropertyZoneId(property: PropertyLocationFields, client: SupabaseClient = supabase): Promise<string | null> {
+  if (
+    property.latitude !== undefined && property.longitude !== undefined &&
+    property.latitude !== 0 && property.longitude !== 0
+  ) {
+    const byPoint = await findNeighborhoodByPoint(property.latitude, property.longitude, client);
+    if (byPoint) return byPoint.id;
+  }
+
+  const text = `${property.address} ${property.features ?? ''} ${property.sheet_name} ${property.zone_display_name ?? ''}`;
+  return resolveNeighborhoodIdByText(text, client);
+}
+
+/** Solo para tests: fuerza a que la próxima resolución por texto vuelva a consultar la base. */
+export function __clearZoneKeywordCacheForTests(): void {
+  zoneKeywordCache = null;
 }

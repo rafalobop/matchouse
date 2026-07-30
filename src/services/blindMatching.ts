@@ -4,6 +4,7 @@ import { checkMatch } from '../utils/matcher';
 import { ExtractedRealEstateRequest, ZoneIntentRequest } from './ai';
 import { Property } from './excel';
 import { logger } from './logger';
+import { resolvePropertyZoneId } from './zonesService';
 
 export interface CrossTenantMatch {
   tenant_id: string;
@@ -70,6 +71,34 @@ export function matchRequestAgainstProperties(
 const MAX_CROSS_TENANT_MATCHES = 50;
 
 /**
+ * KAN-22: resuelve en paralelo el `neighborhood_id` (PostGIS + alias, ver
+ * zonesService.resolvePropertyZoneId) de cada candidato y lo estampa en su `Property`, para que
+ * `ZoneMatchingStrategy` (sync, sin red) pueda compararlo contra `zoneIntent.zona_id`. Solo se
+ * invoca cuando la búsqueda trae una zona concreta — si `zoneIntent` es undefined o
+ * 'DESCONOCIDO', ZoneMatchingStrategy ni siquiera mira `neighborhood_id` (cae al branch de
+ * `request.zones` del Agente 1), así que resolverlo igual sería trabajo desperdiciado en el
+ * camino más común (búsquedas sin zona específica).
+ * Fail-soft por candidato: si la resolución de UNA propiedad falla (error de red/DB puntual), esa
+ * propiedad queda con `neighborhood_id: null` (se comporta como "zona desconocida" en el
+ * matcher, se descarta si el pedido pide una zona) en vez de tirar abajo toda la búsqueda.
+ *
+ * Usa siempre el cliente service-role (default de resolvePropertyZoneId), NUNCA el `client`
+ * recibido por findCrossTenantMatches: `neighborhoods`/`neighborhood_aliases` tienen RLS
+ * deny-all (KAN-85) — no hay policy que le dé lectura a un cliente tenant-scoped, aunque hoy
+ * ningún llamador de findCrossTenantMatches pase uno.
+ */
+async function stampNeighborhoodIds(candidates: TenantScopedProperty[]): Promise<void> {
+  await Promise.all(candidates.map(async ({ property }) => {
+    try {
+      property.neighborhood_id = await resolvePropertyZoneId(property);
+    } catch (error: any) {
+      logger.error({ error: error.message || error, address: property.address }, '[BLIND MATCHING] Error al resolver la zona de una propiedad candidata (se trata como zona desconocida)');
+      property.neighborhood_id = null;
+    }
+  }));
+}
+
+/**
  * Motor de matching cross-tenant, dirección búsqueda→cartera (KAN-37): cruza el pedido de un
  * tenant contra la cartera de TODOS los demás tenants, excluyendo la propia. Usa
  * deliberadamente el cliente service-role en vez del `req.supabaseClient` scoped del patrón
@@ -102,6 +131,10 @@ export async function findCrossTenantMatches(
     tenant_id: row.tenant_id,
     property: mapDbRowToProperty(row)
   }));
+
+  if (zoneIntent && zoneIntent.zona_id !== 'DESCONOCIDO') {
+    await stampNeighborhoodIds(candidates);
+  }
 
   return matchRequestAgainstProperties(request, candidates, zoneIntent).slice(0, MAX_CROSS_TENANT_MATCHES);
 }
