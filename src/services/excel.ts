@@ -38,6 +38,22 @@ export interface Property {
   longitude?: number;          // era: longitud
 }
 
+// KAN-72: fila donde la celda de precio tenía contenido pero no se pudo interpretar como un
+// número válido (o resolvió a un valor <= 0, ej. "consultar" o un typo). La propiedad igual se
+// agrega al catálogo con price=0 (ver BudgetMatchingStrategy, que ahora trata price<=0 como dato
+// faltante en vez de dejarla saltarse el filtro de presupuesto sin más), pero el usuario necesita
+// verlo para poder corregir el Excel.
+export interface PriceParseError {
+  sheetName: string;
+  address: string;
+  rawValue: string;
+}
+
+export interface ProcessExcelResult {
+  properties: Property[];
+  priceParseErrors: PriceParseError[];
+}
+
 export function detectTipoPropiedad(
   domicilio: string,
   pisoLote: string,
@@ -90,9 +106,10 @@ function parsePisoLote(raw: string): { floor?: string; unit?: string; block?: st
 /**
  * Procesa un buffer de archivo Excel y lo convierte a un arreglo de Property
  */
-export function processExcelBuffer(buffer: Buffer): Property[] {
+export function processExcelBuffer(buffer: Buffer): ProcessExcelResult {
   const workbook = xlsx.read(buffer, { type: 'buffer' });
   const catalog: Property[] = [];
+  const priceParseErrors: PriceParseError[] = [];
 
   for (const sheetName of workbook.SheetNames) {
     // Determinar operación y zona según el nombre de la pestaña
@@ -200,8 +217,14 @@ export function processExcelBuffer(buffer: Buffer): Property[] {
         }
 
         const num = parseFloat(cleaned);
-        if (!isNaN(num)) {
+        if (!isNaN(num) && num > 0) {
           precioVal = num;
+        } else {
+          logger.warn(
+            { sheetName, address: rowDomicilioText, rawValue: rawPrecio },
+            '[EXCEL] Precio no parseable en fila, se registra como dato faltante (price=0)'
+          );
+          priceParseErrors.push({ sheetName, address: rowDomicilioText, rawValue: rawPrecio });
         }
       }
 
@@ -302,7 +325,7 @@ export function processExcelBuffer(buffer: Buffer): Property[] {
     }
   }
 
-  return catalog;
+  return { properties: catalog, priceParseErrors };
 }
 
 // KAN-63 (patrón "Tenant Context"): acepta un cliente Supabase opcional, scoped al tenant

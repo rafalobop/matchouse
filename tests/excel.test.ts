@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert';
+import * as xlsx from 'xlsx';
 import { processExcelBuffer, syncPropertiesToDatabase, Property } from '../src/services/excel';
 
 // Mock mínimo del builder encadenable de Supabase, mismo patrón que tests/searchExpiration.test.ts.
@@ -40,15 +41,54 @@ function buildSampleProperty(overrides: Partial<Property> = {}): Property {
 
 test('Excel Service - Debería retornar catálogo vacío o lanzar error para buffers sin datos', () => {
   assert.strictEqual(typeof processExcelBuffer, 'function', 'processExcelBuffer es una función.');
-  
+
   const emptyBuffer = Buffer.alloc(0);
   try {
     const result = processExcelBuffer(emptyBuffer);
-    assert.ok(Array.isArray(result), 'El resultado debe ser un arreglo.');
-    assert.strictEqual(result.length, 0, 'El catálogo resultante debe ser vacío.');
+    assert.ok(Array.isArray(result.properties), 'properties debe ser un arreglo.');
+    assert.strictEqual(result.properties.length, 0, 'El catálogo resultante debe ser vacío.');
+    assert.ok(Array.isArray(result.priceParseErrors), 'priceParseErrors debe ser un arreglo.');
+    assert.strictEqual(result.priceParseErrors.length, 0, 'No debe haber errores de precio sin filas.');
   } catch (error) {
     assert.ok(error instanceof Error, 'Si lanza error, debe ser un error válido de parsing.');
   }
+});
+
+// KAN-72: helper para construir un buffer .xlsx real en memoria, con una única pestaña y las
+// filas pasadas como matriz (misma forma que sheet_to_json({header:1}) espera al leerlo de vuelta).
+function buildXlsxBuffer(sheetName: string, rows: any[][]): Buffer {
+  const worksheet = xlsx.utils.aoa_to_sheet(rows);
+  const workbook = xlsx.utils.book_new();
+  xlsx.utils.book_append_sheet(workbook, worksheet, sheetName);
+  return xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+}
+
+test('Excel Service - registra en priceParseErrors una fila con precio no interpretable como número', () => {
+  const buffer = buildXlsxBuffer('Ventas', [
+    ['domicilio', 'precio', 'dormitorios'],
+    ['Calle Falsa 123', 'a consultar', 2]
+  ]);
+
+  const { properties, priceParseErrors } = processExcelBuffer(buffer);
+
+  assert.strictEqual(properties.length, 1, 'La propiedad se agrega igual al catálogo.');
+  assert.strictEqual(properties[0].price, 0, 'El precio no parseable queda en 0.');
+  assert.strictEqual(priceParseErrors.length, 1, 'Debe registrarse un error de precio.');
+  assert.strictEqual(priceParseErrors[0].address, 'Calle Falsa 123');
+  assert.strictEqual(priceParseErrors[0].rawValue, 'a consultar');
+  assert.strictEqual(priceParseErrors[0].sheetName, 'Ventas');
+});
+
+test('Excel Service - no registra error de precio cuando el precio es válido', () => {
+  const buffer = buildXlsxBuffer('Ventas', [
+    ['domicilio', 'precio', 'dormitorios'],
+    ['Calle Falsa 123', '120000', 2]
+  ]);
+
+  const { properties, priceParseErrors } = processExcelBuffer(buffer);
+
+  assert.strictEqual(properties[0].price, 120000);
+  assert.strictEqual(priceParseErrors.length, 0, 'Un precio válido no debe generar error.');
 });
 
 test('Excel Service - Debería exportar función de sincronización de base de datos', () => {

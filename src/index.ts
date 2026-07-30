@@ -376,7 +376,7 @@ app.post('/api/upload', tenantAuthMiddleware, (req, res, next) => {
   }
 
   try {
-    const catalog = processExcelBuffer(req.file.buffer);
+    const { properties: catalog, priceParseErrors } = processExcelBuffer(req.file.buffer);
     if (catalog.length === 0) {
       return res.status(400).json({ error: 'El archivo Excel no contiene propiedades legibles.' });
     }
@@ -385,7 +385,14 @@ app.post('/api/upload', tenantAuthMiddleware, (req, res, next) => {
     coordinator.setCatalog(tenantId, catalog);
     await syncPropertiesToDatabase(catalog, tenantId, (req as any).supabaseClient);
 
-    res.json({ success: true, count: catalog.length });
+    if (priceParseErrors.length > 0) {
+      logger.warn(
+        { tenantId, priceParseErrors },
+        '[UPLOAD] Filas con precio no parseable detectadas al procesar el Excel'
+      );
+    }
+
+    res.json({ success: true, count: catalog.length, priceParseErrors });
   } catch (error: any) {
     console.error('Error al procesar subida de Excel:', error);
     res.status(500).json({ error: error.message || 'Error interno al procesar el archivo.' });

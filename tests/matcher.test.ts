@@ -164,6 +164,29 @@ test('Matcher - BudgetMatchingStrategy: rechaza cuando el precio excede el presu
   assert.strictEqual(result.isMatch, false);
 });
 
+// KAN-72: price <= 0 es dato faltante (Excel con precio no parseable, ver excel.test.ts), no un
+// precio real de $0 — no debe descartarse por presupuesto, pero el motivo debe quedar explícito.
+test('Matcher - BudgetMatchingStrategy: trata price=0 como dato faltante, no lo descarta y deja motivo explícito', () => {
+  const strategy = new BudgetMatchingStrategy();
+  const result = strategy.evaluate(
+    baseRequest({ max_budget: 100000, currency: 'ARS' }),
+    baseProperty({ price: 0, currency: 'ARS' })
+  );
+  assert.strictEqual(result.isMatch, true, 'No debe descartar la propiedad solo por no tener precio cargado.');
+  assert.strictEqual(result.scoreDeduction, 0);
+  assert.ok(result.reason && result.reason.includes('no tiene un precio cargado'), 'Debe dejar explícito que faltan datos de precio.');
+});
+
+test('Matcher - BudgetMatchingStrategy: trata price negativo igual que price=0 (dato faltante)', () => {
+  const strategy = new BudgetMatchingStrategy();
+  const result = strategy.evaluate(
+    baseRequest({ max_budget: 100000, currency: 'ARS' }),
+    baseProperty({ price: -1, currency: 'ARS' })
+  );
+  assert.strictEqual(result.isMatch, true);
+  assert.ok(result.reason && result.reason.includes('no tiene un precio cargado'));
+});
+
 // --- 7. Features ---
 // Nota: esta estrategia nunca descarta (isMatch siempre true) — "rechazo" se traduce en
 // una fuerte penalización de score cuando ninguna característica pedida está presente.
