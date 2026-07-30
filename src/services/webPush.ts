@@ -53,7 +53,13 @@ export async function hasActivePushSubscriptions(tenantId: string, client = supa
   return (count || 0) > 0;
 }
 
-export async function sendWebPushToTenant(tenantId: string, payload: Record<string, unknown>): Promise<void> {
+// KAN-79: devuelve un booleano de éxito (antes: void) para que notifyMatchFound
+// (services/notifications.ts) pueda distinguir un fallo real de una entrega exitosa y aplicar
+// retry — sin este cambio, el try/catch interno ya existente absorbía cualquier fallo en
+// silencio y un wrapper de reintentos por afuera nunca se enteraba de que había algo que
+// reintentar. No cambia ningún log ni el manejo por-suscripción ya existente (limpieza de
+// suscripciones expiradas en 410/404 sigue igual, no cuenta como fallo reintentable).
+export async function sendWebPushToTenant(tenantId: string, payload: Record<string, unknown>): Promise<boolean> {
   try {
     const { data: subs, error } = await supabase
       .from('web_push_subscriptions')
@@ -63,9 +69,10 @@ export async function sendWebPushToTenant(tenantId: string, payload: Record<stri
     if (error) throw error;
     if (!subs || subs.length === 0) {
       logger.info({ tenantId }, '[WEBPUSH] Sin suscripciones activas para el tenant, no se envía ninguna notificación.');
-      return;
+      return true;
     }
 
+    let allDelivered = true;
     const serialized = JSON.stringify(payload);
     for (const sub of subs) {
       try {
@@ -77,10 +84,13 @@ export async function sendWebPushToTenant(tenantId: string, payload: Record<stri
           await supabase.from('web_push_subscriptions').delete().eq('id', sub.id);
         } else {
           logger.error({ error: pushErr.message || pushErr, subId: sub.id }, '[WEBPUSH] Error al enviar notificación web push individual.');
+          allDelivered = false;
         }
       }
     }
+    return allDelivered;
   } catch (err: any) {
     logger.error({ error: err.message || err, tenantId }, '[WEBPUSH] Error al procesar notificaciones web push para el tenant.');
+    return false;
   }
 }

@@ -3,6 +3,29 @@
 // activeSearches.ts (ese archivo arranca el servidor completo al importarse, no se puede importar
 // desde tests).
 
+import { Property } from '../services/excel';
+
+/**
+ * Shape de propiedad que consume el dashboard/los templates de email (domicilio/pisoLote/...).
+ * KAN-79: extraído del mapeo que ya hacía POST /api/search inline, para poder reusarlo también
+ * desde services/propertyMatchWebhook.ts (dirección cartera→búsqueda) sin duplicarlo.
+ */
+export function mapPropertyToBlindMatchShape(property: Property): Record<string, unknown> {
+  return {
+    domicilio: property.address,
+    pisoLote: [property.floor, property.unit, property.block, property.lot].filter(Boolean).join(' '),
+    precio: property.price,
+    moneda: property.currency,
+    expensas: property.maintenance_fees || 0,
+    dormitorios: property.bedrooms,
+    caracteristicas: property.features || '',
+    contacto: property.contact_info || '',
+    operacion: property.operation,
+    tipo_propiedad: property.property_type,
+    sheetName: property.sheet_name
+  };
+}
+
 export interface MappedBlindMatch {
   tenant_id: string;
   score: number;
@@ -87,4 +110,37 @@ export function groupMatchesByMatchedTenant(mappedMatches: MappedBlindMatch[]): 
     grouped[match.tenant_id].push(match);
   }
   return grouped;
+}
+
+/**
+ * KAN-79: fila de blind_matches para la dirección cartera→búsqueda (propiedad nueva → matchea una
+ * active_search existente de otro tenant), disparada por el trigger de Postgres vía pg_net. Misma
+ * forma de fila que buildBlindMatchInsertRows (búsqueda→cartera, KAN-78) — no se reutiliza esa
+ * función directamente para no tocar su contrato/tests ya existentes, y porque acá hace falta
+ * `property_id` (columna nueva, solo para dedup — ver findMatchingActiveSearchesForProperty /
+ * propertyMatchWebhook.ts; KAN-78 decidió deliberadamente que blind_matches NO tenga FK a
+ * properties, y property_id sin FK no rompe esa decisión, es un identificador plano de lectura).
+ */
+export function buildIncomingPropertyMatchInsertRow(
+  searchTenantId: string,
+  searchId: string,
+  searchRawText: string,
+  searcherSnapshot: SearcherSnapshot,
+  matchedTenantId: string,
+  propertyId: string,
+  propertySnapshot: Record<string, unknown>,
+  score: number,
+  reasons: string[]
+): Record<string, unknown> {
+  return {
+    tenant_id: searchTenantId,
+    search_id: searchId,
+    matched_tenant_id: matchedTenantId,
+    raw_search_text: searchRawText,
+    property_snapshot: propertySnapshot,
+    searcher_snapshot: searcherSnapshot,
+    property_id: propertyId,
+    score,
+    reasons: reasons || []
+  };
 }

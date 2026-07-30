@@ -4,9 +4,12 @@ import {
   buildBlindMatchInsertRows,
   mapBlindMatchRowToDashboardShape,
   mapIncomingMatchRowToDashboardShape,
+  mapPropertyToBlindMatchShape,
+  buildIncomingPropertyMatchInsertRow,
   groupMatchesByMatchedTenant,
   MappedBlindMatch
 } from '../src/utils/blindMatchPersistence';
+import { Property } from '../src/services/excel';
 
 function sampleMappedMatch(overrides: Partial<MappedBlindMatch> = {}): MappedBlindMatch {
   return {
@@ -128,4 +131,81 @@ test('groupMatchesByMatchedTenant - agrupa varios matches del mismo dueño', () 
 
 test('groupMatchesByMatchedTenant - array vacio devuelve objeto vacio', () => {
   assert.deepStrictEqual(groupMatchesByMatchedTenant([]), {});
+});
+
+const sampleProperty: Property = {
+  address: 'Av. Alem 500',
+  floor: '3',
+  unit: 'B',
+  price: 150000,
+  currency: 'ARS',
+  maintenance_fees: 5000,
+  bedrooms: 2,
+  features: 'Pileta y cochera',
+  contact_info: '381-1234567',
+  property_type: 'departamento',
+  operation: 'venta',
+  sheet_name: 'Ventas'
+};
+
+test('mapPropertyToBlindMatchShape (KAN-79) - arma el mismo shape que ya usaba POST /api/search inline', () => {
+  const mapped = mapPropertyToBlindMatchShape(sampleProperty);
+
+  assert.deepStrictEqual(mapped, {
+    domicilio: 'Av. Alem 500',
+    pisoLote: '3 B',
+    precio: 150000,
+    moneda: 'ARS',
+    expensas: 5000,
+    dormitorios: 2,
+    caracteristicas: 'Pileta y cochera',
+    contacto: '381-1234567',
+    operacion: 'venta',
+    tipo_propiedad: 'departamento',
+    sheetName: 'Ventas'
+  });
+});
+
+test('mapPropertyToBlindMatchShape (KAN-79) - defaults a string/0 vacíos cuando faltan expensas/características/contacto/pisoLote', () => {
+  const mapped = mapPropertyToBlindMatchShape({ ...sampleProperty, floor: undefined, unit: undefined, maintenance_fees: undefined, features: undefined, contact_info: undefined } as Property);
+
+  assert.strictEqual(mapped.pisoLote, '');
+  assert.strictEqual(mapped.expensas, 0);
+  assert.strictEqual(mapped.caracteristicas, '');
+  assert.strictEqual(mapped.contacto, '');
+});
+
+test('buildIncomingPropertyMatchInsertRow (KAN-79) - arma la fila con property_id incluido (dedup, dirección cartera→búsqueda)', () => {
+  const propertySnapshot = mapPropertyToBlindMatchShape(sampleProperty);
+  const row = buildIncomingPropertyMatchInsertRow(
+    'searcher-1',
+    'search-1',
+    'Busco depto con pileta',
+    sampleSearcherSnapshot,
+    'owner-1',
+    'prop-1',
+    propertySnapshot,
+    85,
+    ['Coincidencia de características']
+  );
+
+  assert.deepStrictEqual(row, {
+    tenant_id: 'searcher-1',
+    search_id: 'search-1',
+    matched_tenant_id: 'owner-1',
+    raw_search_text: 'Busco depto con pileta',
+    property_snapshot: propertySnapshot,
+    searcher_snapshot: sampleSearcherSnapshot,
+    property_id: 'prop-1',
+    score: 85,
+    reasons: ['Coincidencia de características']
+  });
+});
+
+test('buildIncomingPropertyMatchInsertRow (KAN-79) - reasons faltante default a array vacío', () => {
+  const row = buildIncomingPropertyMatchInsertRow(
+    'searcher-1', 'search-1', 'texto', sampleSearcherSnapshot, 'owner-1', 'prop-1', {}, 50, undefined as any
+  );
+
+  assert.deepStrictEqual(row.reasons, []);
 });

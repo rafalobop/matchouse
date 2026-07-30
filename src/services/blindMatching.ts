@@ -121,6 +121,16 @@ export async function findCrossTenantMatches(
     query = query.eq('operation', request.operation);
   }
 
+  // KAN-79: property_type es tan indexable como operation (columna con CHECK constraint, cubierta
+  // por idx_properties_meta_filters) — mismo criterio de escape que PropertyTypeMatchingStrategy
+  // (utils/matcher.ts): 'otro' en el pedido significa "cualquier tipo", no se filtra en SQL. El
+  // resto de las estrategias (zona, dormitorios, presupuesto, country, features) siguen
+  // filtrándose en memoria vía checkMatch — no son columnas directamente comparables (zona
+  // depende de un cómputo con PostGIS/alias, presupuesto de conversión de moneda, etc.).
+  if (request.property_type !== 'otro') {
+    query = query.eq('property_type', request.property_type);
+  }
+
   const { data, error } = await query;
   if (error) {
     logger.error({ error: error.message, tenantId }, '[BLIND MATCHING] Error al leer cartera cross-tenant');
@@ -137,4 +147,95 @@ export async function findCrossTenantMatches(
   }
 
   return matchRequestAgainstProperties(request, candidates, zoneIntent).slice(0, MAX_CROSS_TENANT_MATCHES);
+}
+
+export interface ActiveSearchCandidate {
+  tenant_id: string;
+  search_id: string;
+  raw_text: string;
+  criteria: ExtractedRealEstateRequest;
+}
+
+export interface PropertyMatch {
+  tenant_id: string;
+  search_id: string;
+  raw_text: string;
+  score: number;
+  reasons: string[];
+}
+
+/**
+ * KAN-79: dirección cartera→búsqueda — reversa de matchRequestAgainstProperties. Misma función
+ * pura checkMatch (utils/matcher.ts), solo se invierte quién es "el pedido" y quién "la
+ * propiedad". Sin zoneIntent (igual trade-off ya aceptado en GET /api/searches — active_searches
+ * no persiste el resultado del Agente 2, solo el criteria plano del Agente 1).
+ */
+export function matchActiveSearchesAgainstProperty(
+  property: Property,
+  candidates: ActiveSearchCandidate[]
+): PropertyMatch[] {
+  const matches: PropertyMatch[] = [];
+
+  for (const { tenant_id, search_id, raw_text, criteria } of candidates) {
+    const result = checkMatch(criteria, property);
+    if (result.isMatch) {
+      matches.push({ tenant_id, search_id, raw_text, score: result.score, reasons: result.reasons });
+    }
+  }
+
+  return matches.sort((a, b) => b.score - a.score);
+}
+
+/**
+ * KAN-79: motor de matching cross-tenant, dirección cartera→búsqueda — disparado por el trigger
+ * de Postgres (`property_uploaded_trigger`, AFTER INSERT ON properties) vía pg_net, cuando entra
+ * una propiedad nueva. Carga la propiedad y prefiltra en SQL las active_searches de OTROS tenants
+ * cuyo criteria->>operation/property_type coincida (o sea el comodín 'desconocido'/'otro' del
+ * Agente 1) — misma filosofía de "SQL para lo indexable, resto en memoria" que
+ * findCrossTenantMatches. La interpolación directa de property.operation/property_type en el
+ * string de .or() es segura: ambas columnas tienen CHECK constraint en la base (no pueden traer
+ * comas/comillas/otros valores), nunca son input de usuario en este punto.
+ */
+export async function findMatchingActiveSearchesForProperty(
+  propertyId: string,
+  client: SupabaseClient = serviceRoleSupabase
+): Promise<{ property: Property; tenantId: string; matches: PropertyMatch[] } | null> {
+  const { data: propertyRow, error: propertyError } = await client
+    .from('properties')
+    .select('*')
+    .eq('id', propertyId)
+    .single();
+
+  if (propertyError || !propertyRow) {
+    logger.error({ error: propertyError?.message, propertyId }, '[BLIND MATCHING] No se pudo cargar la propiedad para el matching cartera→búsqueda');
+    return null;
+  }
+
+  const property = mapDbRowToProperty(propertyRow);
+  const tenantId: string = propertyRow.tenant_id;
+
+  let query = client
+    .from('active_searches')
+    .select('id, tenant_id, raw_text, criteria')
+    .eq('status', 'active')
+    .neq('tenant_id', tenantId);
+
+  query = query.or(`criteria->>operation.eq.desconocido,criteria->>operation.eq.${property.operation}`);
+  query = query.or(`criteria->>property_type.eq.otro,criteria->>property_type.eq.${property.property_type}`);
+
+  const { data, error } = await query;
+  if (error) {
+    logger.error({ error: error.message, propertyId, tenantId }, '[BLIND MATCHING] Error al leer active_searches cross-tenant para la propiedad nueva');
+    throw error;
+  }
+
+  const candidates: ActiveSearchCandidate[] = (data || []).map((row: any) => ({
+    tenant_id: row.tenant_id,
+    search_id: row.id,
+    raw_text: row.raw_text,
+    criteria: row.criteria as ExtractedRealEstateRequest
+  }));
+
+  const matches = matchActiveSearchesAgainstProperty(property, candidates);
+  return { property, tenantId, matches };
 }
