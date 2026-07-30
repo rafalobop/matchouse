@@ -15,8 +15,8 @@ import { validateFreeSearchText } from './utils/searchValidation';
 import { calculateDaysRemaining } from './utils/activeSearches';
 import { validateProfileInput } from './utils/profileValidation';
 import { isValidUUID } from './utils/idValidation';
-import { sendWebPushToTenant, buildMatchFoundPushPayload, hasActivePushSubscriptions } from './services/webPush';
-import { startEmailNotificationService, sendBlindMatchEmailFallback } from './services/notifier-email';
+import { sendWebPushToTenant, buildMatchFoundPushPayload, buildIncomingMatchPushPayload, hasActivePushSubscriptions } from './services/webPush';
+import { sendBlindMatchEmailFallback, sendIncomingMatchEmailFallback } from './services/notifier-email';
 import { notifyMatchFound } from './services/notifications';
 import { startDolarService } from './services/dolar';
 import { startSearchExpirationService } from './services/searchExpiration';
@@ -24,6 +24,13 @@ import { config } from './config/env';
 import { logger } from './services/logger';
 import { withTimeout } from './utils/withTimeout';
 import { createRateLimiter } from './utils/rateLimit';
+import {
+  buildBlindMatchInsertRows,
+  mapBlindMatchRowToDashboardShape,
+  mapIncomingMatchRowToDashboardShape,
+  groupMatchesByMatchedTenant,
+  SearcherSnapshot
+} from './utils/blindMatchPersistence';
 
 // Express Setup
 const app = express();
@@ -457,10 +464,48 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
       }
     }));
 
+    // KAN-78: persistencia del resultado del matching ciego — hasta este ticket, findCrossTenantMatches
+    // no guardaba nada, los matches se devolvían una única vez en esta respuesta HTTP. Se arma un
+    // snapshot del propio perfil (buscador) para que el dueño de la propiedad matcheada pueda
+    // contactarlo más adelante sin depender de que este mire a tiempo su notificación/email.
+    let matchIds: (string | null)[] = mappedMatches.map(() => null);
+    let searcherSnapshot: SearcherSnapshot = { full_name: null, phone_number: null, agency_name: null };
+    if (mappedMatches.length > 0) {
+      try {
+        const { data: ownProfile, error: profileErr } = await tenantSupabase
+          .from('profiles')
+          .select('full_name, phone_number, agency_name')
+          .eq('id', tenantId)
+          .single();
+        if (profileErr) throw profileErr;
+
+        searcherSnapshot = {
+          full_name: ownProfile?.full_name ?? null,
+          phone_number: ownProfile?.phone_number ?? null,
+          agency_name: ownProfile?.agency_name ?? null
+        };
+
+        const insertRows = buildBlindMatchInsertRows(tenantId, search.id, text, searcherSnapshot, mappedMatches);
+        const { data: insertedMatches, error: matchInsertErr } = await tenantSupabase
+          .from('blind_matches')
+          .insert(insertRows)
+          .select('id');
+
+        if (matchInsertErr) throw matchInsertErr;
+        matchIds = (insertedMatches || []).map((row: any) => row.id);
+      } catch (persistErr: any) {
+        // Best-effort: los matches ya se calcularon, no tiene sentido fallar una búsqueda exitosa
+        // porque la persistencia falló — solo se pierde el historial/aviso al dueño de esta tanda.
+        logger.error({ error: persistErr.message || persistErr, tenantId, searchId: search.id }, '[BUSQUEDA] Error al persistir los matches en blind_matches (no afecta la búsqueda ya calculada)');
+      }
+    }
+
+    const mappedMatchesWithIds = mappedMatches.map((m, i) => ({ ...m, id: matchIds[i] ?? null }));
+
     res.json({
       success: true,
       search: { id: search.id, criteria: search.criteria, expires_at: search.expires_at },
-      matches: mappedMatches
+      matches: mappedMatchesWithIds
     });
 
     // KAN-44: evento "match encontrado" en el único punto donde hoy se genera en vivo (una
@@ -480,6 +525,21 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
       }).catch((notifyErr: any) => {
         logger.error({ error: notifyErr.message || notifyErr, tenantId, searchId: search.id }, '[BUSQUEDA] Error al notificar el match encontrado (no afecta la búsqueda ya confirmada)');
       });
+
+      // KAN-78: dirección recíproca — avisar también al dueño de cada propiedad matcheada, para
+      // que el match no dependa 100% de que el buscador revise su propia notificación/email a
+      // tiempo. Se agrupa por dueño para no spamear a un tenant con varias propiedades matcheadas
+      // en la misma búsqueda.
+      const bySearcherOwner = groupMatchesByMatchedTenant(mappedMatches);
+      for (const [ownerTenantId, ownerMatches] of Object.entries(bySearcherOwner)) {
+        notifyMatchFound({
+          hasActivePush: () => hasActivePushSubscriptions(ownerTenantId),
+          sendPush: () => sendWebPushToTenant(ownerTenantId, buildIncomingMatchPushPayload(search.id)),
+          sendEmailFallback: () => sendIncomingMatchEmailFallback(ownerTenantId, searcherSnapshot, text, ownerMatches)
+        }).catch((notifyErr: any) => {
+          logger.error({ error: notifyErr.message || notifyErr, tenantId: ownerTenantId, searchId: search.id }, '[BUSQUEDA] Error al notificar al dueño de una propiedad matcheada (no afecta la búsqueda ya confirmada)');
+        });
+      }
     }
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[BUSQUEDA] Error al procesar búsqueda de matching ciego');
@@ -656,51 +716,56 @@ app.post('/api/searches/:id/reactivate', tenantAuthMiddleware, async (req, res) 
   }
 });
 
+// KAN-78: reescrito contra blind_matches (reemplaza a match_queue, eliminada). Sin fallback a
+// coordinator — ese fallback era un Map en memoria permanentemente vacío (nada lo poblaba desde
+// el retiro de WhatsApp); ante un error real de DB ahora se responde 500 en vez de degradar en
+// silencio a una lista vacía.
 app.get('/api/matches', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
   const supabase = (req as any).supabaseClient;
   try {
     const { data: dbMatches, error } = await supabase
-      .from('match_queue')
-      .select(`
-        *,
-        property:properties(*)
-      `)
+      .from('blind_matches')
+      .select('id, created_at, raw_search_text, property_snapshot, score, reasons, user_review_status, feedback_reason')
       .eq('tenant_id', tenantId)
       .order('created_at', { ascending: false })
       .limit(50);
 
     if (error) throw error;
 
-    const mappedMatches = dbMatches.map((m: any) => ({
-      id: m.id,
-      fecha: new Date(m.created_at).toLocaleString('es-AR', { timeZone: 'America/Argentina/Tucuman' }),
-      originalText: m.raw_message_text,
-      contactSender: m.whatsapp_sender_name,
-      groupName: m.whatsapp_group_name,
-      property: {
-        domicilio: m.property?.address || '',
-        pisoLote: [m.property?.floor, m.property?.unit, m.property?.block, m.property?.lot].filter(Boolean).join(' '),
-        precio: m.property?.price || 0,
-        moneda: m.property?.currency || 'ARS',
-        expensas: m.property?.maintenance_fees || 0,
-        dormitorios: m.property?.bedrooms || 0,
-        caracteristicas: m.property?.features || '',
-        contacto: m.property?.contact_info || '',
-        zona: m.property?.sheet_name || '',
-        operacion: m.property?.operation || '',
-        tipo_propiedad: m.property?.property_type || '',
-        sheetName: m.property?.sheet_name || ''
-      },
-      matchDetails: m.match_details || '',
-      userReviewStatus: m.user_review_status || 'PENDING',
-      feedbackReason: m.feedback_reason || null
-    }));
+    const mappedMatches = (dbMatches || []).map(mapBlindMatchRowToDashboardShape);
 
     res.json({ matches: mappedMatches });
   } catch (error: any) {
-    console.error('Error al recuperar matches de la base de datos:', error);
-    res.json({ matches: coordinator.getRecentMatches(tenantId) });
+    logger.error({ error: error.message || error, tenantId }, '[MATCHES] Error al recuperar matches de blind_matches');
+    res.status(500).json({ error: error.message || 'Error interno al recuperar matches.' });
+  }
+});
+
+// KAN-78: nuevo — dirección recíproca de GET /api/matches. Le permite al dueño de una propiedad
+// matcheada ver quién la buscó (nombre/teléfono/inmobiliaria, congelados en searcher_snapshot al
+// momento del match), habilitado por la policy RLS de solo lectura "blind_matches_matched_tenant_read"
+// (matched_tenant_id = auth.uid()). Solo lectura: la curación (user_review_status/feedback_reason)
+// sigue siendo exclusiva del buscador vía POST /api/matches/:id/feedback.
+app.get('/api/matches/incoming', tenantAuthMiddleware, async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const supabase = (req as any).supabaseClient;
+  try {
+    const { data: dbMatches, error } = await supabase
+      .from('blind_matches')
+      .select('id, created_at, raw_search_text, property_snapshot, searcher_snapshot, score, reasons')
+      .eq('matched_tenant_id', tenantId)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (error) throw error;
+
+    const mappedMatches = (dbMatches || []).map(mapIncomingMatchRowToDashboardShape);
+
+    res.json({ matches: mappedMatches });
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId }, '[MATCHES] Error al recuperar matches entrantes de blind_matches');
+    res.status(500).json({ error: error.message || 'Error interno al recuperar matches entrantes.' });
   }
 });
 
@@ -716,7 +781,7 @@ app.post('/api/matches/:id/feedback', tenantAuthMiddleware, async (req, res) => 
 
   try {
     const { data, error } = await supabase
-      .from('match_queue')
+      .from('blind_matches')
       .update({
         user_review_status: status,
         feedback_reason: status === 'REJECTED' ? (reason || 'No especificado') : null
@@ -735,60 +800,6 @@ app.post('/api/matches/:id/feedback', tenantAuthMiddleware, async (req, res) => 
   } catch (error: any) {
     console.error('Error al actualizar el feedback de match:', error);
     res.status(500).json({ error: error.message || 'Error interno al guardar feedback.' });
-  }
-});
-
-// Pixel 1x1 transparente para trackear apertura de emails de notificación (sin auth: lo pide el cliente de mail)
-const TRACKING_PIXEL_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
-
-app.get('/api/notifications/email/pixel/:matchId.gif', async (req, res) => {
-  const { matchId } = req.params;
-  res.set('Content-Type', 'image/gif');
-  res.send(TRACKING_PIXEL_GIF);
-
-  try {
-    const { supabase } = require('./services/supabase');
-    await supabase
-      .from('match_queue')
-      .update({ email_opened_at: new Date().toISOString() })
-      .eq('id', matchId)
-      .is('email_opened_at', null);
-  } catch (e) {
-    console.warn('[NOTIFIER-EMAIL] No se pudo registrar apertura de email para match', matchId, e);
-  }
-});
-
-// Redirect trackeado para los deep links wa.me embebidos en el email de notificación
-app.get('/api/notifications/email/click/:matchId', async (req, res) => {
-  const { matchId } = req.params;
-  const { supabase } = require('./services/supabase');
-
-  try {
-    const { data: match, error } = await supabase
-      .from('match_queue')
-      .select('whatsapp_sender_phone, whatsapp_sender_name, whatsapp_group_name, raw_message_text, property:properties(*)')
-      .eq('id', matchId)
-      .single();
-
-    if (error || !match) {
-      return res.status(404).send('Match no encontrado.');
-    }
-
-    await supabase
-      .from('match_queue')
-      .update({ email_clicked_at: new Date().toISOString() })
-      .eq('id', matchId)
-      .is('email_clicked_at', null);
-
-    const { buildWhatsAppMessage } = require('./services/notifier-email');
-    const message = buildWhatsAppMessage(match.whatsapp_group_name, match.property, match.whatsapp_sender_name, match.raw_message_text);
-    const phone = (match.whatsapp_sender_phone || '').replace(/\D/g, '');
-    const waUrl = `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
-
-    res.redirect(302, waUrl);
-  } catch (e: any) {
-    console.error('[NOTIFIER-EMAIL] Error al procesar redirect de click:', e.message || e);
-    res.status(500).send('Error al procesar el link.');
   }
 });
 
@@ -910,8 +921,10 @@ async function main() {
   // Iniciar servicio de vencimiento de búsquedas sin match a los 7 días (KAN-41)
   startSearchExpirationService();
 
-  // Iniciar servicio notificador consolidado por email (único canal desde el retiro de WhatsApp)
-  startEmailNotificationService();
+  // KAN-78: el notificador consolidado por email (startEmailNotificationService) se eliminó junto
+  // con match_queue — corría cada NOTIFICATION_INTERVAL_MINUTES sin hacer nada desde el pivot a
+  // matching 100% web (nada escribía filas nuevas en match_queue). El único canal de notificación
+  // activo hoy es el del matching ciego (notifyMatchFound, disparado desde POST /api/search).
 
   // Levantar servidor Express
   app.listen(PORT, () => {

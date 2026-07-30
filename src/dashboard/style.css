@@ -613,7 +613,9 @@ h1, h2, h3 {
   }
 }
 
-.match-group-tag {
+/* KAN-78: renombrado de .match-group-tag (grupo de WhatsApp, sin equivalente en matching
+   cross-tenant) a .match-score-badge — mismo estilo, muestra el score del match en su lugar. */
+.match-score-badge {
   display: inline-block;
   background: var(--info-bg);
   color: var(--info);
@@ -623,6 +625,21 @@ h1, h2, h3 {
   border-radius: var(--radius-sm);
   border: 1px solid var(--info-border);
   margin-top: 0.25rem;
+}
+
+.match-reasons ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.match-reasons li {
+  margin-bottom: 0.15rem;
+}
+
+.contact-link {
+  color: #25d366;
+  text-decoration: none;
+  font-weight: 600;
 }
 
 .btn-small {

@@ -17,36 +17,52 @@
 -- documentación (nadie las lee ni escribe en el código), no de schema — se corrige
 -- en CONTEXT.md como parte de esta misma sesión.
 
-CREATE TABLE public.match_queue (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  tenant_id uuid NOT NULL,
-  property_id uuid NOT NULL,
-  whatsapp_group_name text NOT NULL,
-  whatsapp_sender_name text NOT NULL,
-  whatsapp_sender_phone text NOT NULL,
-  raw_message_text text NOT NULL,
-  is_notified boolean NOT NULL DEFAULT false,
-  created_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now()),
+-- ELIMINADA (KAN-78, 2026-07-29): `match_queue` fue eliminada vía `mcp__supabase__apply_migration`
+-- ("drop_legacy_match_queue_table"). Era 100% legacy de la era WhatsApp/Baileys, sin escrituras
+-- nuevas desde el pivot a matching 100% web (KAN-64). Las 9 filas reales que tenía se respaldaron
+-- (no se migraron — shape incompatible con el modelo cross-tenant) en
+-- docs/evolucion_proyecto/match_queue_backup_2026-07-29.md antes del DROP TABLE.
+-- Reemplazada por `public.blind_matches` (ver más abajo), que persiste de verdad el resultado
+-- del matching ciego cross-tenant (`src/services/blindMatching.ts`), algo que match_queue nunca
+-- hizo para ese flujo.
 
-  -- Columnas agregadas manualmente en el dashboard (schema drift, ahora documentado):
-  score double precision,
-  validation_score double precision,
-  is_valid boolean,
-  reasoning text,
-  match_details text,
-  user_review_status text DEFAULT 'PENDING'::text,
+CREATE TABLE public.blind_matches (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES public.profiles(id),         -- buscador, dueño de la fila (RLS)
+  search_id uuid REFERENCES public.active_searches(id) ON DELETE SET NULL,
+  matched_tenant_id uuid NOT NULL REFERENCES public.profiles(id), -- dueño de la propiedad matcheada
+  raw_search_text text NOT NULL,
+  property_snapshot jsonb NOT NULL,  -- snapshot desnormalizado (domicilio/precio/moneda/dormitorios/...),
+                                      -- no FK a properties: un match histórico no debe cambiar/romperse
+                                      -- si el otro tenant edita o borra su propiedad después.
+  searcher_snapshot jsonb NOT NULL,  -- {full_name, phone_number, agency_name} del buscador, congelado
+                                      -- al momento del match, para que el dueño de la propiedad
+                                      -- matcheada pueda contactarlo sin depender de que el buscador
+                                      -- mire a tiempo su notificación/email (gap identificado en KAN-78).
+  score double precision NOT NULL,
+  reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+  user_review_status text NOT NULL DEFAULT 'PENDING' CHECK (user_review_status IN ('PENDING','ACCEPTED','REJECTED')),
   feedback_reason text,
-
-  -- Agregadas en esta misma sesión (spec_0014) vía mcp__supabase__apply_migration,
-  -- migración "add_email_notification_tracking_columns", para trackear apertura y
-  -- click de los deep links wa.me en el email de notificación consolidada:
-  email_opened_at timestamptz,
-  email_clicked_at timestamptz,
-
-  CONSTRAINT match_queue_pkey PRIMARY KEY (id),
-  CONSTRAINT match_queue_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.profiles(id),
-  CONSTRAINT match_queue_property_id_fkey FOREIGN KEY (property_id) REFERENCES public.properties(id)
+  created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE INDEX idx_blind_matches_tenant_created ON public.blind_matches (tenant_id, created_at DESC);
+CREATE INDEX idx_blind_matches_matched_tenant_created ON public.blind_matches (matched_tenant_id, created_at DESC);
+
+-- RLS: dos policies, no una — el buscador (tenant_id) tiene control total (incluye curar
+-- user_review_status/feedback_reason vía POST /api/matches/:id/feedback); el dueño de la
+-- propiedad matcheada (matched_tenant_id) solo puede LEER (GET /api/matches/incoming), nunca
+-- editar el match ajeno.
+ALTER TABLE public.blind_matches ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "blind_matches_tenant_isolation" ON public.blind_matches
+  FOR ALL TO authenticated
+  USING (tenant_id = auth.uid())
+  WITH CHECK (tenant_id = auth.uid());
+
+CREATE POLICY "blind_matches_matched_tenant_read" ON public.blind_matches
+  FOR SELECT TO authenticated
+  USING (matched_tenant_id = auth.uid());
 
 -- Referencia rápida de tablas relacionadas (mismo snapshot de introspección):
 --
@@ -72,8 +88,10 @@ CREATE TABLE public.match_queue (
 -- RLS ya está HABILITADO vía mcp__supabase__apply_migration, migración
 -- "enable_rls_tenant_isolation":
 --   - profiles: FOR ALL TO authenticated USING/WITH CHECK (id = auth.uid())
---   - properties, match_queue, whatsapp_sessions: FOR ALL TO authenticated
+--   - properties, whatsapp_sessions (eliminada en KAN-64): FOR ALL TO authenticated
 --     USING/WITH CHECK (tenant_id = auth.uid())
+--   - blind_matches (KAN-78, reemplaza a match_queue, eliminada): ver política propia más arriba
+--     (tenant_id = auth.uid() para todo, matched_tenant_id = auth.uid() solo lectura)
 --   - neighborhood_groups/neighborhoods/neighborhood_aliases: RLS habilitado,
 --     sin políticas (deny-all) — no hay código en src/ que las use hoy.
 --   - spatial_ref_sys: deliberadamente NO se tocó (catálogo del sistema PostGIS,

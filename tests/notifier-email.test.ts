@@ -7,10 +7,10 @@ import {
   buildBlindMatchEmailHtml,
   buildBlindMatchPropertyRowHtml,
   sendBlindMatchEmailFallback,
+  buildIncomingMatchEmailHtml,
+  sendIncomingMatchEmailFallback,
   groupMatchesByTenant,
   groupMatchesByWhatsAppGroup,
-  sendConsolidatedEmailNotifications,
-  startEmailNotificationService,
   __setResendClientForTests
 } from '../src/services/notifier-email';
 
@@ -39,11 +39,6 @@ function sampleMatch(overrides: Partial<any> = {}) {
     ...overrides
   };
 }
-
-test('Notifier Email - expone las funciones esperadas', () => {
-  assert.strictEqual(typeof sendConsolidatedEmailNotifications, 'function');
-  assert.strictEqual(typeof startEmailNotificationService, 'function');
-});
 
 test('Notifier Email - buildWhatsAppMessage incluye domicilio y precio de la propiedad', () => {
   const message = buildWhatsAppMessage('Grupo Test', sampleProperty);
@@ -217,4 +212,64 @@ test('Notifier Email - __setResendClientForTests permite inyectar un mock (nunca
     }
   });
   assert.strictEqual(sendCalled, false, 'Inyectar el mock no debe disparar un envío por sí solo.');
+});
+
+// KAN-78: aviso al dueño de la propiedad matcheada de que un agente la buscó (dirección
+// recíproca a sendBlindMatchEmailFallback) — a diferencia del push, el email SÍ incluye el
+// contacto completo del buscador porque es un canal privado 1:1 con el dueño de la propiedad.
+const sampleSearcherSnapshot = { full_name: 'Juan Perez', phone_number: '5493815551234', agency_name: 'Inmobiliaria Test' };
+
+test('Notifier Email - buildIncomingMatchEmailHtml incluye el contacto del buscador y el texto de la búsqueda', () => {
+  const html = buildIncomingMatchEmailHtml(sampleSearcherSnapshot, 'Busco depto 2 dormitorios en alquiler', [sampleBlindMatch()]);
+
+  assert.ok(html.includes('Juan Perez'), 'Debe incluir el nombre del buscador.');
+  assert.ok(html.includes('Inmobiliaria Test'), 'Debe incluir la inmobiliaria del buscador.');
+  assert.ok(html.includes('5493815551234'), 'Debe incluir el teléfono del buscador.');
+  assert.ok(html.includes('Busco depto 2 dormitorios en alquiler'), 'Debe incluir el texto original de la búsqueda.');
+  assert.ok(html.includes('Av. Alem 500'), 'Debe incluir la propiedad matcheada.');
+});
+
+test('Notifier Email - buildIncomingMatchEmailHtml no incluye ningún dato de contacto si el snapshot está vacío', () => {
+  const html = buildIncomingMatchEmailHtml({ full_name: null, phone_number: null, agency_name: null }, 'Busco depto', [sampleBlindMatch()]);
+  assert.ok(html.includes('Sin datos de contacto disponibles'));
+});
+
+test('Notifier Email - sendIncomingMatchEmailFallback devuelve false sin tocar la DB si no hay matches', async () => {
+  const throwingClient = { from: () => { throw new Error('no debería consultarse la DB sin matches'); } };
+  const result = await sendIncomingMatchEmailFallback('owner-1', sampleSearcherSnapshot, 'Busco depto', [], throwingClient as any);
+  assert.strictEqual(result, false);
+});
+
+test('Notifier Email - sendIncomingMatchEmailFallback envía el email al address del dueño de la propiedad y devuelve true', async () => {
+  let sentTo: string | undefined;
+  let sentSubject: string | undefined;
+  __setResendClientForTests({
+    emails: {
+      send: async (opts: any) => {
+        sentTo = opts.to;
+        sentSubject = opts.subject;
+        return { data: { id: 'mock-id' }, error: null };
+      }
+    }
+  });
+
+  const client = makeProfileClient({ email: 'dueno@example.com' });
+  const result = await sendIncomingMatchEmailFallback('owner-1', sampleSearcherSnapshot, 'Busco depto', [sampleBlindMatch()], client as any);
+
+  assert.strictEqual(result, true);
+  assert.strictEqual(sentTo, 'dueno@example.com');
+  assert.ok(sentSubject?.includes('1 de tus propiedades'), 'El asunto debe reflejar la cantidad de propiedades.');
+});
+
+test('Notifier Email - sendIncomingMatchEmailFallback devuelve false si el dueño no tiene email en profiles', async () => {
+  let sendCalled = false;
+  __setResendClientForTests({
+    emails: { send: async () => { sendCalled = true; return { data: { id: 'x' }, error: null }; } }
+  });
+
+  const client = makeProfileClient({ email: null });
+  const result = await sendIncomingMatchEmailFallback('owner-1', sampleSearcherSnapshot, 'Busco depto', [sampleBlindMatch()], client as any);
+
+  assert.strictEqual(result, false);
+  assert.strictEqual(sendCalled, false, 'No debe intentar enviar si no hay email registrado.');
 });

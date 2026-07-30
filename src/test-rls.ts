@@ -1,7 +1,9 @@
 // KAN-63: script de verificación manual de RLS + patrón "Tenant Context".
-// Reescrito para el schema v2 actual (profiles/properties/match_queue en inglés, RLS
+// Reescrito para el schema v2 actual (profiles/properties/blind_matches en inglés, RLS
 // tenant_id = auth.uid()) — la versión anterior de este script quedó rota tras SPEC-0012
 // (referenciaba las tablas viejas "Tenant"/"Property" pre-refactor, ya inexistentes).
+// KAN-78: match_queue (legacy WhatsApp) fue eliminada y reemplazada por blind_matches — la
+// sección de prueba de esa tabla se reescribió contra el schema nuevo (ver más abajo).
 //
 // No es parte de `npm test` (requiere una conexión real a Supabase y crea/borra usuarios
 // reales de auth.users vía Admin API) — se corre manualmente con `ts-node src/test-rls.ts`.
@@ -45,7 +47,7 @@ async function createTestTenant(label: string): Promise<string> {
 }
 
 async function cleanupTestTenant(tenantId: string) {
-  await supabase.from('match_queue').delete().eq('tenant_id', tenantId);
+  await supabase.from('blind_matches').delete().eq('tenant_id', tenantId);
   await supabase.from('properties').delete().eq('tenant_id', tenantId);
   await supabase.from('profiles').delete().eq('id', tenantId);
   await supabase.auth.admin.deleteUser(tenantId);
@@ -135,42 +137,60 @@ async function runRlsTest() {
     const soloPropiasA = !!propsA && propsA.every((p: any) => p.tenant_id === tenantAId) && propsA.some((p: any) => p.id === propIdA);
     check(soloPropiasA, `Aislamiento de lectura exitoso: Cliente A leyó ${propsA?.length} fila(s), todas propias.`, `CRÍTICO: Cliente A leyó ${propsA?.length} fila(s) y no todas son propias (posible fuga cross-tenant).`);
 
-    // --- MATCH_QUEUE ---
-    console.log('\n[TEST] match_queue: insertando match propio con Cliente A (debe funcionar)...');
+    // --- BLIND_MATCHES (KAN-78, reemplaza a MATCH_QUEUE) ---
+    console.log('\n[TEST] blind_matches: insertando match propio con Cliente A (debe funcionar)...');
     const matchIdA = randomUUID();
-    const { error: matchInsertErrA } = await clientA.from('match_queue').insert({
+    const { error: matchInsertErrA } = await clientA.from('blind_matches').insert({
       id: matchIdA,
       tenant_id: tenantAId,
-      property_id: propIdA,
-      whatsapp_group_name: 'Grupo Prueba RLS',
-      whatsapp_sender_name: 'Tester A',
-      whatsapp_sender_phone: '5493810000001',
-      raw_message_text: 'busco depto 2 dorm (prueba RLS KAN-63)',
-      is_notified: false
+      matched_tenant_id: tenantBId,
+      raw_search_text: 'busco depto 2 dorm (prueba RLS KAN-78)',
+      property_snapshot: { domicilio: 'Calle Falsa 789', precio: 90000, moneda: 'USD' },
+      searcher_snapshot: { full_name: 'Tester A', phone_number: '5493810000001', agency_name: 'Inmobiliaria Test' },
+      score: 80,
+      reasons: ['Coincidencia de prueba RLS']
     });
-    check(!matchInsertErrA, 'Inserción propia en match_queue exitosa (Tenant A).', `Inserción propia en match_queue falló: ${matchInsertErrA?.message}`);
+    check(!matchInsertErrA, 'Inserción propia en blind_matches exitosa (Tenant A).', `Inserción propia en blind_matches falló: ${matchInsertErrA?.message}`);
 
-    console.log('[TEST] match_queue: intentando insertar con tenant_id ajeno usando Cliente A (debe fallar)...');
-    const { error: matchUsurpErr } = await clientA.from('match_queue').insert({
+    console.log('[TEST] blind_matches: intentando insertar con tenant_id ajeno usando Cliente A (debe fallar)...');
+    const { error: matchUsurpErr } = await clientA.from('blind_matches').insert({
       id: randomUUID(),
       tenant_id: tenantBId,
-      property_id: propIdA,
-      whatsapp_group_name: 'Grupo Prueba RLS',
-      whatsapp_sender_name: 'Tester A',
-      whatsapp_sender_phone: '5493810000001',
-      raw_message_text: 'intento de usurpación de match_queue',
-      is_notified: false
+      matched_tenant_id: tenantAId,
+      raw_search_text: 'intento de usurpación de blind_matches',
+      property_snapshot: { domicilio: 'Calle Falsa 123', precio: 150000, moneda: 'USD' },
+      searcher_snapshot: { full_name: 'Usurpador', phone_number: null, agency_name: null },
+      score: 50,
+      reasons: []
     });
-    check(!!matchUsurpErr, `Inserción en match_queue con tenant_id ajeno bloqueada correctamente: ${matchUsurpErr?.message}`, 'CRÍTICO: se pudo insertar un match_queue con tenant_id de otro tenant.');
+    check(!!matchUsurpErr, `Inserción en blind_matches con tenant_id ajeno bloqueada correctamente: ${matchUsurpErr?.message}`, 'CRÍTICO: se pudo insertar un blind_match con tenant_id de otro tenant.');
 
-    console.log('[TEST] match_queue: Cliente A lee con join a properties (patrón real de GET /api/matches)...');
+    console.log('[TEST] blind_matches: Cliente A lee sus propios matches (patrón real de GET /api/matches)...');
     const { data: matchesA, error: matchSelectErr } = await clientA
-      .from('match_queue')
-      .select('*, property:properties(*)')
+      .from('blind_matches')
+      .select('*')
       .eq('tenant_id', tenantAId);
-    check(!matchSelectErr, 'Lectura con join (match_queue -> properties) sin errores bajo RLS.', `Error en lectura con join: ${matchSelectErr?.message}`);
-    const joinOk = !!matchesA && matchesA.length === 1 && matchesA[0].property?.id === propIdA;
-    check(joinOk, 'El join embebido devolvió la propiedad correcta bajo RLS (ambas tablas del mismo tenant).', `El join embebido no devolvió los datos esperados: ${JSON.stringify(matchesA)}`);
+    check(!matchSelectErr, 'Lectura de blind_matches sin errores bajo RLS.', `Error en lectura de blind_matches: ${matchSelectErr?.message}`);
+    const soloPropiosA = !!matchesA && matchesA.length === 1 && matchesA[0].id === matchIdA;
+    check(soloPropiosA, 'Aislamiento de lectura exitoso: Cliente A leyó solo su propio match.', `CRÍTICO: Cliente A no leyó exactamente su propio match: ${JSON.stringify(matchesA)}`);
+
+    console.log('[TEST] blind_matches: Cliente B lee el match donde es matched_tenant_id (patrón real de GET /api/matches/incoming)...');
+    const { data: incomingB, error: incomingSelectErr } = await clientB
+      .from('blind_matches')
+      .select('*')
+      .eq('matched_tenant_id', tenantBId);
+    check(!incomingSelectErr, 'Lectura de matches entrantes (Cliente B) sin errores bajo RLS.', `Error en lectura de matches entrantes: ${incomingSelectErr?.message}`);
+    const incomingOk = !!incomingB && incomingB.length === 1 && incomingB[0].id === matchIdA;
+    check(incomingOk, 'Policy de solo lectura para matched_tenant_id funciona: Cliente B ve el match donde es el dueño de la propiedad.', `CRÍTICO: Cliente B no vio el match entrante esperado: ${JSON.stringify(incomingB)}`);
+
+    console.log('[TEST] blind_matches: Cliente B intenta editar user_review_status del match ajeno (debe fallar/no afectar filas)...');
+    const { data: updateAttempt, error: updateAttemptErr } = await clientB
+      .from('blind_matches')
+      .update({ user_review_status: 'ACCEPTED' })
+      .eq('id', matchIdA)
+      .select('id');
+    const updateBlocked = !updateAttemptErr && (!updateAttempt || updateAttempt.length === 0);
+    check(updateBlocked || !!updateAttemptErr, 'Edición del match ajeno bloqueada por RLS (Cliente B solo tiene policy de SELECT).', `CRÍTICO: Cliente B pudo editar un blind_match del que no es tenant_id: ${JSON.stringify(updateAttempt)} / ${updateAttemptErr?.message}`);
 
   } finally {
     console.log('\n[TEST] Limpiando datos y usuarios de prueba...');

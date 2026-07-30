@@ -21,6 +21,20 @@ export function buildMatchFoundPushPayload(searchId: string): Record<string, unk
   };
 }
 
+// KAN-78: aviso al dueño de la propiedad matcheada de que un agente la buscó (dirección
+// recíproca — hasta ahora solo se notificaba al buscador). Mismo criterio de privacidad que
+// buildMatchFoundPushPayload: genérico, sin datos del buscador (nombre/teléfono/inmobiliaria) por
+// un canal sin control de acceso propio; el detalle completo va solo por email/dashboard
+// autenticado (GET /api/matches/incoming).
+export function buildIncomingMatchPushPayload(matchId: string): Record<string, unknown> {
+  return {
+    title: 'Matchouse',
+    body: 'Un agente busca una propiedad como una de las tuyas — tocá para ver',
+    tag: `incoming-match-${matchId}`,
+    data: { url: '/' }
+  };
+}
+
 // KAN-48: usado para decidir si el email de respaldo debe dispararse (solo cuando el tenant NO
 // tiene push activo, así los dos canales no se duplican para un mismo evento). Ante un error de
 // red/DB, se devuelve false a propósito (fail-open hacia el email): es preferible arriesgar un
