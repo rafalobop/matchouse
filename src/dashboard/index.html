@@ -206,6 +206,26 @@
     </div>
   </div>
 
+  <!-- Modal de Confirmación de Mapeo de Columnas de Excel (KAN-84) -->
+  <div id="mapping-confirm-modal" class="modal-overlay hidden">
+    <div class="modal-card modal-card-wide">
+      <h3>Confirmá el mapeo de columnas</h3>
+      <p class="section-desc">
+        No pudimos reconocer con certeza algunas columnas de tu Excel. Revisá o corregí a qué campo corresponde
+        cada columna antes de cargar la cartera. Los campos marcados con <strong>*</strong> son obligatorios.
+      </p>
+
+      <div id="mapping-sheets-container" class="mapping-sheets-container"></div>
+
+      <p id="mapping-confirm-error" class="status-msg error hidden"></p>
+
+      <div class="modal-actions">
+        <button id="confirm-mapping-btn" class="btn btn-primary">Confirmar y cargar</button>
+        <button id="cancel-mapping-btn" class="btn btn-secondary">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Overlay de Autenticación Magic Link -->
   <div id="auth-overlay" class="modal-overlay hidden">
     <div class="overlay-card" id="auth-card-step1">

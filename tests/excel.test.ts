@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import * as xlsx from 'xlsx';
-import { processExcelBuffer, syncPropertiesToDatabase, Property } from '../src/services/excel';
+import { processExcelBuffer, processExcelBufferWithColumnMap, peekExcelHeaders, syncPropertiesToDatabase, Property } from '../src/services/excel';
 import { GeocodeResult } from '../src/services/geocoding';
+import { computeHeaderSignature, matchHeadersHeuristically } from '../src/utils/excelHeaderMatcher';
 
 // Mock mínimo del builder encadenable de Supabase, mismo patrón que tests/searchExpiration.test.ts.
 // `selectResult` controla la respuesta del fetch inicial (paso 1); `mutationResult` controla
@@ -274,4 +275,74 @@ test('Excel Service - respeta lat/lng explícitas del Excel sin llamar al geocod
   assert.strictEqual(geocodeCalls, 0, 'Una columna de coordenadas explícita en el Excel no debe disparar geocoding.');
   assert.strictEqual(upsertedRows[0].latitude, -26.5);
   assert.strictEqual(upsertedRows[0].longitude, -65.1);
+});
+
+// --- KAN-84: peekExcelHeaders / processExcelBufferWithColumnMap ---
+
+test('peekExcelHeaders - devuelve los headers normalizados de cada hoja no vacía', () => {
+  const buffer = buildXlsxBuffer('Ventas', [
+    ['Domicilio', 'Precio', 'Dormitorios'],
+    ['Calle Falsa 123', '100000', 2]
+  ]);
+
+  const result = peekExcelHeaders(buffer);
+
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].sheetName, 'Ventas');
+  assert.deepStrictEqual(result[0].headers, ['domicilio', 'precio', 'dormitorios']);
+});
+
+test('peekExcelHeaders - omite hojas vacías o sin filas de datos', () => {
+  const workbook = xlsx.utils.book_new();
+  xlsx.utils.book_append_sheet(workbook, xlsx.utils.aoa_to_sheet([['Domicilio', 'Precio']]), 'SoloHeaders');
+  xlsx.utils.book_append_sheet(workbook, xlsx.utils.aoa_to_sheet([['Domicilio', 'Precio'], ['Calle Falsa 123', '100000']]), 'ConDatos');
+  const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+  const result = peekExcelHeaders(buffer);
+
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].sheetName, 'ConDatos');
+});
+
+test('processExcelBufferWithColumnMap - parsea usando el mapeo provisto (headers renombrados que la heurística por defecto no reconocería)', () => {
+  const buffer = buildXlsxBuffer('Ventas', [
+    ['Address', 'Price'],
+    ['Calle Falsa 123', '150000']
+  ]);
+  const headers = peekExcelHeaders(buffer)[0].headers;
+  const mappings = new Map([[computeHeaderSignature(headers), { domicilio: 'address', precio: 'price' }]]);
+
+  const result = processExcelBufferWithColumnMap(buffer, mappings);
+
+  assert.strictEqual(result.properties.length, 1);
+  assert.strictEqual(result.properties[0].address, 'Calle Falsa 123');
+  assert.strictEqual(result.properties[0].price, 150000);
+});
+
+test('processExcelBufferWithColumnMap - omite una hoja cuya firma no está en el mapa provisto', () => {
+  const buffer = buildXlsxBuffer('Ventas', [
+    ['Address', 'Price'],
+    ['Calle Falsa 123', '150000']
+  ]);
+
+  const result = processExcelBufferWithColumnMap(buffer, new Map());
+
+  assert.strictEqual(result.properties.length, 0);
+});
+
+test('processExcelBuffer y processExcelBufferWithColumnMap producen el mismo resultado para headers estándar en español', () => {
+  const buffer = buildXlsxBuffer('Ventas', [
+    ['Domicilio', 'Precio', 'Dormitorios'],
+    ['Calle Falsa 123', '100000', 2]
+  ]);
+  const headers = peekExcelHeaders(buffer)[0].headers;
+  const heuristic = matchHeadersHeuristically(headers);
+  const mapping: Record<string, string | null> = {};
+  for (const f of heuristic.fields) mapping[f.field] = f.header;
+  const mappings = new Map([[computeHeaderSignature(headers), mapping]]);
+
+  const defaultResult = processExcelBuffer(buffer);
+  const mappedResult = processExcelBufferWithColumnMap(buffer, mappings);
+
+  assert.deepStrictEqual(mappedResult.properties, defaultResult.properties);
 });

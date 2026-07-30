@@ -744,6 +744,95 @@ h1, h2, h3 {
   color: inherit;
 }
 
+/* KAN-84: modal de confirmación de mapeo de columnas de Excel — más ancho que .modal-card
+   (500px) porque cada hoja lista hasta 11 campos con su propio <select>, y con scroll vertical
+   propio para no desbordar la pantalla en catálogos con varias hojas pendientes. */
+.modal-card-wide {
+  max-width: 720px;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.mapping-sheets-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.mapping-sheet-block {
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.25rem;
+  background: rgba(97, 121, 144, 0.05);
+}
+
+.mapping-sheet-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.mapping-sheet-hint {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.75rem;
+}
+
+.mapping-field-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .mapping-field-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.mapping-field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.mapping-field-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.mapping-field-label .required-mark {
+  color: var(--error);
+  margin-left: 0.15rem;
+}
+
+.mapping-field-select {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  background: rgba(97, 121, 144, 0.08);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  font-size: 0.85rem;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.mapping-field-select:focus {
+  border-color: var(--accent);
+}
+
+.mapping-field-select.field-missing-required {
+  border-color: var(--error);
+}
+
+.mapping-field-hint {
+  font-size: 0.72rem;
+  color: var(--warning);
+}
+
 .rejection-options {
   display: flex;
   flex-direction: column;
