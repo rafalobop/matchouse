@@ -42,3 +42,18 @@ Variables requeridas (sin default, el arranque falla si faltan):
   **No hay valores por default hardcodeados en el código** (KAN-81) — son secretos propios de cada entorno y deben configurarse explícitamente. En Railway (producción/staging) ya están seteadas en las variables de entorno del servicio; en local, agregalas a tu `.env`.
 
 El resto de las variables documentadas en `.env.example` son opcionales y tienen defaults razonables definidos en `src/config/env.ts`.
+
+## Formulario de Perfil de Tenant (KAN-90)
+
+Tras el primer login por magic link, el agente completa un formulario obligatorio (`POST /api/profile`, validado en `src/utils/profileValidation.ts`) antes de poder usar el dashboard. Reglas de formato:
+
+| Campo | Requerido | Reglas |
+|---|---|---|
+| Nombre (`first_name`) | Sí | 2–100 caracteres. Solo letras (con acentos/ñ), espacios, guiones y apóstrofes — ej. "María José", "O'Connor". Sin dígitos ni otros símbolos. |
+| Apellido (`last_name`) | Sí | Mismas reglas que Nombre — ej. "Pérez-García". |
+| Teléfono (`phone_number`) | Sí | Máximo 20 caracteres. Solo dígitos, espacios y los símbolos `+`, `-`, `(`, `)`. |
+| Inmobiliaria (`agency_name`) | Sí | Máximo 150 caracteres, sin restricción de charset. |
+| Ciudad (`city`) | Sí | Máximo 150 caracteres, sin restricción de charset. |
+| País (`country`) | Sí | Máximo 150 caracteres, sin restricción de charset. |
+
+`first_name`/`last_name` no tienen columnas propias en `profiles` — se combinan en el campo existente `full_name` (`profiles.full_name`) al persistir, sin necesidad de una migración de schema. `full_name` **ya no se autocompleta con el email truncado** (bug corregido en KAN-90, ver `POST /api/auth/exchange-token`): arranca vacío hasta que el agente completa el formulario.

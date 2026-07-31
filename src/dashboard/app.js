@@ -40,6 +40,8 @@ const authStep2Error = document.getElementById('auth-step2-error');
 // Elementos del DOM - Perfil de Tenant (KAN-68)
 const profileOverlay = document.getElementById('profile-overlay');
 const profileForm = document.getElementById('profile-form');
+const profileFirstNameInput = document.getElementById('profile-firstname-input');
+const profileLastNameInput = document.getElementById('profile-lastname-input');
 const profilePhoneInput = document.getElementById('profile-phone-input');
 const profileAgencyInput = document.getElementById('profile-agency-input');
 const profileCityInput = document.getElementById('profile-city-input');
@@ -222,12 +224,14 @@ if (profileForm) {
   profileForm.addEventListener('submit', async (event) => {
     event.preventDefault();
 
+    const first_name = profileFirstNameInput.value.trim();
+    const last_name = profileLastNameInput.value.trim();
     const phone_number = profilePhoneInput.value.trim();
     const agency_name = profileAgencyInput.value.trim();
     const city = profileCityInput.value.trim();
     const country = profileCountryInput.value.trim();
 
-    if (!phone_number || !agency_name || !city || !country) {
+    if (!first_name || !last_name || !phone_number || !agency_name || !city || !country) {
       showProfileFormError('Completá todos los campos para continuar.');
       return;
     }
@@ -240,7 +244,7 @@ if (profileForm) {
       const res = await fetchWithTimeout('/api/profile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone_number, agency_name, city, country })
+        body: JSON.stringify({ first_name, last_name, phone_number, agency_name, city, country })
       }, 15000, '[PERFIL]');
 
       const data = await res.json();

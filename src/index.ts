@@ -286,11 +286,16 @@ app.post('/api/auth/exchange-token', async (req, res) => {
       logger.warn({ supabaseError: error?.message }, '[AUTH] Token inválido o expirado en exchange-token');
       return res.status(401).json({ error: 'Token inválido o expirado.' });
     }
-    // Crear perfil en primera sesión si no existe (full_name/email son NOT NULL en la tabla)
+    // Crear perfil en primera sesión si no existe (full_name/email son NOT NULL en la tabla).
+    // KAN-90: full_name arranca vacío a propósito — antes se autocompletaba con el local-part
+    // del email (`user.email.split('@')[0]`), lo que dejaba nombres reales truncados/falsos
+    // ("juan.perez" en vez de "Juan Pérez") sin que el usuario lo notara. Ahora se le pide
+    // explícitamente en el formulario de completar perfil (POST /api/profile más abajo), igual
+    // que ya pasa con telefono/inmobiliaria/ciudad/pais.
     const { error: profileError } = await supabase.from('profiles').upsert({
       id: user.id,
       email: user.email,
-      full_name: user.email?.split('@')[0] || user.id
+      full_name: ''
     }, { onConflict: 'id', ignoreDuplicates: true });
     if (profileError) {
       logger.error({ tenantId: user.id, err: profileError.message }, '[AUTH] Error al crear/actualizar perfil');
@@ -345,17 +350,23 @@ app.get('/api/profile', tenantAuthMiddleware, async (req, res) => {
 app.post('/api/profile', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
   const tenantSupabase = (req as any).supabaseClient;
-  const { phone_number, agency_name, city, country } = req.body;
+  // KAN-90: first_name/last_name no tienen columnas propias en `profiles` (solo existe
+  // `full_name`, un campo combinado desde SPEC-0012) — se piden separados en el formulario para
+  // que queden marcados como dos campos obligatorios distintos (AC1), y acá se combinan en
+  // `full_name` al persistir, sin necesidad de una migración de schema para este fix.
+  const { first_name, last_name, phone_number, agency_name, city, country } = req.body;
 
-  const validationError = validateProfileInput({ phone_number, agency_name, city, country });
+  const validationError = validateProfileInput({ first_name, last_name, phone_number, agency_name, city, country });
   if (validationError) {
     return res.status(400).json({ error: validationError });
   }
 
   try {
+    const fullName = `${(first_name as string).trim()} ${(last_name as string).trim()}`.trim();
     const { data: profile, error } = await tenantSupabase
       .from('profiles')
       .update({
+        full_name: fullName,
         phone_number: (phone_number as string).trim(),
         agency_name: (agency_name as string).trim(),
         city: (city as string).trim(),
