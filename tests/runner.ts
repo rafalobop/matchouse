@@ -7,6 +7,8 @@ import './blindMatching.test';
 import './coordinator.test';
 import './dolar.test';
 import './excel.test';
+import './excelHeaderMatcher.test';
+import './excelMapping.test';
 import './geocoding.test';
 import './graph-em.test';
 import './graph-integration.test';

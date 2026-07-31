@@ -7,6 +7,7 @@ import { supabase as serviceRoleSupabase } from './supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { geocodeAddress, GeocodeResult } from './geocoding';
 import { buildGeocodableQuery } from '../utils/addressParser';
+import { ExcelMappingField, EXCEL_MAPPING_FIELDS, computeHeaderSignature } from '../utils/excelHeaderMatcher';
 export interface Property {
   // Address components (era: domicilio + pisoLote)
   address: string;
@@ -109,8 +110,276 @@ function parsePisoLote(raw: string): { floor?: string; unit?: string; block?: st
   return { unit: raw.trim() };
 }
 
+// KAN-84: índices de columna resueltos para una hoja, uno por cada campo de negocio conocido
+// (-1 = columna no encontrada). Producido tanto por la heurística por defecto
+// (`resolveHeuristicColumnIndices`, sin cambios de comportamiento respecto al código pre-KAN-84)
+// como por el mapeo aprendido/confirmado por tenant (`processExcelBufferWithColumnMap`) — ambos
+// alimentan el mismo `parseSheetToProperties`, sin duplicar la lógica de parseo de filas.
+type SheetColumnIndices = Record<ExcelMappingField, number>;
+
+// Heurística por defecto: exactamente la misma resolución de columnas que vivía inline en
+// `processExcelBuffer` antes de KAN-84 (mismos keywords, mismo fallback de "domicilio" a la
+// columna 0). Preservada tal cual para no alterar el comportamiento ya cubierto por
+// `tests/excel.test.ts`.
+function resolveHeuristicColumnIndices(headers: string[], sheetName: string): SheetColumnIndices {
+  let domicilio = headers.indexOf('domicilio');
+  if (domicilio === -1) {
+    // Si no hay columna "domicilio", asumir la primera columna (columna 0) como la dirección
+    domicilio = 0;
+    console.log(`[EXCEL] No se encontró columna "domicilio". Asumiendo columna 0 ("${headers[0]}") como domicilio.`);
+  }
+
+  return {
+    domicilio,
+    piso_lote: headers.findIndex(h => h.includes('piso') || h.includes('lote')),
+    precio: headers.indexOf('precio'),
+    expensas: headers.indexOf('expensas'),
+    dormitorios: headers.findIndex(h => h.includes('dormitorio') || h.includes('dorm')),
+    caracteristicas: headers.findIndex(h => h.includes('caracteristica') || h.includes('características') || h.includes('descripcion')),
+    contacto: headers.indexOf('contacto'),
+    tipo: headers.indexOf('tipo'),
+    operacion: headers.indexOf('operacion'),
+    latitud: headers.indexOf('latitud'),
+    longitud: headers.indexOf('longitud')
+  };
+}
+
+// KAN-84: resuelve los índices de columna a partir de un mapeo de campo -> texto de header
+// (aprendido/confirmado por tenant, ver excelMapping.ts), buscando ese texto exacto (sin
+// distinguir mayúsculas) dentro de los headers reales de ESTA hoja. Si el header guardado ya no
+// aparece (la agencia cambió el Excel), el campo queda sin resolver (-1) — mismo criterio de
+// "hoja sin domicilio/precio se omite" que ya aplica en el camino heurístico.
+function resolveColumnIndicesFromMapping(headers: string[], mapping: Partial<Record<ExcelMappingField, string | null>>): SheetColumnIndices {
+  const indices = {} as SheetColumnIndices;
+  for (const field of EXCEL_MAPPING_FIELDS) {
+    const headerText = mapping[field];
+    indices[field] = headerText ? headers.indexOf(headerText.toLowerCase().trim()) : -1;
+  }
+  return indices;
+}
+
+// Parseo de filas, compartido por `processExcelBuffer` (columnas resueltas por heurística) y
+// `processExcelBufferWithColumnMap` (columnas resueltas por el mapeo aprendido por tenant) — sin
+// cambios de comportamiento respecto al bucle que vivía inline en `processExcelBuffer` antes de
+// KAN-84, solo parametrizado por `colIndices` en vez de variables `colX` individuales.
+function parseSheetToProperties(
+  rows: any[][],
+  colIndices: SheetColumnIndices,
+  sheetName: string,
+  operacionDefault: 'venta' | 'alquiler',
+  zona: string
+): { properties: Property[]; priceParseErrors: PriceParseError[] } {
+  const properties: Property[] = [];
+  const priceParseErrors: PriceParseError[] = [];
+  const { domicilio: colDomicilio, piso_lote: colPisoLote, precio: colPrecio, expensas: colExpensas,
+    dormitorios: colDormitorios, caracteristicas: colCaracteristicas, contacto: colContacto,
+    tipo: colTipo, operacion: colOperacion, latitud: colLatitud, longitud: colLongitud } = colIndices;
+
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i] as any[];
+    if (!row || !row[colDomicilio]) continue; // Fila vacía
+
+    // Evitar procesar filas separadoras/agrupadoras vacías
+    const rowDomicilioText = String(row[colDomicilio] || '').trim();
+    const nonEpCount = row.filter(cell => cell !== null && cell !== undefined && String(cell).trim() !== '').length;
+    if (nonEpCount <= 2 && (rowDomicilioText.toUpperCase() === rowDomicilioText) && rowDomicilioText.length > 3) {
+      // Ignorar fila de separador/título visual (ej: "VENTAS CASAS CAPITAL")
+      continue;
+    }
+
+    // Parsear precio y moneda
+    const rawPrecio = String(row[colPrecio] || '').trim();
+    let precioVal = 0;
+    let monedaVal: 'USD' | 'ARS' = 'USD';
+
+    if (rawPrecio) {
+      // 1. Detectar moneda
+      const rawLower = rawPrecio.toLowerCase();
+      if (rawLower.includes('ars') || rawLower.includes('$') || rawLower.includes('pesos')) {
+        monedaVal = 'ARS';
+      } else {
+        monedaVal = 'USD'; // Por defecto
+      }
+
+      // 2. Limpiar el precio removiendo letras, signo $, y espacios
+      let cleaned = rawPrecio.replace(/[a-zA-Z\$\s]/g, '').trim();
+
+      // 3. Normalizar separadores de miles y decimales
+      if (cleaned.includes(',') && cleaned.includes('.')) {
+        // Si tiene ambos, ej "120.000,50" -> remover puntos y cambiar coma a punto
+        cleaned = cleaned.replace(/\./g, '').replace(/,/g, '.');
+      } else if (cleaned.includes(',')) {
+        // Si solo tiene coma: "120000,50" -> decimal, "120,000" -> miles
+        const parts = cleaned.split(',');
+        if (parts.length === 2 && parts[1].length <= 2) {
+          cleaned = cleaned.replace(/,/g, '.');
+        } else {
+          cleaned = cleaned.replace(/,/g, '');
+        }
+      } else if (cleaned.includes('.')) {
+        // Si solo tiene punto: "120.000" -> miles (quitar), "120000.50" -> decimal (mantener)
+        const parts = cleaned.split('.');
+        if (parts.length === 2 && parts[1].length <= 2) {
+          // Es decimal, mantener punto
+        } else {
+          cleaned = cleaned.replace(/\./g, '');
+        }
+      }
+
+      const num = parseFloat(cleaned);
+      if (!isNaN(num) && num > 0) {
+        precioVal = num;
+      } else {
+        logger.warn(
+          { sheetName, address: rowDomicilioText, rawValue: rawPrecio },
+          '[EXCEL] Precio no parseable en fila, se registra como dato faltante (price=0)'
+        );
+        priceParseErrors.push({ sheetName, address: rowDomicilioText, rawValue: rawPrecio });
+      }
+    }
+
+    // Parsear expensas
+    let expensasVal = 0;
+    if (colExpensas !== -1 && row[colExpensas] !== undefined) {
+      const rawExp = String(row[colExpensas]).trim();
+      let cleanedExp = rawExp.replace(/[a-zA-Z\$\s]/g, '').trim();
+      if (cleanedExp.includes(',') && cleanedExp.includes('.')) {
+        cleanedExp = cleanedExp.replace(/\./g, '').replace(/,/g, '.');
+      } else if (cleanedExp.includes(',')) {
+        const parts = cleanedExp.split(',');
+        if (parts.length === 2 && parts[1].length <= 2) {
+          cleanedExp = cleanedExp.replace(/,/g, '.');
+        } else {
+          cleanedExp = cleanedExp.replace(/,/g, '');
+        }
+      } else if (cleanedExp.includes('.')) {
+        const parts = cleanedExp.split('.');
+        if (parts.length === 2 && parts[1].length <= 2) {
+          // decimal, mantener
+        } else {
+          cleanedExp = cleanedExp.replace(/\./g, '');
+        }
+      }
+      const num = parseFloat(cleanedExp);
+      if (!isNaN(num)) expensasVal = num;
+    }
+
+    // Parsear dormitorios
+    let dormitoriosVal = 0;
+    if (colDormitorios !== -1 && row[colDormitorios] !== undefined) {
+      const num = parseInt(String(row[colDormitorios]), 10);
+      if (!isNaN(num)) dormitoriosVal = num;
+    }
+
+    const rawPisoLote = colPisoLote !== -1 ? String(row[colPisoLote] || '') : '';
+    const rawCaracteristicas = colCaracteristicas !== -1 ? String(row[colCaracteristicas] || '') : '';
+
+    // Determinar tipo de propiedad (columna explícita o heurística)
+    let tipoPropiedad = detectTipoPropiedad(rowDomicilioText, rawPisoLote, rawCaracteristicas);
+    if (colTipo !== -1 && row[colTipo]) {
+      const rawTipo = String(row[colTipo]).toLowerCase().trim();
+      if (rawTipo.includes('casa')) {
+        tipoPropiedad = 'casa';
+      } else if (rawTipo.includes('dpto') || rawTipo.includes('depto') || rawTipo.includes('departamento')) {
+        tipoPropiedad = 'departamento';
+      } else if (rawTipo.includes('terreno') || rawTipo.includes('lote')) {
+        tipoPropiedad = 'terreno';
+      } else if (rawTipo.includes('local')) {
+        tipoPropiedad = 'local';
+      } else if (rawTipo.includes('oficina')) {
+        tipoPropiedad = 'oficina';
+      } else if (rawTipo.includes('otro')) {
+        tipoPropiedad = 'otro';
+      }
+    }
+
+    // Determinar operación (columna explícita o predeterminada por hoja)
+    let operacionProp = operacionDefault;
+    if (colOperacion !== -1 && row[colOperacion]) {
+      const rawOperacion = String(row[colOperacion]).toLowerCase().trim();
+      if (rawOperacion.includes('alquiler') || rawOperacion.includes('alq')) {
+        operacionProp = 'alquiler';
+      } else if (rawOperacion.includes('venta') || rawOperacion.includes('vta')) {
+        operacionProp = 'venta';
+      }
+    }
+
+    // Parsear latitud y longitud
+    let latitudVal: number | undefined = undefined;
+    let longitudVal: number | undefined = undefined;
+    if (colLatitud !== -1 && row[colLatitud] !== undefined) {
+      const val = parseFloat(String(row[colLatitud]));
+      if (!isNaN(val)) latitudVal = val;
+    }
+    if (colLongitud !== -1 && row[colLongitud] !== undefined) {
+      const val = parseFloat(String(row[colLongitud]));
+      if (!isNaN(val)) longitudVal = val;
+    }
+
+    properties.push({
+      address: rowDomicilioText,
+      ...parsePisoLote(rawPisoLote),
+      price: precioVal,
+      currency: monedaVal,
+      maintenance_fees: expensasVal,
+      bedrooms: dormitoriosVal,
+      features: rawCaracteristicas,
+      contact_info: colContacto !== -1 ? String(row[colContacto] || '') : '',
+      zone_display_name: zona,
+      operation: operacionProp,
+      property_type: tipoPropiedad,
+      latitude: latitudVal,
+      longitude: longitudVal,
+      sheet_name: sheetName
+    });
+  }
+
+  return { properties, priceParseErrors };
+}
+
+function sheetOperacionYZona(sheetName: string): { operacion: 'venta' | 'alquiler'; zona: string } {
+  let operacion: 'venta' | 'alquiler' = 'venta';
+  if (sheetName.toLowerCase().includes('alquiler') || sheetName.toLowerCase().includes('alq')) {
+    operacion = 'alquiler';
+  }
+
+  let zona = 'San Miguel de Tucumán';
+  if (sheetName.toLowerCase().includes('yerba buena') || sheetName.toLowerCase().includes('yb')) {
+    zona = 'Yerba Buena';
+  }
+
+  return { operacion, zona };
+}
+
+export interface SheetHeaders {
+  sheetName: string;
+  headers: string[];
+}
+
+// KAN-84: extrae solo los headers (fila 0) de cada hoja no vacía, sin parsear filas — usado por
+// `POST /api/upload` (src/index.ts) para resolver el mapeo de columnas por tenant ANTES de
+// decidir con qué función procesar el archivo completo (`processExcelBuffer` o
+// `processExcelBufferWithColumnMap`). Mismo criterio de "hoja vacía" que ambas (rows.length < 2).
+export function peekExcelHeaders(buffer: Buffer): SheetHeaders[] {
+  const workbook = xlsx.read(buffer, { type: 'buffer' });
+  const result: SheetHeaders[] = [];
+
+  for (const sheetName of workbook.SheetNames) {
+    const worksheet = workbook.Sheets[sheetName];
+    const rows = xlsx.utils.sheet_to_json<any[]>(worksheet, { header: 1 });
+    if (!rows || rows.length < 2) continue;
+
+    const headers = (rows[0] as any[]).map(h => String(h || '').toLowerCase().trim());
+    result.push({ sheetName, headers });
+  }
+
+  return result;
+}
+
 /**
- * Procesa un buffer de archivo Excel y lo convierte a un arreglo de Property
+ * Procesa un buffer de archivo Excel y lo convierte a un arreglo de Property, resolviendo las
+ * columnas por la heurística de keywords por defecto (sin aprendizaje por tenant — ver
+ * `processExcelBufferWithColumnMap` para el camino que usa un mapeo aprendido/confirmado, KAN-84).
  */
 export function processExcelBuffer(buffer: Buffer): ProcessExcelResult {
   const workbook = xlsx.read(buffer, { type: 'buffer' });
@@ -118,16 +387,7 @@ export function processExcelBuffer(buffer: Buffer): ProcessExcelResult {
   const priceParseErrors: PriceParseError[] = [];
 
   for (const sheetName of workbook.SheetNames) {
-    // Determinar operación y zona según el nombre de la pestaña
-    let operacion: 'venta' | 'alquiler' = 'venta';
-    if (sheetName.toLowerCase().includes('alquiler') || sheetName.toLowerCase().includes('alq')) {
-      operacion = 'alquiler';
-    }
-
-    let zona = 'San Miguel de Tucumán';
-    if (sheetName.toLowerCase().includes('yerba buena') || sheetName.toLowerCase().includes('yb')) {
-      zona = 'Yerba Buena';
-    }
+    const { operacion, zona } = sheetOperacionYZona(sheetName);
 
     const worksheet = workbook.Sheets[sheetName];
     // Convertir a matriz de filas
@@ -140,195 +400,67 @@ export function processExcelBuffer(buffer: Buffer): ProcessExcelResult {
 
     // Procesar cabeceras
     const headers = (rows[0] as any[]).map(h => String(h || '').toLowerCase().trim());
+    const colIndices = resolveHeuristicColumnIndices(headers, sheetName);
 
-    // Índices de columnas clave (con soporte flexible)
-    let colDomicilio = headers.indexOf('domicilio');
-    if (colDomicilio === -1) {
-      // Si no hay columna "domicilio", asumir la primera columna (columna 0) como la dirección
-      colDomicilio = 0;
-      console.log(`[EXCEL] No se encontró columna "domicilio". Asumiendo columna 0 ("${headers[0]}") como domicilio.`);
-    }
-    const colPisoLote = headers.findIndex(h => h.includes('piso') || h.includes('lote'));
-    const colPrecio = headers.indexOf('precio');
-    const colExpensas = headers.indexOf('expensas');
-    const colDormitorios = headers.findIndex(h => h.includes('dormitorio') || h.includes('dorm'));
-    const colCaracteristicas = headers.findIndex(h => h.includes('caracteristica') || h.includes('características') || h.includes('descripcion'));
-    const colContacto = headers.indexOf('contacto');
-
-    // Columnas de tipo y operacion explicitas (Opción A)
-    const colTipo = headers.indexOf('tipo');
-    const colOperacion = headers.indexOf('operacion');
-    
-    // Coordenadas
-    const colLatitud = headers.indexOf('latitud');
-    const colLongitud = headers.indexOf('longitud');
-
-    if (colDomicilio === -1 || colPrecio === -1) {
+    if (colIndices.domicilio === -1 || colIndices.precio === -1) {
       console.warn(`[EXCEL] Pestaña "${sheetName}" omitida: no se encontró la columna de Precio o el Domicilio.`);
       continue;
     }
 
     console.log(`[EXCEL] Procesando pestaña "${sheetName}" (Zona predeterminada: ${zona}, Operación predeterminada: ${operacion})...`);
 
-    // Parsear filas
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i] as any[];
-      if (!row || !row[colDomicilio]) continue; // Fila vacía
+    const sheetResult = parseSheetToProperties(rows, colIndices, sheetName, operacion, zona);
+    catalog.push(...sheetResult.properties);
+    priceParseErrors.push(...sheetResult.priceParseErrors);
+  }
 
-      // Evitar procesar filas separadoras/agrupadoras vacías
-      const rowDomicilioText = String(row[colDomicilio] || '').trim();
-      const nonEpCount = row.filter(cell => cell !== null && cell !== undefined && String(cell).trim() !== '').length;
-      if (nonEpCount <= 2 && (rowDomicilioText.toUpperCase() === rowDomicilioText) && rowDomicilioText.length > 3) {
-        // Ignorar fila de separador/título visual (ej: "VENTAS CASAS CAPITAL")
-        continue;
-      }
+  return { properties: catalog, priceParseErrors };
+}
 
-      // Parsear precio y moneda
-      const rawPrecio = String(row[colPrecio] || '').trim();
-      let precioVal = 0;
-      let monedaVal: 'USD' | 'ARS' = 'USD';
+// KAN-84: variante que resuelve las columnas de cada hoja a partir de un mapeo por tenant ya
+// aprendido/confirmado (ver `excelMapping.ts#resolveColumnMapping`), en vez de la heurística fija
+// de keywords en español. `mappingsBySignature` está keyeado por `computeHeaderSignature` de la
+// hoja (headers normalizados y ordenados) — permite que un mismo archivo con varias pestañas de
+// estructura distinta use el mapeo correcto para cada una. Una hoja cuya firma no está en el mapa
+// (o cuyo mapeo resuelto deja domicilio/precio sin encontrar) se omite, igual que el camino
+// heurístico.
+export function processExcelBufferWithColumnMap(
+  buffer: Buffer,
+  mappingsBySignature: Map<string, Partial<Record<ExcelMappingField, string | null>>>
+): ProcessExcelResult {
+  const workbook = xlsx.read(buffer, { type: 'buffer' });
+  const catalog: Property[] = [];
+  const priceParseErrors: PriceParseError[] = [];
 
-      if (rawPrecio) {
-        // 1. Detectar moneda
-        const rawLower = rawPrecio.toLowerCase();
-        if (rawLower.includes('ars') || rawLower.includes('$') || rawLower.includes('pesos')) {
-          monedaVal = 'ARS';
-        } else {
-          monedaVal = 'USD'; // Por defecto
-        }
+  for (const sheetName of workbook.SheetNames) {
+    const { operacion, zona } = sheetOperacionYZona(sheetName);
 
-        // 2. Limpiar el precio removiendo letras, signo $, y espacios
-        let cleaned = rawPrecio.replace(/[a-zA-Z\$\s]/g, '').trim();
+    const worksheet = workbook.Sheets[sheetName];
+    const rows = xlsx.utils.sheet_to_json<any[]>(worksheet, { header: 1 });
 
-        // 3. Normalizar separadores de miles y decimales
-        if (cleaned.includes(',') && cleaned.includes('.')) {
-          // Si tiene ambos, ej "120.000,50" -> remover puntos y cambiar coma a punto
-          cleaned = cleaned.replace(/\./g, '').replace(/,/g, '.');
-        } else if (cleaned.includes(',')) {
-          // Si solo tiene coma: "120000,50" -> decimal, "120,000" -> miles
-          const parts = cleaned.split(',');
-          if (parts.length === 2 && parts[1].length <= 2) {
-            cleaned = cleaned.replace(/,/g, '.');
-          } else {
-            cleaned = cleaned.replace(/,/g, '');
-          }
-        } else if (cleaned.includes('.')) {
-          // Si solo tiene punto: "120.000" -> miles (quitar), "120000.50" -> decimal (mantener)
-          const parts = cleaned.split('.');
-          if (parts.length === 2 && parts[1].length <= 2) {
-            // Es decimal, mantener punto
-          } else {
-            cleaned = cleaned.replace(/\./g, '');
-          }
-        }
-
-        const num = parseFloat(cleaned);
-        if (!isNaN(num) && num > 0) {
-          precioVal = num;
-        } else {
-          logger.warn(
-            { sheetName, address: rowDomicilioText, rawValue: rawPrecio },
-            '[EXCEL] Precio no parseable en fila, se registra como dato faltante (price=0)'
-          );
-          priceParseErrors.push({ sheetName, address: rowDomicilioText, rawValue: rawPrecio });
-        }
-      }
-
-      // Parsear expensas
-      let expensasVal = 0;
-      if (colExpensas !== -1 && row[colExpensas] !== undefined) {
-        const rawExp = String(row[colExpensas]).trim();
-        let cleanedExp = rawExp.replace(/[a-zA-Z\$\s]/g, '').trim();
-        if (cleanedExp.includes(',') && cleanedExp.includes('.')) {
-          cleanedExp = cleanedExp.replace(/\./g, '').replace(/,/g, '.');
-        } else if (cleanedExp.includes(',')) {
-          const parts = cleanedExp.split(',');
-          if (parts.length === 2 && parts[1].length <= 2) {
-            cleanedExp = cleanedExp.replace(/,/g, '.');
-          } else {
-            cleanedExp = cleanedExp.replace(/,/g, '');
-          }
-        } else if (cleanedExp.includes('.')) {
-          const parts = cleanedExp.split('.');
-          if (parts.length === 2 && parts[1].length <= 2) {
-            // decimal, mantener
-          } else {
-            cleanedExp = cleanedExp.replace(/\./g, '');
-          }
-        }
-        const num = parseFloat(cleanedExp);
-        if (!isNaN(num)) expensasVal = num;
-      }
-
-      // Parsear dormitorios
-      let dormitoriosVal = 0;
-      if (colDormitorios !== -1 && row[colDormitorios] !== undefined) {
-        const num = parseInt(String(row[colDormitorios]), 10);
-        if (!isNaN(num)) dormitoriosVal = num;
-      }
-
-      const rawPisoLote = colPisoLote !== -1 ? String(row[colPisoLote] || '') : '';
-      const rawCaracteristicas = colCaracteristicas !== -1 ? String(row[colCaracteristicas] || '') : '';
-
-      // Determinar tipo de propiedad (columna explícita o heurística)
-      let tipoPropiedad = detectTipoPropiedad(rowDomicilioText, rawPisoLote, rawCaracteristicas);
-      if (colTipo !== -1 && row[colTipo]) {
-        const rawTipo = String(row[colTipo]).toLowerCase().trim();
-        if (rawTipo.includes('casa')) {
-          tipoPropiedad = 'casa';
-        } else if (rawTipo.includes('dpto') || rawTipo.includes('depto') || rawTipo.includes('departamento')) {
-          tipoPropiedad = 'departamento';
-        } else if (rawTipo.includes('terreno') || rawTipo.includes('lote')) {
-          tipoPropiedad = 'terreno';
-        } else if (rawTipo.includes('local')) {
-          tipoPropiedad = 'local';
-        } else if (rawTipo.includes('oficina')) {
-          tipoPropiedad = 'oficina';
-        } else if (rawTipo.includes('otro')) {
-          tipoPropiedad = 'otro';
-        }
-      }
-
-      // Determinar operación (columna explícita o predeterminada por hoja)
-      let operacionProp = operacion;
-      if (colOperacion !== -1 && row[colOperacion]) {
-        const rawOperacion = String(row[colOperacion]).toLowerCase().trim();
-        if (rawOperacion.includes('alquiler') || rawOperacion.includes('alq')) {
-          operacionProp = 'alquiler';
-        } else if (rawOperacion.includes('venta') || rawOperacion.includes('vta')) {
-          operacionProp = 'venta';
-        }
-      }
-
-      // Parsear latitud y longitud
-      let latitudVal: number | undefined = undefined;
-      let longitudVal: number | undefined = undefined;
-      if (colLatitud !== -1 && row[colLatitud] !== undefined) {
-        const val = parseFloat(String(row[colLatitud]));
-        if (!isNaN(val)) latitudVal = val;
-      }
-      if (colLongitud !== -1 && row[colLongitud] !== undefined) {
-        const val = parseFloat(String(row[colLongitud]));
-        if (!isNaN(val)) longitudVal = val;
-      }
-
-      catalog.push({
-        address: rowDomicilioText,
-        ...parsePisoLote(rawPisoLote),
-        price: precioVal,
-        currency: monedaVal,
-        maintenance_fees: expensasVal,
-        bedrooms: dormitoriosVal,
-        features: rawCaracteristicas,
-        contact_info: colContacto !== -1 ? String(row[colContacto] || '') : '',
-        zone_display_name: zona,
-        operation: operacionProp,
-        property_type: tipoPropiedad,
-        latitude: latitudVal,
-        longitude: longitudVal,
-        sheet_name: sheetName
-      });
+    if (!rows || rows.length < 2) {
+      console.log(`[EXCEL] La pestaña "${sheetName}" está vacía o no tiene suficientes filas.`);
+      continue;
     }
+
+    const headersRaw = (rows[0] as any[]).map(h => String(h || '').toLowerCase().trim());
+    const signature = computeHeaderSignature(headersRaw);
+    const mapping = mappingsBySignature.get(signature);
+
+    if (!mapping) {
+      logger.warn({ sheetName, signature }, '[EXCEL] No hay mapeo de columnas resuelto para esta hoja, se omite.');
+      continue;
+    }
+
+    const colIndices = resolveColumnIndicesFromMapping(headersRaw, mapping);
+    if (colIndices.domicilio === -1 || colIndices.precio === -1) {
+      logger.warn({ sheetName }, '[EXCEL] El mapeo de columnas no resuelve domicilio/precio en esta hoja, se omite.');
+      continue;
+    }
+
+    const sheetResult = parseSheetToProperties(rows, colIndices, sheetName, operacion, zona);
+    catalog.push(...sheetResult.properties);
+    priceParseErrors.push(...sheetResult.priceParseErrors);
   }
 
   return { properties: catalog, priceParseErrors };

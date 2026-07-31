@@ -5,6 +5,7 @@ import {
   extractFromTextInput,
   extractZoneIntent,
   validateMatch,
+  suggestExcelColumnMapping,
   normalizeAgent1,
   GeminiStrategy,
   OpenAIStrategy,
@@ -125,7 +126,8 @@ const geminiInvocations: Array<{ label: string; call: (s: GeminiStrategy) => Pro
   { label: 'extractRealEstateRequest', call: (s) => s.extractRealEstateRequest('mensaje de prueba', 'instrucción') },
   { label: 'extractFromFreeText', call: (s) => s.extractFromFreeText('texto libre de prueba', 'instrucción') },
   { label: 'extractZoneIntent', call: (s) => s.extractZoneIntent('mensaje de prueba', 'instrucción', 'venta') },
-  { label: 'validateMatch', call: (s) => s.validateMatch('mensaje', {}, {}, 'instrucción') }
+  { label: 'validateMatch', call: (s) => s.validateMatch('mensaje', {}, {}, 'instrucción') },
+  { label: 'suggestExcelColumnMapping', call: (s) => s.suggestExcelColumnMapping(['domicilio', 'precio'], 'instrucción') }
 ];
 
 test('AI Service (KAN-70) - las 4 llamadas de GeminiStrategy a generateContent usan withTimeout (rechazan con TimeoutError si el SDK cuelga)', async () => {
@@ -155,7 +157,8 @@ const openaiInvocations: Array<{ label: string; call: (s: OpenAIStrategy) => Pro
   { label: 'extractRealEstateRequest', call: (s) => s.extractRealEstateRequest('mensaje de prueba', 'instrucción') },
   { label: 'extractFromFreeText', call: (s) => s.extractFromFreeText('texto libre de prueba', 'instrucción') },
   { label: 'extractZoneIntent', call: (s) => s.extractZoneIntent('mensaje de prueba', 'instrucción', 'venta') },
-  { label: 'validateMatch', call: (s) => s.validateMatch('mensaje', {}, {}, 'instrucción') }
+  { label: 'validateMatch', call: (s) => s.validateMatch('mensaje', {}, {}, 'instrucción') },
+  { label: 'suggestExcelColumnMapping', call: (s) => s.suggestExcelColumnMapping(['domicilio', 'precio'], 'instrucción') }
 ];
 
 test(
@@ -231,3 +234,63 @@ test(
     }
   }
 );
+
+// --- KAN-84: suggestExcelColumnMapping ---
+
+test('AI Service (KAN-84) - suggestExcelColumnMapping devuelve [] (no lanza) cuando todas las estrategias fallan', async () => {
+  const originalGemini = GeminiStrategy.prototype.suggestExcelColumnMapping;
+  const originalOpenAI = OpenAIStrategy.prototype.suggestExcelColumnMapping;
+
+  GeminiStrategy.prototype.suggestExcelColumnMapping = async () => { throw new Error('Falla simulada de Gemini'); };
+  OpenAIStrategy.prototype.suggestExcelColumnMapping = async () => { throw new Error('Falla simulada de OpenAI'); };
+
+  try {
+    const result = await suggestExcelColumnMapping(['Domicilio', 'Precio']);
+    assert.deepStrictEqual(result, [], 'Debe devolver un array vacío (no un objeto por defecto ni una excepción) cuando ninguna estrategia responde.');
+  } finally {
+    GeminiStrategy.prototype.suggestExcelColumnMapping = originalGemini;
+    OpenAIStrategy.prototype.suggestExcelColumnMapping = originalOpenAI;
+  }
+});
+
+test('AI Service (KAN-84) - suggestExcelColumnMapping normaliza la respuesta exitosa de la estrategia', async () => {
+  const originalGemini = GeminiStrategy.prototype.suggestExcelColumnMapping;
+
+  GeminiStrategy.prototype.suggestExcelColumnMapping = async () => ({
+    mapping: [
+      { field: 'domicilio', header: 'Dirección', confidence: 0.95 },
+      { field: 'precio', header: null, confidence: 0 }
+    ]
+  });
+
+  try {
+    const result = await suggestExcelColumnMapping(['Dirección']);
+    assert.strictEqual(result.length, 2);
+    assert.deepStrictEqual(result[0], { field: 'domicilio', header: 'Dirección', confidence: 0.95 });
+    assert.deepStrictEqual(result[1], { field: 'precio', header: null, confidence: 0 });
+  } finally {
+    GeminiStrategy.prototype.suggestExcelColumnMapping = originalGemini;
+  }
+});
+
+test('AI Service (KAN-84) - suggestExcelColumnMapping cae a la siguiente estrategia si la respuesta no tiene el formato esperado', async () => {
+  const originalGemini = GeminiStrategy.prototype.suggestExcelColumnMapping;
+  const originalOpenAI = OpenAIStrategy.prototype.suggestExcelColumnMapping;
+
+  GeminiStrategy.prototype.suggestExcelColumnMapping = async () => ({ mapping: 'no-es-un-array' } as any);
+  OpenAIStrategy.prototype.suggestExcelColumnMapping = async () => ({
+    mapping: [{ field: 'domicilio', header: 'Dirección', confidence: 0.9 }]
+  });
+
+  try {
+    const result = await suggestExcelColumnMapping(['Dirección']);
+    if (config.openaiApiKey) {
+      assert.strictEqual(result.length, 1, 'Debe caer a OpenAI cuando la respuesta de Gemini no tiene el formato esperado.');
+    } else {
+      assert.deepStrictEqual(result, [], 'Sin OpenAI configurada, debe devolver [] tras el fallo de formato de Gemini.');
+    }
+  } finally {
+    GeminiStrategy.prototype.suggestExcelColumnMapping = originalGemini;
+    OpenAIStrategy.prototype.suggestExcelColumnMapping = originalOpenAI;
+  }
+});

@@ -10,6 +10,13 @@ const uploadTriggerBtn = document.getElementById('upload-trigger-btn');
 const uploadStatus = document.getElementById('upload-status');
 const propertiesCount = document.getElementById('properties-count');
 
+// Elementos del DOM - Modal de confirmación de mapeo de columnas de Excel (KAN-84)
+const mappingConfirmModal = document.getElementById('mapping-confirm-modal');
+const mappingSheetsContainer = document.getElementById('mapping-sheets-container');
+const mappingConfirmError = document.getElementById('mapping-confirm-error');
+const confirmMappingBtn = document.getElementById('confirm-mapping-btn');
+const cancelMappingBtn = document.getElementById('cancel-mapping-btn');
+
 const matchesList = document.getElementById('matches-list');
 const incomingMatchesList = document.getElementById('incoming-matches-list');
 
@@ -365,22 +372,15 @@ async function handleFileUpload(file) {
     const data = await res.json();
 
     if (res.ok) {
-      if (data.priceParseErrors && data.priceParseErrors.length > 0) {
-        const preview = data.priceParseErrors
-          .slice(0, 5)
-          .map(e => `${e.address} ("${e.rawValue}")`)
-          .join(', ');
-        const extra = data.priceParseErrors.length > 5
-          ? ` y ${data.priceParseErrors.length - 5} más`
-          : '';
-        showUploadStatus(
-          `Se cargaron ${data.count} propiedades. ${data.priceParseErrors.length} con precio no reconocido (se cargaron sin precio): ${preview}${extra}.`,
-          'warning'
-        );
-      } else {
-        showUploadStatus(`¡Éxito! Se cargaron ${data.count} propiedades.`, 'success');
+      if (data.requiresMappingConfirmation) {
+        // KAN-84: una o más hojas no se pudieron mapear con confianza suficiente (ni por
+        // heurística ni por IA) — se le pide al agente que confirme/corrija antes de cargar
+        // nada. No se tocó la base todavía.
+        showUploadStatus('Necesitamos que confirmes el mapeo de columnas antes de cargar el archivo.', 'warning');
+        openMappingConfirmModal(file, data.sheets);
+        return;
       }
-      loadCatalogInfo();
+      reportUploadSuccess(data);
     } else {
       showUploadStatus(`Error: ${data.error || 'No se pudo procesar el archivo.'}`, 'error');
     }
@@ -388,6 +388,25 @@ async function handleFileUpload(file) {
     console.error(error);
     showUploadStatus('Error de red al subir archivo.', 'error');
   }
+}
+
+function reportUploadSuccess(data) {
+  if (data.priceParseErrors && data.priceParseErrors.length > 0) {
+    const preview = data.priceParseErrors
+      .slice(0, 5)
+      .map(e => `${e.address} ("${e.rawValue}")`)
+      .join(', ');
+    const extra = data.priceParseErrors.length > 5
+      ? ` y ${data.priceParseErrors.length - 5} más`
+      : '';
+    showUploadStatus(
+      `Se cargaron ${data.count} propiedades. ${data.priceParseErrors.length} con precio no reconocido (se cargaron sin precio): ${preview}${extra}.`,
+      'warning'
+    );
+  } else {
+    showUploadStatus(`¡Éxito! Se cargaron ${data.count} propiedades.`, 'success');
+  }
+  loadCatalogInfo();
 }
 
 function showUploadStatus(msg, type) {
@@ -405,6 +424,218 @@ function showUploadStatus(msg, type) {
     }, 5000);
   }
 }
+
+// ==========================================
+// KAN-84: MODAL DE CONFIRMACIÓN DE MAPEO DE COLUMNAS DE EXCEL
+// ==========================================
+// Consume el contrato de POST /api/upload (respuesta `requiresMappingConfirmation`/`sheets`,
+// ver @backend) y POST /api/upload/confirm-mapping (mismo archivo + el mapeo corregido).
+
+// Campos de negocio conocidos (mismo orden/keys que src/utils/excelHeaderMatcher.ts en el
+// backend) — hardcodeado acá porque el dashboard es JS plano, sin acceso a los tipos de TS.
+const MAPPING_FIELDS = [
+  { key: 'domicilio', label: 'Domicilio', required: true },
+  { key: 'precio', label: 'Precio', required: true },
+  { key: 'piso_lote', label: 'Piso / Lote', required: false },
+  { key: 'dormitorios', label: 'Dormitorios', required: false },
+  { key: 'expensas', label: 'Expensas', required: false },
+  { key: 'caracteristicas', label: 'Características', required: false },
+  { key: 'contacto', label: 'Contacto', required: false },
+  { key: 'tipo', label: 'Tipo de propiedad', required: false },
+  { key: 'operacion', label: 'Operación (venta/alquiler)', required: false },
+  { key: 'latitud', label: 'Latitud', required: false },
+  { key: 'longitud', label: 'Longitud', required: false }
+];
+
+let pendingMappingFile = null;
+let pendingMappingSheets = [];
+
+function openMappingConfirmModal(file, sheets) {
+  pendingMappingFile = file;
+  pendingMappingSheets = sheets || [];
+  mappingConfirmError.classList.add('hidden');
+  mappingSheetsContainer.innerHTML = '';
+
+  pendingMappingSheets.forEach((sheet) => {
+    mappingSheetsContainer.appendChild(buildMappingSheetBlock(sheet));
+  });
+
+  mappingConfirmModal.classList.remove('hidden');
+}
+
+function closeMappingConfirmModal() {
+  mappingConfirmModal.classList.add('hidden');
+  mappingSheetsContainer.innerHTML = '';
+  pendingMappingFile = null;
+  pendingMappingSheets = [];
+  fileInput.value = '';
+}
+
+function buildMappingSheetBlock(sheet) {
+  const block = document.createElement('div');
+  block.className = 'mapping-sheet-block';
+  block.dataset.sheetName = sheet.sheetName;
+
+  const title = document.createElement('div');
+  title.className = 'mapping-sheet-title';
+  title.textContent = sheet.sheetName;
+  block.appendChild(title);
+
+  const hint = document.createElement('div');
+  hint.className = 'mapping-sheet-hint';
+  const ambiguousCount = (sheet.ambiguousFields || []).length;
+  hint.textContent = sheet.source === 'ai'
+    ? 'Sugerido por IA — revisá antes de confirmar.'
+    : ambiguousCount > 0
+      ? 'Hay columnas ambiguas: elegí manualmente cuál corresponde a cada campo.'
+      : 'No pudimos reconocer todas las columnas de esta hoja.';
+  block.appendChild(hint);
+
+  const grid = document.createElement('div');
+  grid.className = 'mapping-field-grid';
+
+  const fieldsByKey = {};
+  (sheet.fields || []).forEach((f) => { fieldsByKey[f.field] = f; });
+  const unresolvedRequired = new Set(sheet.unresolvedRequiredFields || []);
+  const ambiguousFields = new Set(sheet.ambiguousFields || []);
+
+  MAPPING_FIELDS.forEach((fieldDef) => {
+    grid.appendChild(buildMappingFieldRow(sheet, fieldDef, fieldsByKey[fieldDef.key], unresolvedRequired.has(fieldDef.key), ambiguousFields.has(fieldDef.key)));
+  });
+
+  block.appendChild(grid);
+  return block;
+}
+
+function buildMappingFieldRow(sheet, fieldDef, resolvedField, isUnresolvedRequired, isAmbiguous) {
+  const row = document.createElement('div');
+  row.className = 'mapping-field-row';
+
+  const label = document.createElement('label');
+  label.className = 'mapping-field-label';
+  label.textContent = fieldDef.label;
+  if (fieldDef.required) {
+    const mark = document.createElement('span');
+    mark.className = 'required-mark';
+    mark.textContent = '*';
+    label.appendChild(mark);
+  }
+
+  const select = document.createElement('select');
+  select.className = 'mapping-field-select';
+  select.dataset.field = fieldDef.key;
+  if (fieldDef.required && isUnresolvedRequired) {
+    select.classList.add('field-missing-required');
+  }
+
+  const emptyOption = document.createElement('option');
+  emptyOption.value = '';
+  emptyOption.textContent = '-- Ninguna columna --';
+  select.appendChild(emptyOption);
+
+  (sheet.headers || []).forEach((header) => {
+    const option = document.createElement('option');
+    option.value = header;
+    option.textContent = header;
+    select.appendChild(option);
+  });
+
+  const proposedHeader = resolvedField && resolvedField.header ? resolvedField.header : '';
+  if (proposedHeader && sheet.headers && sheet.headers.includes(proposedHeader)) {
+    select.value = proposedHeader;
+  }
+
+  select.addEventListener('change', () => {
+    if (fieldDef.required) {
+      select.classList.toggle('field-missing-required', !select.value);
+    }
+  });
+
+  row.appendChild(label);
+  row.appendChild(select);
+
+  if (isAmbiguous) {
+    const ambiguousHint = document.createElement('span');
+    ambiguousHint.className = 'mapping-field-hint';
+    ambiguousHint.textContent = 'Varias columnas parecían coincidir con este campo.';
+    row.appendChild(ambiguousHint);
+  }
+
+  return row;
+}
+
+function collectMappingSelections() {
+  const mappings = {};
+  let hasMissingRequired = false;
+
+  mappingSheetsContainer.querySelectorAll('.mapping-sheet-block').forEach((block) => {
+    const sheetName = block.dataset.sheetName;
+    const fieldMap = {};
+
+    block.querySelectorAll('.mapping-field-select').forEach((select) => {
+      const field = select.dataset.field;
+      const value = select.value.trim();
+      fieldMap[field] = value || null;
+
+      const fieldDef = MAPPING_FIELDS.find((f) => f.key === field);
+      if (fieldDef && fieldDef.required && !value) {
+        select.classList.add('field-missing-required');
+        hasMissingRequired = true;
+      }
+    });
+
+    mappings[sheetName] = fieldMap;
+  });
+
+  return { mappings, hasMissingRequired };
+}
+
+cancelMappingBtn.addEventListener('click', () => {
+  closeMappingConfirmModal();
+  showUploadStatus('Carga cancelada.', '');
+});
+
+confirmMappingBtn.addEventListener('click', async () => {
+  if (!pendingMappingFile) return;
+
+  const { mappings, hasMissingRequired } = collectMappingSelections();
+  if (hasMissingRequired) {
+    mappingConfirmError.textContent = 'Domicilio y Precio son obligatorios en cada hoja — elegí una columna para ambos antes de confirmar.';
+    mappingConfirmError.classList.remove('hidden');
+    return;
+  }
+
+  mappingConfirmError.classList.add('hidden');
+  confirmMappingBtn.disabled = true;
+  confirmMappingBtn.textContent = 'Cargando...';
+
+  const formData = new FormData();
+  formData.append('excelFile', pendingMappingFile);
+  formData.append('mappings', JSON.stringify(mappings));
+
+  try {
+    const res = await fetch('/api/upload/confirm-mapping', {
+      method: 'POST',
+      body: formData
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      closeMappingConfirmModal();
+      reportUploadSuccess(data);
+    } else {
+      mappingConfirmError.textContent = data.error || 'No se pudo confirmar el mapeo de columnas.';
+      mappingConfirmError.classList.remove('hidden');
+    }
+  } catch (error) {
+    console.error(error);
+    mappingConfirmError.textContent = 'Error de red al confirmar el mapeo de columnas.';
+    mappingConfirmError.classList.remove('hidden');
+  } finally {
+    confirmMappingBtn.disabled = false;
+    confirmMappingBtn.textContent = 'Confirmar y cargar';
+  }
+});
 
 // ==========================================
 // ÚLTIMOS MATCHES (acordeón)
