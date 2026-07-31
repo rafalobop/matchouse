@@ -101,28 +101,28 @@ test('Matcher - Conversión dinámica usando cotización dinámica de dólar', (
   const currentDolar = getDolarBlueRate();
 
   const property: Property = {
-    domicilio: 'Calle Test 123',
-    pisoLote: '',
-    precio: currentDolar * 100, // Equivale exactamente a 100 USD en pesos
-    moneda: 'ARS',
-    expensas: 0,
-    dormitorios: 2,
-    caracteristicas: 'Lindo departamento con patio',
-    contacto: '123456789',
-    zona: 'Yerba Buena',
-    operacion: 'alquiler',
-    tipo_propiedad: 'departamento',
-    sheetName: 'Alquileres'
+    address: 'Calle Test 123',
+    unit: '',
+    price: currentDolar * 100, // Equivale exactamente a 100 USD en pesos
+    currency: 'ARS',
+    maintenance_fees: 0,
+    bedrooms: 2,
+    features: 'Lindo departamento con patio',
+    contact_info: '123456789',
+    zone_display_name: 'Yerba Buena',
+    operation: 'alquiler',
+    property_type: 'departamento',
+    sheet_name: 'Alquileres'
   };
 
   const request: ExtractedRealEstateRequest = {
-    operacion: 'alquiler',
-    tipo_propiedad: 'departamento',
-    zonas: ['Yerba Buena'],
-    presupuesto_max: 101, // Presupuesto de 101 USD (la propiedad cuesta 100 USD al cambio)
-    moneda: 'USD',
-    dormitorios: 2,
-    caracteristicas_clave: [],
+    operation: 'alquiler',
+    property_type: 'departamento',
+    zones: ['Yerba Buena'],
+    max_budget: 101, // Presupuesto de 101 USD (la propiedad cuesta 100 USD al cambio)
+    currency: 'USD',
+    bedrooms: 2,
+    key_features: [],
     country: 'indiferente'
   };
 
@@ -130,7 +130,7 @@ test('Matcher - Conversión dinámica usando cotización dinámica de dólar', (
   assert.ok(result.isMatch, 'La propiedad debió matchear ya que entra en el presupuesto convertido.');
 
   // Ahora bajamos el presupuesto a 90 USD (la propiedad cuesta 100 USD, debería fallar)
-  request.presupuesto_max = 90;
+  request.max_budget = 90;
   const resultFailed = checkMatch(request, property);
   assert.ok(!resultFailed.isMatch, 'La propiedad no debió matchear ya que excede el presupuesto.');
 });
