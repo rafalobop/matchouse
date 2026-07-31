@@ -3,6 +3,7 @@ dns.setDefaultResultOrder('ipv4first');
 
 import express from 'express';
 import helmet from 'helmet';
+import crypto from 'crypto';
 import cookieParser from 'cookie-parser';
 import multer from 'multer';
 import * as path from 'path';
@@ -55,7 +56,23 @@ process.on('uncaughtException', (error) => {
   console.error('[PROCESO] Error no controlado (Uncaught Exception):', error);
 });
 
-app.use(helmet());
+// KAN-69: nonce por request, consumido tanto por la CSP de Helmet como por el
+// script inyectado en el <head> del dashboard (ver ruta '/' más abajo).
+app.use((req, res, next) => {
+  res.locals.cspNonce = crypto.randomBytes(16).toString('base64');
+  next();
+});
+
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+        'script-src': ["'self'", (_req, res) => `'nonce-${(res as express.Response).locals.cspNonce}'`]
+      }
+    }
+  })
+);
 app.use(express.json());
 app.use(cookieParser());
 
@@ -63,6 +80,20 @@ app.use(cookieParser());
 const dashboardPath = fs.existsSync(path.join(__dirname, 'dashboard'))
   ? path.join(__dirname, 'dashboard')
   : path.join(process.cwd(), 'src', 'dashboard');
+const dashboardIndexHtml = fs.readFileSync(path.join(dashboardPath, 'index.html'), 'utf-8');
+
+// KAN-69: el script que fija el tema (public/scripts/themeSetter.js) necesita el
+// nonce de la request para pasar la CSP — express.static no puede inyectarlo,
+// así que el index.html se sirve con esta ruta dedicada, antes del static del dashboard.
+app.get(['/', '/index.html'], (req, res) => {
+  const html = dashboardIndexHtml.replace(
+    '<script src="/scripts/themeSetter.js"></script>',
+    `<script src="/scripts/themeSetter.js" nonce="${res.locals.cspNonce}"></script>`
+  );
+  res.type('html').send(html);
+});
+
+app.use(express.static(path.join(process.cwd(), 'public')));
 app.use(express.static(dashboardPath));
 
 /**
