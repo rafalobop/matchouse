@@ -37,6 +37,16 @@ const authBackBtn = document.getElementById('auth-back-btn');
 const authStep1Error = document.getElementById('auth-step1-error');
 const authStep2Error = document.getElementById('auth-step2-error');
 
+// Elementos del DOM - Perfil de Tenant (KAN-68)
+const profileOverlay = document.getElementById('profile-overlay');
+const profileForm = document.getElementById('profile-form');
+const profilePhoneInput = document.getElementById('profile-phone-input');
+const profileAgencyInput = document.getElementById('profile-agency-input');
+const profileCityInput = document.getElementById('profile-city-input');
+const profileCountryInput = document.getElementById('profile-country-input');
+const profileSaveBtn = document.getElementById('profile-save-btn');
+const profileFormError = document.getElementById('profile-form-error');
+
 // ==========================================
 // TEMA (CLARO / OSCURO)
 // ==========================================
@@ -111,6 +121,7 @@ window.fetch = async function (...args) {
       const btnPushSubscribe = document.getElementById('btn-push-subscribe');
       if (btnPushSubscribe) btnPushSubscribe.classList.add('hidden');
       updateTenantSessionUI();
+      profileOverlay.classList.add('hidden');
       authOverlay.classList.remove('hidden');
       resetAuthCards();
       stopDashboardPolling();
@@ -153,11 +164,12 @@ async function checkAuthSession() {
       isUserAuthenticated = true;
       authOverlay.classList.add('hidden');
       updateTenantSessionUI();
-      startDashboardPolling();
+      await ensureProfileCompleted();
     } else {
       isUserAuthenticated = false;
       currentTenantInfo = null;
       updateTenantSessionUI();
+      profileOverlay.classList.add('hidden');
       authOverlay.classList.remove('hidden');
       resetAuthCards();
       stopDashboardPolling();
@@ -165,6 +177,89 @@ async function checkAuthSession() {
   } catch (error) {
     console.error('[AUTH] Error al comprobar sesión auth:', error.message);
   }
+}
+
+// ==========================================
+// PERFIL DE TENANT (KAN-64 backend, KAN-68 UI)
+// ==========================================
+// Tras el magic link, un agente puede no tener completado su perfil (telefono, inmobiliaria,
+// ciudad, pais). Sin este gate el formulario del backend (KAN-64) queda inaccesible en la
+// práctica: se muestra un overlay bloqueante hasta que el POST /api/profile confirma
+// profile_completed = true, recién ahí arranca el polling normal del dashboard.
+
+function showProfileFormError(msg) {
+  profileFormError.innerText = msg;
+  profileFormError.style.display = 'block';
+}
+
+function hideProfileFormError() {
+  profileFormError.style.display = 'none';
+}
+
+async function ensureProfileCompleted() {
+  try {
+    const res = await fetchWithTimeout('/api/profile', {}, 15000, '[PERFIL]');
+    if (!res.ok) {
+      console.error('[PERFIL] /api/profile respondió con error HTTP', res.status);
+      startDashboardPolling();
+      return;
+    }
+    const data = await res.json();
+    if (data.profile && data.profile.profile_completed) {
+      profileOverlay.classList.add('hidden');
+      startDashboardPolling();
+    } else {
+      profileOverlay.classList.remove('hidden');
+    }
+  } catch (error) {
+    console.error('[PERFIL] Error al comprobar el perfil del tenant:', error.message);
+    // Si falla la comprobación (ej. timeout), no dejamos al usuario bloqueado sin dashboard.
+    startDashboardPolling();
+  }
+}
+
+if (profileForm) {
+  profileForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const phone_number = profilePhoneInput.value.trim();
+    const agency_name = profileAgencyInput.value.trim();
+    const city = profileCityInput.value.trim();
+    const country = profileCountryInput.value.trim();
+
+    if (!phone_number || !agency_name || !city || !country) {
+      showProfileFormError('Completá todos los campos para continuar.');
+      return;
+    }
+
+    profileSaveBtn.disabled = true;
+    profileSaveBtn.innerText = 'Guardando...';
+    hideProfileFormError();
+
+    try {
+      const res = await fetchWithTimeout('/api/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone_number, agency_name, city, country })
+      }, 15000, '[PERFIL]');
+
+      const data = await res.json();
+      if (res.ok) {
+        console.log('[PERFIL] Perfil completado correctamente.');
+        profileOverlay.classList.add('hidden');
+        startDashboardPolling();
+      } else {
+        console.error('[PERFIL] El servidor rechazó el perfil:', res.status, data.error);
+        showProfileFormError(data.error || 'Error al guardar el perfil.');
+      }
+    } catch (error) {
+      console.error('[PERFIL] Fallo al guardar el perfil:', error.name, error.message);
+      showProfileFormError(error.message || 'Error de red al conectar con el servidor.');
+    } finally {
+      profileSaveBtn.disabled = false;
+      profileSaveBtn.innerText = 'Guardar y continuar';
+    }
+  });
 }
 
 // Detectar magic link en el hash de la URL al cargar la página
@@ -1341,6 +1436,9 @@ logoutBtn.addEventListener('click', async () => {
       currentTenantInfo = null;
       if (btnPushSubscribe) btnPushSubscribe.classList.add('hidden');
       updateTenantSessionUI();
+      profileOverlay.classList.add('hidden');
+      if (profileForm) profileForm.reset();
+      hideProfileFormError();
       authOverlay.classList.remove('hidden');
       resetAuthCards();
       stopDashboardPolling();
