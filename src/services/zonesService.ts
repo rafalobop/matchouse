@@ -114,6 +114,7 @@ export async function findNeighborhoodByPoint(
 interface ZoneKeyword {
   keyword: string;
   neighborhoodId: string;
+  neighborhoodName: string;
 }
 
 // Referencia compartida entre tenants, baja tasa de cambio (151 zonas / 21 alias a la fecha) —
@@ -129,7 +130,7 @@ async function getZoneKeywordIndex(client: SupabaseClient): Promise<ZoneKeyword[
 
   const [{ data: neighborhoods, error: neighborhoodsError }, { data: aliases, error: aliasesError }] = await Promise.all([
     client.from('neighborhoods').select('id, name'),
-    client.from('neighborhood_aliases').select('alias, neighborhood_id')
+    client.from('neighborhood_aliases').select('alias, neighborhood_id, neighborhoods(name)')
   ]);
 
   if (neighborhoodsError) {
@@ -140,8 +141,10 @@ async function getZoneKeywordIndex(client: SupabaseClient): Promise<ZoneKeyword[
   }
 
   const entries: ZoneKeyword[] = [
-    ...(neighborhoods ?? []).map((n: any) => ({ keyword: String(n.name).toLowerCase(), neighborhoodId: n.id })),
-    ...(aliases ?? []).map((a: any) => ({ keyword: String(a.alias).toLowerCase(), neighborhoodId: a.neighborhood_id }))
+    ...(neighborhoods ?? []).map((n: any) => ({ keyword: String(n.name).toLowerCase(), neighborhoodId: n.id, neighborhoodName: n.name })),
+    ...(aliases ?? [])
+      .filter((a: any) => a.neighborhoods)
+      .map((a: any) => ({ keyword: String(a.alias).toLowerCase(), neighborhoodId: a.neighborhood_id, neighborhoodName: a.neighborhoods.name }))
   ]
     .filter((entry) => entry.keyword.trim().length > 0)
     // Coincidencias más largas/específicas primero (ej. "barrio norte" antes que "norte") para
@@ -152,20 +155,36 @@ async function getZoneKeywordIndex(client: SupabaseClient): Promise<ZoneKeyword[
   return entries;
 }
 
+export interface NeighborhoodTextMatch {
+  id: string;
+  name: string;
+}
+
 /**
- * Resuelve el id de zona (`neighborhoods.id`) a partir de texto libre, buscando el nombre de zona
- * o alias más específico (más largo) contenido en el texto. Reemplaza al heurístico hardcodeado
- * que antes vivía en `utils/matcher.ts` (`classifyPropertyZoneId`) — ahora la normalización sale
- * de `neighborhoods`/`neighborhood_aliases` (151/21 filas a la fecha) en vez de una lista estática
- * de ~15 zonas. Devuelve `null` (no es un error) si ningún keyword conocido aparece en el texto.
+ * Resuelve la zona (`neighborhoods.id` + `name`) a partir de texto libre, buscando el nombre de
+ * zona o alias más específico (más largo) contenido en el texto. Reemplaza al heurístico
+ * hardcodeado que antes vivía en `utils/matcher.ts` (`classifyPropertyZoneId`) — ahora la
+ * normalización sale de `neighborhoods`/`neighborhood_aliases` (151/21 filas a la fecha) en vez de
+ * una lista estática de ~15 zonas. Devuelve `null` (no es un error) si ningún keyword conocido
+ * aparece en el texto. KAN-92: expone también el `name` legible (no solo el `id`/UUID) para que
+ * los llamadores puedan mostrarlo al usuario en vez del id interno.
  */
-export async function resolveNeighborhoodIdByText(text: string, client: SupabaseClient = supabase): Promise<string | null> {
+export async function resolveNeighborhoodByText(text: string, client: SupabaseClient = supabase): Promise<NeighborhoodTextMatch | null> {
   const normalized = text.toLowerCase();
   if (!normalized.trim()) return null;
 
   const keywords = await getZoneKeywordIndex(client);
   const match = keywords.find((entry) => normalized.includes(entry.keyword));
-  return match ? match.neighborhoodId : null;
+  return match ? { id: match.neighborhoodId, name: match.neighborhoodName } : null;
+}
+
+/**
+ * Igual que `resolveNeighborhoodByText`, pero solo el id — usada donde no hace falta el nombre
+ * (ej. `resolvePropertyZoneId`, que estampa `property.neighborhood_id` para comparación interna).
+ */
+export async function resolveNeighborhoodIdByText(text: string, client: SupabaseClient = supabase): Promise<string | null> {
+  const match = await resolveNeighborhoodByText(text, client);
+  return match ? match.id : null;
 }
 
 interface PropertyLocationFields {

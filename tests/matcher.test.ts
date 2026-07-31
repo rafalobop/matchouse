@@ -89,9 +89,10 @@ test('Matcher - CountryMatchingStrategy: rechaza cuando se pide country y la pro
 const BARRIO_NORTE_ID = 'a1a1a1a1-0000-0000-0000-000000000001';
 const BARRIO_SUR_ID = 'b2b2b2b2-0000-0000-0000-000000000002';
 
-function zoneIntentFor(zonaId: string): ZoneIntentRequest {
+function zoneIntentFor(zonaId: string, zonaNombre?: string | null): ZoneIntentRequest {
   return {
     zona_id: zonaId,
+    zona_nombre: zonaNombre,
     texto_ubicacion_original: 'texto de prueba',
     dormitorios_min: null,
     caracteristicas_claves: [],
@@ -128,6 +129,31 @@ test('Matcher - ZoneMatchingStrategy: rechaza cuando la propiedad no tiene zona 
     zoneIntentFor(BARRIO_NORTE_ID)
   );
   assert.strictEqual(result.isMatch, false);
+});
+
+// --- KAN-92: el reason de un match por zona debe mostrar el nombre legible, nunca el UUID crudo ---
+
+test('Matcher - ZoneMatchingStrategy (KAN-92): el reason de un match usa el nombre legible de la zona, no el UUID', () => {
+  const strategy = new ZoneMatchingStrategy();
+  const result = strategy.evaluate(
+    baseRequest(),
+    baseProperty({ neighborhood_id: BARRIO_NORTE_ID }),
+    zoneIntentFor(BARRIO_NORTE_ID, 'Barrio Norte')
+  );
+  assert.strictEqual(result.isMatch, true);
+  assert.strictEqual(result.reason, 'Coincidencia de Zona Geográfica: Barrio Norte');
+  assert.ok(!result.reason?.includes(BARRIO_NORTE_ID), 'El reason no debe contener el UUID interno de la zona.');
+});
+
+test('Matcher - ZoneMatchingStrategy (KAN-92): si no se pudo resolver el nombre (zona_nombre ausente), degrada mostrando el id en vez de romper', () => {
+  const strategy = new ZoneMatchingStrategy();
+  const result = strategy.evaluate(
+    baseRequest(),
+    baseProperty({ neighborhood_id: BARRIO_NORTE_ID }),
+    zoneIntentFor(BARRIO_NORTE_ID) // sin zona_nombre
+  );
+  assert.strictEqual(result.isMatch, true);
+  assert.strictEqual(result.reason, `Coincidencia de Zona Geográfica: ${BARRIO_NORTE_ID}`);
 });
 
 // --- 5. Bedrooms ---

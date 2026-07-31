@@ -676,6 +676,16 @@ h1, h2, h3 {
   margin-bottom: 0.15rem;
 }
 
+/* KAN-92: pista visual de que el ítem tiene tooltip (title nativo) con la explicación de cómo
+   se resuelve la zona geográfica — sin esto, el title solo se descubre al pasar el mouse a
+   ciegas, no hay ninguna señal de que sea interactivo. */
+.match-reason-has-tooltip {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--text-secondary);
+  text-underline-offset: 3px;
+}
+
 .contact-link {
   color: #25d366;
   text-decoration: none;

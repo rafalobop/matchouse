@@ -117,16 +117,21 @@ export class ZoneMatchingStrategy implements IMatchingStrategy {
     // property (ver blindMatching.ts#findCrossTenantMatches) contra el del pedido.
     if (zoneIntent && zoneIntent.zona_id !== 'DESCONOCIDO') {
       const propZoneId = property.neighborhood_id ?? null;
+      // KAN-92: `zona_nombre` es el nombre legible de `neighborhoods.name`, resuelto por
+      // ai.ts#resolveZoneId junto con `zona_id` — nunca mostrarle el UUID crudo al usuario. Si por
+      // algún motivo no se pudo resolver (fallo de red/DB puntual, ver resolveZoneId), degrada
+      // mostrando el id en vez de romper el mensaje.
+      const zonaDisplay = zoneIntent.zona_nombre ?? zoneIntent.zona_id;
       if (propZoneId !== zoneIntent.zona_id) {
         return {
           isMatch: false,
           scoreDeduction: 0,
           reason: propZoneId
-            ? `Zona de la propiedad (${propZoneId}) no coincide con la zona del pedido (${zoneIntent.zona_id})`
-            : `No se pudo determinar la zona de la propiedad para compararla con la del pedido (${zoneIntent.zona_id})`
+            ? `Zona de la propiedad no coincide con la zona del pedido (${zonaDisplay})`
+            : `No se pudo determinar la zona de la propiedad para compararla con la del pedido (${zonaDisplay})`
         };
       }
-      return { isMatch: true, scoreDeduction: 0, reason: `Coincidencia de Zona Geográfica: ${zoneIntent.zona_id}` };
+      return { isMatch: true, scoreDeduction: 0, reason: `Coincidencia de Zona Geográfica: ${zonaDisplay}` };
     }
 
     // 2. Zona de Ubicación General (Si no se usó el Agente 2 para geo-filtrado específico)

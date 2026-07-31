@@ -2,7 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import { OpenAI } from 'openai';
 import { config } from '../config/env';
 import { withTimeout, TimeoutError } from '../utils/withTimeout';
-import { resolveNeighborhoodIdByText, ZonesServiceError } from './zonesService';
+import { resolveNeighborhoodByText, ZonesServiceError } from './zonesService';
 import { logger } from './logger';
 import { EXCEL_MAPPING_FIELDS } from '../utils/excelHeaderMatcher';
 
@@ -37,6 +37,10 @@ export interface ZoneIntentRequest {
   // `neighborhoods`/`neighborhood_aliases` (ver resolveNeighborhoodIdByText en zonesService.ts).
   // Es el UUID de `neighborhoods.id`, o el string 'DESCONOCIDO' si no se pudo resolver ninguna.
   zona_id: string;
+  // KAN-92: nombre legible de `neighborhoods.name` para esa misma zona, resuelto en el mismo paso
+  // que `zona_id` (ver resolveZoneId más abajo). `null`/`undefined` si `zona_id` es 'DESCONOCIDO'
+  // o si la resolución falló — los llamadores deben degradar mostrando `zona_id` en ese caso.
+  zona_nombre?: string | null;
   texto_ubicacion_original: string;
   dormitorios_min: number | null;
   caracteristicas_claves: string[];
@@ -600,6 +604,7 @@ class AIExtractorContext {
     console.error('[AI STRATEGY] Todas las estrategias de zona fallaron.');
     return {
       zona_id: 'DESCONOCIDO',
+      zona_nombre: null,
       texto_ubicacion_original: '',
       dormitorios_min: null,
       caracteristicas_claves: [],
@@ -922,6 +927,7 @@ function normalizeAgent2(parsed: any, operacionOriginal?: string): ZoneIntentReq
 
   return {
     zona_id: 'DESCONOCIDO', // placeholder — AIExtractorContext.extractZoneIntent lo resuelve después
+    zona_nombre: null,
     texto_ubicacion_original: parsed.texto_ubicacion_original || '',
     dormitorios_min: parsed.dormitorios_min !== undefined ? parsed.dormitorios_min : null,
     caracteristicas_claves: parsed.caracteristicas_claves,
@@ -939,8 +945,12 @@ async function resolveZoneId(zoneIntent: ZoneIntentRequest): Promise<ZoneIntentR
   }
 
   try {
-    const neighborhoodId = await resolveNeighborhoodIdByText(zoneIntent.texto_ubicacion_original);
-    return { ...zoneIntent, zona_id: neighborhoodId ?? 'DESCONOCIDO' };
+    const neighborhood = await resolveNeighborhoodByText(zoneIntent.texto_ubicacion_original);
+    return {
+      ...zoneIntent,
+      zona_id: neighborhood?.id ?? 'DESCONOCIDO',
+      zona_nombre: neighborhood?.name ?? null
+    };
   } catch (error: any) {
     const detail = error instanceof ZonesServiceError ? error.message : (error?.message || error);
     logger.error({ error: detail, texto: zoneIntent.texto_ubicacion_original }, '[AI STRATEGY] No se pudo resolver zona_id contra neighborhoods; se usa DESCONOCIDO.');

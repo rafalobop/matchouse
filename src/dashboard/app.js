@@ -750,6 +750,7 @@ function getScore(match) {
 async function loadMatches() {
   try {
     const res = await fetch('/api/matches');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
 
     const matches = data.matches || [];
@@ -799,7 +800,25 @@ async function loadMatches() {
     });
   } catch (error) {
     console.error('Error al cargar historial de matches:', error);
+    matchesList.innerHTML = '<p class="table-placeholder error">Error al obtener los matches encontrados.</p>';
   }
+}
+
+// KAN-92: la razón de "Coincidencia de Zona Geográfica" (backend, utils/matcher.ts) se resuelve
+// automáticamente por coordenadas o texto libre — no es evidente para el usuario, así que se
+// agrega un tooltip nativo (title) con la explicación. Se detecta por el prefijo fijo del reason
+// (controlado por nosotros mismos en el backend), no hay dato estructurado separado para esto.
+const ZONE_MATCH_REASON_PREFIX = 'Coincidencia de Zona Geográfica';
+const ZONE_MATCH_TOOLTIP = 'La zona se resuelve automáticamente por la ubicación de la propiedad (coordenadas o dirección de texto), comparada contra la zona pedida en la búsqueda.';
+
+function buildReasonListItem(reason) {
+  const li = document.createElement('li');
+  li.innerText = reason;
+  if (reason.startsWith(ZONE_MATCH_REASON_PREFIX)) {
+    li.title = ZONE_MATCH_TOOLTIP;
+    li.classList.add('match-reason-has-tooltip');
+  }
+  return li;
 }
 
 function buildMatchItem(m) {
@@ -842,9 +861,7 @@ function buildMatchItem(m) {
   if (Array.isArray(m.reasons) && m.reasons.length > 0) {
     const ul = document.createElement('ul');
     m.reasons.forEach(reason => {
-      const li = document.createElement('li');
-      li.innerText = reason;
-      ul.appendChild(li);
+      ul.appendChild(buildReasonListItem(reason));
     });
     divDetails.appendChild(ul);
   }
@@ -954,9 +971,7 @@ function buildIncomingMatchItem(m) {
   if (Array.isArray(m.reasons) && m.reasons.length > 0) {
     const ul = document.createElement('ul');
     m.reasons.forEach(reason => {
-      const li = document.createElement('li');
-      li.innerText = reason;
-      ul.appendChild(li);
+      ul.appendChild(buildReasonListItem(reason));
     });
     divDetails.appendChild(ul);
   }
