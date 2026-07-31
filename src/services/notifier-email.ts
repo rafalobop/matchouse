@@ -3,7 +3,7 @@ import { supabase } from './supabase';
 import { logger } from './logger';
 import { config } from '../config/env';
 
-const FROM_ADDRESS = 'HouseMatch <onboarding@resend.dev>';
+const FROM_ADDRESS = 'Brokaza <hola@brokaza.com>';
 
 let resendClient: Resend | null = null;
 
