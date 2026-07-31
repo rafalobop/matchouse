@@ -30,6 +30,7 @@ import './searchExpiration.test';
 import './searchValidation.test';
 import './supabase.test';
 import './sw.test';
+import './truncatedProfileDetector.test';
 import './webPush.test';
 import './withTimeout.test';
 import './zonesService.test';
