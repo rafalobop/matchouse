@@ -93,9 +93,9 @@
       </section>
     </main>
 
-    <!-- Sección: Mis Búsquedas Activas (Matching Ciego) -->
-    <section class="card active-searches-card">
-      <h2>Mis Búsquedas Activas</h2>
+    <!-- Sección: Iniciar una Nueva Búsqueda — siempre visible, no es desplegable -->
+    <section class="card new-search-card">
+      <h2>Iniciar una Nueva Búsqueda</h2>
       <p class="section-desc">Describí en texto libre qué propiedad buscás para tus clientes y la cruzamos
         automáticamente contra la cartera de otros agentes.</p>
 
@@ -108,57 +108,77 @@
         </div>
         <p id="search-form-status" class="status-msg hidden"></p>
       </div>
-
-      <div id="active-searches-list" class="active-searches-list">
-        <p class="list-placeholder">Cargando búsquedas activas...</p>
-      </div>
     </section>
 
-    <!-- Sección Inferior: Últimos Matches -->
-    <section class="card matches-card">
-      <div class="matches-header">
-        <h2>Últimos Matches Encontrados</h2>
-        <div class="matches-controls" style="display: flex; align-items: center; gap: 1rem;">
-          <div style="font-size: 0.85rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.5rem;">
-            <span>Ordenar por:</span>
-            <select id="sort-select" style="background: rgba(97, 121, 144, 0.1); border: 1px solid var(--card-border); color: var(--text-primary); border-radius: 6px; padding: 0.35rem 0.6rem; outline: none; cursor: pointer; font-family: var(--font-family); font-size: 0.8rem;">
-              <option value="fecha-desc">Fecha (Recientes primero)</option>
-              <option value="fecha-asc">Fecha (Antiguos primero)</option>
-              <option value="score-desc">Score (Mayor primero)</option>
-              <option value="score-asc">Score (Menor primero)</option>
-            </select>
+    <!-- Sección: Mis Búsquedas en Curso — desplegable -->
+    <details class="card collapsible-card">
+      <summary class="collapsible-card-summary">
+        <h2>Mis Búsquedas en Curso</h2>
+        <svg class="icon collapsible-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+      </summary>
+      <div class="collapsible-card-body">
+        <div id="active-searches-list" class="active-searches-list">
+          <p class="list-placeholder">Cargando búsquedas activas...</p>
+        </div>
+      </div>
+    </details>
+
+    <!-- Sección: Búsquedas con Resultados — desplegable -->
+    <details class="card collapsible-card">
+      <summary class="collapsible-card-summary">
+        <h2>Búsquedas con Resultados</h2>
+        <svg class="icon collapsible-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+      </summary>
+      <div class="collapsible-card-body">
+        <div class="matches-header">
+          <p class="section-desc">Búsquedas que encontraron coincidencias en la cartera de otros agentes. Hacé
+            clic en cada match para ver el detalle completo.</p>
+          <div class="matches-controls" style="display: flex; align-items: center; gap: 1rem;">
+            <div style="font-size: 0.85rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.5rem;">
+              <span>Ordenar por:</span>
+              <select id="sort-select" style="background: rgba(97, 121, 144, 0.1); border: 1px solid var(--card-border); color: var(--text-primary); border-radius: 6px; padding: 0.35rem 0.6rem; outline: none; cursor: pointer; font-family: var(--font-family); font-size: 0.8rem;">
+                <option value="fecha-desc">Fecha (Recientes primero)</option>
+                <option value="fecha-asc">Fecha (Antiguos primero)</option>
+                <option value="score-desc">Score (Mayor primero)</option>
+                <option value="score-asc">Score (Menor primero)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div id="matches-list" class="matches-list">
+          <p class="table-placeholder">No se han registrado matches en esta sesión.</p>
+        </div>
+
+        <!-- Paginación -->
+        <div class="pagination-container" style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; padding: 0.5rem 0.25rem 0;">
+          <div class="pagination-info" style="font-size: 0.85rem; color: var(--text-secondary);">
+            Mostrando <span id="page-start" style="font-weight: 600; color: var(--text-primary);">0</span> al <span id="page-end" style="font-weight: 600; color: var(--text-primary);">0</span> de <span id="total-matches" style="font-weight: 600; color: var(--text-primary);">0</span> matches
+          </div>
+          <div class="pagination-buttons" style="display: flex; gap: 0.5rem; align-items: center;">
+            <button id="prev-page-btn" class="btn btn-secondary btn-small" disabled>Anterior</button>
+            <span id="current-page-text" style="font-size: 0.85rem; font-weight: 600; color: var(--text-secondary);">Pág. 1 de 1</span>
+            <button id="next-page-btn" class="btn btn-secondary btn-small" disabled>Siguiente</button>
           </div>
         </div>
       </div>
-      <p class="section-desc">Hacé clic en cada match para ver el detalle completo.</p>
+    </details>
 
-      <div id="matches-list" class="matches-list">
-        <p class="table-placeholder">No se han registrado matches en esta sesión.</p>
-      </div>
+    <!-- Sección: Interesados en tus Propiedades (KAN-78) — desplegable -->
+    <details class="card collapsible-card">
+      <summary class="collapsible-card-summary">
+        <h2>Interesados en tus Propiedades</h2>
+        <svg class="icon collapsible-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+      </summary>
+      <div class="collapsible-card-body">
+        <p class="section-desc">Cuando un agente busca algo que coincide con una de tus propiedades, aparece
+          acá con sus datos de contacto.</p>
 
-      <!-- Paginación -->
-      <div class="pagination-container" style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; padding: 0.5rem 0.25rem 0;">
-        <div class="pagination-info" style="font-size: 0.85rem; color: var(--text-secondary);">
-          Mostrando <span id="page-start" style="font-weight: 600; color: var(--text-primary);">0</span> al <span id="page-end" style="font-weight: 600; color: var(--text-primary);">0</span> de <span id="total-matches" style="font-weight: 600; color: var(--text-primary);">0</span> matches
+        <div id="incoming-matches-list" class="matches-list">
+          <p class="table-placeholder">Cargando interesados en tus propiedades...</p>
         </div>
-        <div class="pagination-buttons" style="display: flex; gap: 0.5rem; align-items: center;">
-          <button id="prev-page-btn" class="btn btn-secondary btn-small" disabled>Anterior</button>
-          <span id="current-page-text" style="font-size: 0.85rem; font-weight: 600; color: var(--text-secondary);">Pág. 1 de 1</span>
-          <button id="next-page-btn" class="btn btn-secondary btn-small" disabled>Siguiente</button>
-        </div>
       </div>
-    </section>
-
-    <!-- Sección: Interesados en tus Propiedades (KAN-78) -->
-    <section class="card matches-card">
-      <h2>Interesados en tus Propiedades</h2>
-      <p class="section-desc">Cuando un agente busca algo que coincide con una de tus propiedades, aparece
-        acá con sus datos de contacto.</p>
-
-      <div id="incoming-matches-list" class="matches-list">
-        <p class="table-placeholder">Cargando interesados en tus propiedades...</p>
-      </div>
-    </section>
+    </details>
   </div>
 
   <!-- Modal de Rechazo de Match -->
