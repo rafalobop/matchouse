@@ -25,3 +25,20 @@ Este directorio contiene la trazabilidad de las decisiones de arquitectura, dise
 - **Orquestación:** Multi-tenant automatizado en NodeJS administrado por `src/services/coordinator.ts`.
 - **Ecosistema de Agentes de Desarrollo Local:** Configurado en la ruta `.agent/skills/` con roles asignados para `@product`, `@pm`, `@backend`, `@frontend`, `@qa` y `@git`.
 - **Registro Estructurado:** El historial detallado de estados de cada tarea e hito se encuentra disponible de forma síncrona en el archivo `.agent/evolution_log.json` para facilitar la lectura e indexación rápida de los agentes.
+
+## Configuración de Variables de Entorno
+
+El servidor **no arranca** si faltan variables de entorno requeridas (ver `src/config/env.ts#validateConfig`). Copiá `.env.example` a `.env` y completá los valores antes de correr el proyecto localmente.
+
+Variables requeridas (sin default, el arranque falla si faltan):
+- `GEMINI_API_KEY`
+- `SUPABASE_JWT_SECRET`
+- `SUPABASE_ANON_KEY`
+- `INTERNAL_WEBHOOK_SECRET`
+- `VAPID_PUBLIC_KEY` y `VAPID_PRIVATE_KEY`: claves del protocolo Web Push usadas para las notificaciones push del dashboard (`src/services/webPush.ts`). Generalas con:
+  ```
+  npx web-push generate-vapid-keys
+  ```
+  **No hay valores por default hardcodeados en el código** (KAN-81) — son secretos propios de cada entorno y deben configurarse explícitamente. En Railway (producción/staging) ya están seteadas en las variables de entorno del servicio; en local, agregalas a tu `.env`.
+
+El resto de las variables documentadas en `.env.example` son opcionales y tienen defaults razonables definidos en `src/config/env.ts`.
