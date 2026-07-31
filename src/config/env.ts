@@ -44,8 +44,8 @@ export function validateConfig(): Config {
   const supabaseServiceRoleKey = cleanEnvVar(process.env.SUPABASE_SERVICE_ROLE_KEY);
   const supabaseJwtSecret = cleanEnvVar(process.env.SUPABASE_JWT_SECRET);
   const supabaseAnonKey = cleanEnvVar(process.env.SUPABASE_ANON_KEY);
-  const vapidPublicKey = cleanEnvVar(process.env.VAPID_PUBLIC_KEY) || 'BNmVCR9MQPF4jTiJfcsqjZuVUpkc2eFjNviiA_ddqnZnbnzsJBRAdZ3PTfDK7OUIuVtbu4Oc8ANj_xpUy-_s0aI';
-  const vapidPrivateKey = cleanEnvVar(process.env.VAPID_PRIVATE_KEY) || '8QmgGSOvRrSlm8Xi_dscW6bfaVjLNPiUsBndeXE8uQo';
+  const vapidPublicKey = cleanEnvVar(process.env.VAPID_PUBLIC_KEY);
+  const vapidPrivateKey = cleanEnvVar(process.env.VAPID_PRIVATE_KEY);
   const vapidEmail = cleanEnvVar(process.env.VAPID_EMAIL) || 'mailto:info@housematch.com';
   const appUrl = cleanEnvVar(process.env.APP_URL) || 'http://localhost:3000';
   // SENDER_API_KEY es la API key de Resend (nombre histórico de la variable en .env)
@@ -110,6 +110,14 @@ export function validateConfig(): Config {
 
   if (!internalWebhookSecret) {
     throw new Error('Falta la variable de entorno INTERNAL_WEBHOOK_SECRET. Por favor, configúrala en el archivo .env.');
+  }
+
+  if (!vapidPublicKey) {
+    throw new Error('Falta la variable de entorno VAPID_PUBLIC_KEY. Por favor, configúrala en el archivo .env.');
+  }
+
+  if (!vapidPrivateKey) {
+    throw new Error('Falta la variable de entorno VAPID_PRIVATE_KEY. Por favor, configúrala en el archivo .env.');
   }
 
   return {
