@@ -6,6 +6,7 @@ import {
   findNeighborhoodByAlias,
   findNeighborhoodByPoint,
   resolveNeighborhoodIdByText,
+  resolveNeighborhoodByText,
   resolvePropertyZoneId,
   __clearZoneKeywordCacheForTests,
   ZonesServiceError
@@ -203,7 +204,7 @@ test('resolveNeighborhoodIdByText - resuelve por alias cuando el nombre canónic
   __clearZoneKeywordCacheForTests();
   const mockClient = makeTableAwareMockClient({
     neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
-    neighborhood_aliases: { rows: [{ alias: 'yb', neighborhood_id: 'n-yb' }] }
+    neighborhood_aliases: { rows: [{ alias: 'yb', neighborhood_id: 'n-yb', neighborhoods: { name: 'Yerba Buena' } }] }
   });
 
   const result = await resolveNeighborhoodIdByText('busco algo por yb urgente', mockClient as any);
@@ -236,6 +237,58 @@ test('resolveNeighborhoodIdByText (AC KAN-22) - Barrio Norte y Barrio Sur resuel
   assert.strictEqual(norte, 'n-norte');
   assert.strictEqual(sur, 'n-sur');
   assert.notStrictEqual(norte, sur, 'Barrio Norte y Barrio Sur deben resolver a zonas distintas.');
+});
+
+// --- KAN-92: resolveNeighborhoodByText expone también el nombre legible, no solo el id ---
+
+test('resolveNeighborhoodByText (KAN-92) - devuelve id y nombre legible cuando resuelve por el nombre canónico', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const result = await resolveNeighborhoodByText('busco depto en yerba buena', mockClient as any);
+
+  assert.deepStrictEqual(result, { id: 'n-yb', name: 'Yerba Buena' });
+});
+
+test('resolveNeighborhoodByText (KAN-92) - devuelve el nombre de la zona real (no el alias) cuando resuelve por alias', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
+    neighborhood_aliases: { rows: [{ alias: 'yb', neighborhood_id: 'n-yb', neighborhoods: { name: 'Yerba Buena' } }] }
+  });
+
+  const result = await resolveNeighborhoodByText('busco algo por yb urgente', mockClient as any);
+
+  assert.deepStrictEqual(result, { id: 'n-yb', name: 'Yerba Buena' });
+});
+
+test('resolveNeighborhoodByText (KAN-92) - devuelve null si ningún keyword conocido aparece en el texto', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const result = await resolveNeighborhoodByText('busco algo en marte', mockClient as any);
+
+  assert.strictEqual(result, null);
+});
+
+test('resolveNeighborhoodByText (KAN-92) - un alias huérfano (sin join a neighborhoods resuelto) se ignora en vez de romper', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [] },
+    // Simula un neighborhood_id de alias que no matchea ningún neighborhood real (borrado, FK
+    // huérfana, etc.) — el join `neighborhoods(name)` de Supabase vendría null/undefined.
+    neighborhood_aliases: { rows: [{ alias: 'yb', neighborhood_id: 'n-yb' }] }
+  });
+
+  const result = await resolveNeighborhoodByText('busco algo por yb urgente', mockClient as any);
+
+  assert.strictEqual(result, null, 'Un alias sin nombre resuelto no debe generar una zona con nombre undefined.');
 });
 
 test('resolveNeighborhoodIdByText - devuelve null (no error) si ningún keyword conocido aparece en el texto', async () => {

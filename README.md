@@ -42,3 +42,19 @@ Variables requeridas (sin default, el arranque falla si faltan):
   **No hay valores por default hardcodeados en el código** (KAN-81) — son secretos propios de cada entorno y deben configurarse explícitamente. En Railway (producción/staging) ya están seteadas en las variables de entorno del servicio; en local, agregalas a tu `.env`.
 
 El resto de las variables documentadas en `.env.example` son opcionales y tienen defaults razonables definidos en `src/config/env.ts`.
+
+## Formulario de Perfil de Tenant (KAN-90)
+
+Tras el primer login por magic link, el agente completa un formulario obligatorio (`POST /api/profile`, validado en `src/utils/profileValidation.ts`) antes de poder usar el dashboard. Reglas de formato:
+
+| Campo | Requerido | Reglas |
+|---|---|---|
+| Nombre (`first_name`) | Sí | 2–100 caracteres. Solo letras (con acentos/ñ), espacios, guiones y apóstrofes — ej. "María José", "O'Connor". Sin dígitos ni otros símbolos. |
+| Apellido (`last_name`) | Sí | Mismas reglas que Nombre — ej. "Pérez-García". |
+| Teléfono (`phone_number`) | Sí | Máximo 20 caracteres. Solo dígitos, espacios y los símbolos `+`, `-`, `(`, `)`. |
+| Inmobiliaria (`agency_name`) | Sí | Máximo 150 caracteres, sin restricción de charset. |
+| Ciudad (`city`) | Sí | Máximo 150 caracteres, sin restricción de charset. |
+
+`first_name`/`last_name` no tienen columnas propias en `profiles` — se combinan en el campo existente `full_name` (`profiles.full_name`) al persistir, sin necesidad de una migración de schema. `full_name` **ya no se autocompleta con el email truncado** (bug corregido en KAN-90, ver `POST /api/auth/exchange-token`): arranca vacío hasta que el agente completa el formulario.
+
+**País/Provincia fijos a Argentina/Tucumán (KAN-93):** decisión de negocio explícita — no se habilita ningún otro país/provincia hasta tener un producto local sólido. En el formulario, "País" (Argentina) y "Provincia" (Tucumán) son campos bloqueados, puramente informativos; `country` ya no se acepta del cliente en `POST /api/profile` — el backend lo hardcodea a `'Argentina'` siempre (defensa en profundidad, ni un payload manipulado puede setear otro país). El prefijo telefónico se precarga como `+54` en el campo de teléfono (no hay selector de código de país — Argentina es el único posible). "Ciudad" es un combobox con las localidades reales de la provincia de Tucumán, obtenidas de la API pública Georef (`GET /api/localities/tucuman` → `src/services/localitiesService.ts`, sin API key, cacheadas en memoria 24hs), con una opción "Otra localidad..." que revela un input manual — por si la API está caída o la localidad no está en el listado.

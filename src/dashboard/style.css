@@ -256,6 +256,44 @@ h1, h2, h3 {
   gap: 1.25rem;
 }
 
+/* Tarjetas desplegables (Mis Búsquedas en Curso, Búsquedas con Resultados,
+   Interesados en tus Propiedades): <details>/<summary> nativo, mismo patrón de
+   acordeón que ya usa cada match individual (.match-item más abajo). */
+.collapsible-card-summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.collapsible-card-summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapsible-card-summary h2 {
+  margin: 0;
+}
+
+.collapsible-chevron {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  color: var(--text-secondary);
+  transition: transform 0.2s;
+}
+
+.collapsible-card[open] .collapsible-chevron {
+  transform: rotate(180deg);
+}
+
+.collapsible-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
 /* Card */
 .card {
   background: var(--card-bg);
@@ -476,10 +514,6 @@ h1, h2, h3 {
 }
 
 /* Matches Panel */
-.matches-card {
-  grid-column: 1 / -1;
-}
-
 .matches-header {
   display: flex;
   justify-content: space-between;
@@ -640,6 +674,16 @@ h1, h2, h3 {
 
 .match-reasons li {
   margin-bottom: 0.15rem;
+}
+
+/* KAN-92: pista visual de que el ítem tiene tooltip (title nativo) con la explicación de cómo
+   se resuelve la zona geográfica — sin esto, el title solo se descubre al pasar el mouse a
+   ciegas, no hay ninguna señal de que sea interactivo. */
+.match-reason-has-tooltip {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--text-secondary);
+  text-underline-offset: 3px;
 }
 
 .contact-link {
@@ -943,11 +987,6 @@ h1, h2, h3 {
 /* Match item styling based on feedback */
 .match-item.match-rejected {
   opacity: 0.65;
-}
-
-/* Mis Búsquedas Activas (Matching Ciego) */
-.active-searches-card {
-  grid-column: 1 / -1;
 }
 
 /* Formulario de Nueva Búsqueda (KAN-43) */

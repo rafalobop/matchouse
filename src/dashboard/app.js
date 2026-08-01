@@ -40,10 +40,13 @@ const authStep2Error = document.getElementById('auth-step2-error');
 // Elementos del DOM - Perfil de Tenant (KAN-68)
 const profileOverlay = document.getElementById('profile-overlay');
 const profileForm = document.getElementById('profile-form');
+const profileFirstNameInput = document.getElementById('profile-firstname-input');
+const profileLastNameInput = document.getElementById('profile-lastname-input');
 const profilePhoneInput = document.getElementById('profile-phone-input');
 const profileAgencyInput = document.getElementById('profile-agency-input');
-const profileCityInput = document.getElementById('profile-city-input');
-const profileCountryInput = document.getElementById('profile-country-input');
+const profileCitySelect = document.getElementById('profile-city-select');
+const profileCityManualContainer = document.getElementById('profile-city-manual-container');
+const profileCityManualInput = document.getElementById('profile-city-manual-input');
 const profileSaveBtn = document.getElementById('profile-save-btn');
 const profileFormError = document.getElementById('profile-form-error');
 
@@ -196,6 +199,82 @@ function hideProfileFormError() {
   profileFormError.style.display = 'none';
 }
 
+// KAN-93: Ciudad es un combobox de localidades reales de Tucumán (API Georef, vía
+// GET /api/localities/tucuman) — nunca un combobox libre de país/provincia, el negocio solo
+// habilita Argentina/Tucumán por ahora. "Otra localidad..." revela un input manual, para no
+// bloquear a un usuario cuya localidad no esté en el listado o si la API está caída.
+const MANUAL_CITY_OPTION_VALUE = '__manual__';
+let tucumanLocalitiesLoaded = false;
+
+function showManualCityInput() {
+  if (!profileCityManualContainer || !profileCityManualInput) return;
+  profileCityManualContainer.classList.remove('hidden');
+  profileCityManualInput.required = true;
+}
+
+function hideManualCityInput() {
+  if (!profileCityManualContainer || !profileCityManualInput) return;
+  profileCityManualContainer.classList.add('hidden');
+  profileCityManualInput.required = false;
+  profileCityManualInput.value = '';
+}
+
+if (profileCitySelect) {
+  profileCitySelect.addEventListener('change', () => {
+    if (profileCitySelect.value === MANUAL_CITY_OPTION_VALUE) {
+      showManualCityInput();
+    } else {
+      hideManualCityInput();
+    }
+  });
+}
+
+async function loadTucumanLocalitiesIfNeeded() {
+  if (tucumanLocalitiesLoaded || !profileCitySelect) return;
+
+  try {
+    const res = await fetchWithTimeout('/api/localities/tucuman', {}, 15000, '[PERFIL]');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const localities = Array.isArray(data.localities) ? data.localities : [];
+    if (localities.length === 0) throw new Error('Respuesta sin localidades');
+
+    profileCitySelect.innerHTML = '';
+
+    const placeholderOption = document.createElement('option');
+    placeholderOption.value = '';
+    placeholderOption.disabled = true;
+    placeholderOption.selected = true;
+    placeholderOption.innerText = 'Seleccioná tu localidad';
+    profileCitySelect.appendChild(placeholderOption);
+
+    localities.forEach((name) => {
+      const option = document.createElement('option');
+      option.value = name;
+      option.innerText = name;
+      profileCitySelect.appendChild(option);
+    });
+
+    const manualOption = document.createElement('option');
+    manualOption.value = MANUAL_CITY_OPTION_VALUE;
+    manualOption.innerText = 'Otra localidad...';
+    profileCitySelect.appendChild(manualOption);
+
+    tucumanLocalitiesLoaded = true;
+  } catch (error) {
+    console.error('[PERFIL] No se pudieron cargar las localidades de Tucumán:', error.message);
+    profileCitySelect.innerHTML = '';
+    const errorOption = document.createElement('option');
+    errorOption.value = '';
+    errorOption.disabled = true;
+    errorOption.selected = true;
+    errorOption.innerText = 'No se pudieron cargar las localidades';
+    profileCitySelect.appendChild(errorOption);
+    profileCitySelect.disabled = true;
+    showManualCityInput();
+  }
+}
+
 async function ensureProfileCompleted() {
   try {
     const res = await fetchWithTimeout('/api/profile', {}, 15000, '[PERFIL]');
@@ -209,6 +288,13 @@ async function ensureProfileCompleted() {
       profileOverlay.classList.add('hidden');
       startDashboardPolling();
     } else {
+      // KAN-93: +54 precargado (único prefijo posible — Argentina es el único país habilitado
+      // por ahora) y localidades reales de Tucumán cargadas recién al mostrar el overlay, no
+      // antes, para no gastar la llamada si el perfil ya estaba completo.
+      if (profilePhoneInput && !profilePhoneInput.value.trim()) {
+        profilePhoneInput.value = '+54 ';
+      }
+      loadTucumanLocalitiesIfNeeded();
       profileOverlay.classList.remove('hidden');
     }
   } catch (error) {
@@ -222,12 +308,15 @@ if (profileForm) {
   profileForm.addEventListener('submit', async (event) => {
     event.preventDefault();
 
+    const first_name = profileFirstNameInput.value.trim();
+    const last_name = profileLastNameInput.value.trim();
     const phone_number = profilePhoneInput.value.trim();
     const agency_name = profileAgencyInput.value.trim();
-    const city = profileCityInput.value.trim();
-    const country = profileCountryInput.value.trim();
+    const city = profileCitySelect.value === MANUAL_CITY_OPTION_VALUE
+      ? profileCityManualInput.value.trim()
+      : profileCitySelect.value;
 
-    if (!phone_number || !agency_name || !city || !country) {
+    if (!first_name || !last_name || !phone_number || !agency_name || !city) {
       showProfileFormError('Completá todos los campos para continuar.');
       return;
     }
@@ -240,7 +329,7 @@ if (profileForm) {
       const res = await fetchWithTimeout('/api/profile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone_number, agency_name, city, country })
+        body: JSON.stringify({ first_name, last_name, phone_number, agency_name, city })
       }, 15000, '[PERFIL]');
 
       const data = await res.json();
@@ -750,6 +839,7 @@ function getScore(match) {
 async function loadMatches() {
   try {
     const res = await fetch('/api/matches');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
 
     const matches = data.matches || [];
@@ -799,7 +889,25 @@ async function loadMatches() {
     });
   } catch (error) {
     console.error('Error al cargar historial de matches:', error);
+    matchesList.innerHTML = '<p class="table-placeholder error">Error al obtener los matches encontrados.</p>';
   }
+}
+
+// KAN-92: la razón de "Coincidencia de Zona Geográfica" (backend, utils/matcher.ts) se resuelve
+// automáticamente por coordenadas o texto libre — no es evidente para el usuario, así que se
+// agrega un tooltip nativo (title) con la explicación. Se detecta por el prefijo fijo del reason
+// (controlado por nosotros mismos en el backend), no hay dato estructurado separado para esto.
+const ZONE_MATCH_REASON_PREFIX = 'Coincidencia de Zona Geográfica';
+const ZONE_MATCH_TOOLTIP = 'La zona se resuelve automáticamente por la ubicación de la propiedad (coordenadas o dirección de texto), comparada contra la zona pedida en la búsqueda.';
+
+function buildReasonListItem(reason) {
+  const li = document.createElement('li');
+  li.innerText = reason;
+  if (reason.startsWith(ZONE_MATCH_REASON_PREFIX)) {
+    li.title = ZONE_MATCH_TOOLTIP;
+    li.classList.add('match-reason-has-tooltip');
+  }
+  return li;
 }
 
 function buildMatchItem(m) {
@@ -842,9 +950,7 @@ function buildMatchItem(m) {
   if (Array.isArray(m.reasons) && m.reasons.length > 0) {
     const ul = document.createElement('ul');
     m.reasons.forEach(reason => {
-      const li = document.createElement('li');
-      li.innerText = reason;
-      ul.appendChild(li);
+      ul.appendChild(buildReasonListItem(reason));
     });
     divDetails.appendChild(ul);
   }
@@ -954,9 +1060,7 @@ function buildIncomingMatchItem(m) {
   if (Array.isArray(m.reasons) && m.reasons.length > 0) {
     const ul = document.createElement('ul');
     m.reasons.forEach(reason => {
-      const li = document.createElement('li');
-      li.innerText = reason;
-      ul.appendChild(li);
+      ul.appendChild(buildReasonListItem(reason));
     });
     divDetails.appendChild(ul);
   }
