@@ -1,6 +1,6 @@
 {
-  "short_name": "Matchouse",
-  "name": "Matchouse Dashboard",
+  "short_name": "Brokaza",
+  "name": "Brokaza Dashboard",
   "description": "WhatsApp Real Estate Pipeline",
   "start_url": "/",
   "background_color": "#F7F8F4",
@@ -11,7 +11,7 @@
     {
       "name": "Tocá para ver",
       "short_name": "Ver matches",
-      "description": "Abre el dashboard de Matchouse para ver tus matches nuevos",
+      "description": "Abre el dashboard de Brokaza para ver tus matches nuevos",
       "url": "/"
     }
   ],

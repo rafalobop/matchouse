@@ -158,7 +158,7 @@ const mockZoneIntents: Record<number, ZoneIntentRequest> = {
 };
 
 function runTestPipeline() {
-  console.log('=== INICIANDO DRY-RUN DEL PIPELINE HOUSEMATCH ===\n');
+  console.log('=== INICIANDO DRY-RUN DEL PIPELINE BROKAZA ===\n');
 
   console.log(`[CATÁLOGO] ${mockCartera.length} propiedades simuladas en cartera.`);
 

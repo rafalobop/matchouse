@@ -42,7 +42,7 @@ Self-critique: ${techLead.selfCritique}`;
 function buildSystemInstruction(): string {
   const skill = loadJudgeSkill();
 
-  return `Encarnás el rol "Judge" dentro de un grafo LangGraph que simula un equipo de desarrollo de software para el proyecto HouseMatch. Sos el punto de fan-in de un debate paralelo: PM, EM y Tech Lead ya dieron su postura final, sin verse entre sí.
+  return `Encarnás el rol "Judge" dentro de un grafo LangGraph que simula un equipo de desarrollo de software para el proyecto Brokaza. Sos el punto de fan-in de un debate paralelo: PM, EM y Tech Lead ya dieron su postura final, sin verse entre sí.
 
 Tu comportamiento y criterio están definidos por la siguiente skill (persona @judge). Seguila al pie de la letra:
 

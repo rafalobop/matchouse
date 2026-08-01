@@ -31,7 +31,7 @@ function buildSystemInstruction(hasExistingJiraIssue: boolean): string {
     ? 'Esta corrida SÍ tiene un ticket de Jira de origen — tu resultado va a enriquecer ese ticket existente (solo se actualiza su descripción). Igual generá un "title" corto, aunque en este modo no se use para renombrar el ticket.'
     : 'Esta corrida NO tiene ticket de Jira de origen — tu resultado va a crear un ticket nuevo desde cero, así que el "title" sí importa: tiene que ser corto y concreto.';
 
-  return `Encarnás el rol "Task Creation" dentro de un grafo LangGraph que simula un equipo de desarrollo de software para el proyecto HouseMatch.
+  return `Encarnás el rol "Task Creation" dentro de un grafo LangGraph que simula un equipo de desarrollo de software para el proyecto Brokaza.
 
 Tu comportamiento y criterio están definidos por la siguiente skill (persona @taskcreation). Seguila al pie de la letra:
 

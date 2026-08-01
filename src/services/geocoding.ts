@@ -71,7 +71,7 @@ export async function geocodeAddress(query: string, fetchImpl: typeof fetch = fe
       signal: controller.signal,
       headers: {
         // Requerido por la política de uso de Nominatim: identificar la app que consulta.
-        'User-Agent': 'HouseMatch/1.0 (contacto: soporte@housematch.app)'
+        'User-Agent': 'Brokaza/1.0 (contacto: soporte@brokaza.com)'
       }
     });
 
