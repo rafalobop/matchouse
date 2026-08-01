@@ -35,7 +35,7 @@ CREATE TABLE public.blind_matches (
   property_snapshot jsonb NOT NULL,  -- snapshot desnormalizado (domicilio/precio/moneda/dormitorios/...),
                                       -- no FK a properties: un match histórico no debe cambiar/romperse
                                       -- si el otro tenant edita o borra su propiedad después.
-  searcher_snapshot jsonb NOT NULL,  -- {full_name, phone_number, agency_name} del buscador, congelado
+  searcher_snapshot jsonb NOT NULL,  -- {full_name, phone_number, agency_name, email} del buscador, congelado
                                       -- al momento del match, para que el dueño de la propiedad
                                       -- matcheada pueda contactarlo sin depender de que el buscador
                                       -- mire a tiempo su notificación/email (gap identificado en KAN-78).

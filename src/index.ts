@@ -673,12 +673,12 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
     // snapshot del propio perfil (buscador) para que el dueño de la propiedad matcheada pueda
     // contactarlo más adelante sin depender de que este mire a tiempo su notificación/email.
     let matchIds: (string | null)[] = mappedMatches.map(() => null);
-    let searcherSnapshot: SearcherSnapshot = { full_name: null, phone_number: null, agency_name: null };
+    let searcherSnapshot: SearcherSnapshot = { full_name: null, phone_number: null, agency_name: null, email: null };
     if (mappedMatches.length > 0) {
       try {
         const { data: ownProfile, error: profileErr } = await tenantSupabase
           .from('profiles')
-          .select('full_name, phone_number, agency_name')
+          .select('full_name, phone_number, agency_name, email')
           .eq('id', tenantId)
           .single();
         if (profileErr) throw profileErr;
@@ -686,7 +686,8 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
         searcherSnapshot = {
           full_name: ownProfile?.full_name ?? null,
           phone_number: ownProfile?.phone_number ?? null,
-          agency_name: ownProfile?.agency_name ?? null
+          agency_name: ownProfile?.agency_name ?? null,
+          email: ownProfile?.email ?? null
         };
 
         const insertRows = buildBlindMatchInsertRows(tenantId, search.id, text, searcherSnapshot, mappedMatches);

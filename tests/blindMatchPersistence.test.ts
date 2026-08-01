@@ -21,7 +21,7 @@ function sampleMappedMatch(overrides: Partial<MappedBlindMatch> = {}): MappedBli
   };
 }
 
-const sampleSearcherSnapshot = { full_name: 'Juan Perez', phone_number: '5493815551234', agency_name: 'Inmobiliaria Test' };
+const sampleSearcherSnapshot = { full_name: 'Juan Perez', phone_number: '5493815551234', agency_name: 'Inmobiliaria Test', email: 'juan.perez@example.com' };
 
 test('buildBlindMatchInsertRows - arma una fila por match con todos los campos', () => {
   const rows = buildBlindMatchInsertRows('searcher-1', 'search-1', 'Busco depto', sampleSearcherSnapshot, [sampleMappedMatch()]);
@@ -113,6 +113,39 @@ test('mapIncomingMatchRowToDashboardShape - shape correcto para el dueño de la 
   assert.strictEqual(mapped.score, 90);
   assert.strictEqual(mapped.userReviewStatus, undefined, 'No debe exponer userReviewStatus: la curación es exclusiva del buscador.');
   assert.strictEqual(mapped.feedbackReason, undefined, 'No debe exponer feedbackReason: la curación es exclusiva del buscador.');
+});
+
+test('mapIncomingMatchRowToDashboardShape (KAN-89) - incluye email del interesado en searcherContact', () => {
+  const row = {
+    id: 'match-1',
+    created_at: '2026-07-29T12:00:00.000Z',
+    raw_search_text: 'Busco depto 2 dorm',
+    property_snapshot: { domicilio: 'Av. Alem 500' },
+    searcher_snapshot: sampleSearcherSnapshot,
+    score: 90,
+    reasons: []
+  };
+
+  const mapped: any = mapIncomingMatchRowToDashboardShape(row);
+
+  assert.strictEqual(mapped.searcherContact.email, 'juan.perez@example.com');
+  assert.strictEqual(mapped.searcherContact.full_name, 'Juan Perez');
+});
+
+test('mapIncomingMatchRowToDashboardShape (KAN-89) - campos vacíos del interesado no rompen el shape', () => {
+  const row = {
+    id: 'match-1',
+    created_at: '2026-07-29T12:00:00.000Z',
+    raw_search_text: 'Busco depto 2 dorm',
+    property_snapshot: { domicilio: 'Av. Alem 500' },
+    searcher_snapshot: { full_name: null, phone_number: null, agency_name: null, email: null },
+    score: 90,
+    reasons: []
+  };
+
+  const mapped: any = mapIncomingMatchRowToDashboardShape(row);
+
+  assert.deepStrictEqual(mapped.searcherContact, { full_name: null, phone_number: null, agency_name: null, email: null });
 });
 
 test('groupMatchesByMatchedTenant - agrupa varios matches del mismo dueño', () => {

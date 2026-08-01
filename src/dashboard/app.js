@@ -1051,9 +1051,12 @@ function buildIncomingMatchItem(m) {
   const phoneHtml = phone
     ? `<a href="https://wa.me/${phone}" target="_blank" class="contact-link">${escapeHtml(contact.phone_number)}</a>`
     : (contact.phone_number ? escapeHtml(contact.phone_number) : '');
+  const emailHtml = contact.email
+    ? `<a href="mailto:${escapeHtml(contact.email)}" class="contact-link">${escapeHtml(contact.email)}</a>`
+    : '';
 
   const tdContacto = document.createElement('p');
-  tdContacto.innerHTML = `<strong>Interesado:</strong> ${contactLabel}${phoneHtml ? ` — ${phoneHtml}` : ''}`;
+  tdContacto.innerHTML = `<strong>Interesado:</strong> ${contactLabel}${phoneHtml ? ` — ${phoneHtml}` : ''}${emailHtml ? ` — ${emailHtml}` : ''}`;
 
   const divDetails = document.createElement('div');
   divDetails.className = 'match-reasons';
