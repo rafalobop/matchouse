@@ -82,14 +82,14 @@ test('sw.js push - muestra el texto minimizado exacto de KAN-45 (title/body)', a
   const sw = loadServiceWorker();
 
   await sw.dispatchPush({
-    title: 'Matchouse',
+    title: 'Brokaza',
     body: 'Tenés un match nuevo — tocá para ver',
     tag: 'search-match-123',
     data: { url: '/' }
   });
 
   assert.strictEqual(sw.showNotificationCalls.length, 1);
-  assert.strictEqual(sw.showNotificationCalls[0].title, 'Matchouse');
+  assert.strictEqual(sw.showNotificationCalls[0].title, 'Brokaza');
   assert.strictEqual(sw.showNotificationCalls[0].options.body, 'Tenés un match nuevo — tocá para ver');
 });
 
@@ -97,7 +97,7 @@ test('sw.js push (KAN-46) - el botón de acción usa el texto "Tocá para ver"',
   const sw = loadServiceWorker();
 
   await sw.dispatchPush({
-    title: 'Matchouse',
+    title: 'Brokaza',
     body: 'Tenés un match nuevo — tocá para ver',
     tag: 'search-match-123',
     data: { url: '/' }
@@ -109,19 +109,19 @@ test('sw.js push (KAN-46) - el botón de acción usa el texto "Tocá para ver"',
 test('sw.js push - propaga tag y data.url del payload sin modificarlos', async () => {
   const sw = loadServiceWorker();
 
-  await sw.dispatchPush({ title: 'Matchouse', body: 'Tenés un match nuevo — tocá para ver', tag: 'search-match-456', data: { url: '/' } });
+  await sw.dispatchPush({ title: 'Brokaza', body: 'Tenés un match nuevo — tocá para ver', tag: 'search-match-456', data: { url: '/' } });
 
   assert.strictEqual(sw.showNotificationCalls[0].options.tag, 'search-match-456');
   assert.deepStrictEqual(sw.showNotificationCalls[0].options.data, { url: '/' });
 });
 
-test('sw.js push (regresión) - usa "Matchouse" y tag por default cuando el payload no los trae', async () => {
+test('sw.js push (regresión) - usa "Brokaza" y tag por default cuando el payload no los trae', async () => {
   const sw = loadServiceWorker();
 
   await sw.dispatchPush({ body: 'Tenés un match nuevo — tocá para ver' });
 
-  assert.strictEqual(sw.showNotificationCalls[0].title, 'Matchouse');
-  assert.strictEqual(sw.showNotificationCalls[0].options.tag, 'housematch-notification');
+  assert.strictEqual(sw.showNotificationCalls[0].title, 'Brokaza');
+  assert.strictEqual(sw.showNotificationCalls[0].options.tag, 'brokaza-notification');
   assert.deepStrictEqual(sw.showNotificationCalls[0].options.data, {});
 });
 
@@ -131,7 +131,7 @@ test('sw.js push (regresión) - JSON malformado no rompe el handler, cae al text
   await sw.dispatchPush('no-es-json-valido', true);
 
   assert.strictEqual(sw.showNotificationCalls.length, 1);
-  assert.strictEqual(sw.showNotificationCalls[0].title, 'Matchouse');
+  assert.strictEqual(sw.showNotificationCalls[0].title, 'Brokaza');
   assert.strictEqual(sw.showNotificationCalls[0].options.body, 'no-es-json-valido');
 });
 

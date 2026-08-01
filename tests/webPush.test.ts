@@ -21,7 +21,7 @@ function makeMockClient(options: { count?: number | null; error?: any } = {}) {
 test('webPush.buildMatchFoundPushPayload - usa el texto minimizado exacto definido en KAN-45', () => {
   const payload = buildMatchFoundPushPayload('search-123');
 
-  assert.strictEqual(payload.title, 'Matchouse');
+  assert.strictEqual(payload.title, 'Brokaza');
   assert.strictEqual(payload.body, 'Tenés un match nuevo — tocá para ver');
 });
 

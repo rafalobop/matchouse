@@ -84,13 +84,13 @@ export function buildEmailHtml(groupName: string, originalText: string, sender: 
 <html>
 <body style="font-family:Arial,Helvetica,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px;margin:0;">
   <div style="max-width:600px;margin:0 auto;">
-    <h2 style="color:#ffffff;">🏠 HouseMatch — Nuevos matches detectados</h2>
+    <h2 style="color:#ffffff;">🏠 Brokaza — Nuevos matches detectados</h2>
     <p>Grupo: <strong>${groupName}</strong></p>
     <p style="color:#94a3b8;">Pedido: "${truncatedText}" — Cliente: ${sender}</p>
     <table style="width:100%;border-collapse:collapse;background:#1e293b;border-radius:8px;overflow:hidden;">
       ${rows}
     </table>
-    <p style="color:#64748b;font-size:12px;margin-top:16px;">Gestioná y revisá el feedback de estos matches desde tu Dashboard de HouseMatch.</p>
+    <p style="color:#64748b;font-size:12px;margin-top:16px;">Gestioná y revisá el feedback de estos matches desde tu Dashboard de Brokaza.</p>
   </div>
   <img src="${pixelUrl}" width="1" height="1" alt="" style="display:none;" />
 </body>
@@ -126,12 +126,12 @@ export function buildBlindMatchEmailHtml(searchText: string, matches: any[]): st
 <html>
 <body style="font-family:Arial,Helvetica,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px;margin:0;">
   <div style="max-width:600px;margin:0 auto;">
-    <h2 style="color:#ffffff;">🏠 Matchouse — Nuevos matches para tu búsqueda</h2>
+    <h2 style="color:#ffffff;">🏠 Brokaza — Nuevos matches para tu búsqueda</h2>
     <p style="color:#94a3b8;">Tu búsqueda: "${truncatedText}"</p>
     <table style="width:100%;border-collapse:collapse;background:#1e293b;border-radius:8px;overflow:hidden;">
       ${rows}
     </table>
-    <p style="color:#64748b;font-size:12px;margin-top:16px;">Entrá a tu Dashboard de Matchouse para ver el detalle completo y gestionar tus búsquedas.</p>
+    <p style="color:#64748b;font-size:12px;margin-top:16px;">Entrá a tu Dashboard de Brokaza para ver el detalle completo y gestionar tus búsquedas.</p>
   </div>
 </body>
 </html>`;
@@ -158,7 +158,7 @@ export async function sendBlindMatchEmailFallback(tenantId: string, searchText: 
     const result = await resend.emails.send({
       from: FROM_ADDRESS,
       to: profile.email,
-      subject: `🏠 Matchouse: ${matches.length} match(es) nuevo(s) para tu búsqueda`,
+      subject: `🏠 Brokaza: ${matches.length} match(es) nuevo(s) para tu búsqueda`,
       html
     });
 
@@ -192,13 +192,13 @@ export function buildIncomingMatchEmailHtml(searcherSnapshot: { full_name: strin
 <html>
 <body style="font-family:Arial,Helvetica,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px;margin:0;">
   <div style="max-width:600px;margin:0 auto;">
-    <h2 style="color:#ffffff;">🏠 Matchouse — Un agente busca una propiedad como una de las tuyas</h2>
+    <h2 style="color:#ffffff;">🏠 Brokaza — Un agente busca una propiedad como una de las tuyas</h2>
     <p style="color:#94a3b8;">Búsqueda: "${truncatedText}"</p>
     <p style="color:#f1f5f9;font-weight:600;">Contacto: ${contactoLinea || 'Sin datos de contacto disponibles'}</p>
     <table style="width:100%;border-collapse:collapse;background:#1e293b;border-radius:8px;overflow:hidden;">
       ${rows}
     </table>
-    <p style="color:#64748b;font-size:12px;margin-top:16px;">Entrá a tu Dashboard de Matchouse para ver el detalle completo.</p>
+    <p style="color:#64748b;font-size:12px;margin-top:16px;">Entrá a tu Dashboard de Brokaza para ver el detalle completo.</p>
   </div>
 </body>
 </html>`;
@@ -225,7 +225,7 @@ export async function sendIncomingMatchEmailFallback(matchedTenantId: string, se
     const result = await resend.emails.send({
       from: FROM_ADDRESS,
       to: profile.email,
-      subject: `🏠 Matchouse: un agente busca ${matches.length} de tus propiedades`,
+      subject: `🏠 Brokaza: un agente busca ${matches.length} de tus propiedades`,
       html
     });
 

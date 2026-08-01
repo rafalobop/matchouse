@@ -46,13 +46,13 @@ export function validateConfig(): Config {
   const supabaseAnonKey = cleanEnvVar(process.env.SUPABASE_ANON_KEY);
   const vapidPublicKey = cleanEnvVar(process.env.VAPID_PUBLIC_KEY);
   const vapidPrivateKey = cleanEnvVar(process.env.VAPID_PRIVATE_KEY);
-  const vapidEmail = cleanEnvVar(process.env.VAPID_EMAIL) || 'mailto:info@housematch.com';
+  const vapidEmail = cleanEnvVar(process.env.VAPID_EMAIL) || 'mailto:info@brokaza.com';
   const appUrl = cleanEnvVar(process.env.APP_URL) || 'http://localhost:3000';
   // SENDER_API_KEY es la API key de Resend (nombre histórico de la variable en .env)
   const resendApiKey = cleanEnvVar(process.env.SENDER_API_KEY);
   const notificationIntervalMinutes = parseInt(cleanEnvVar(process.env.NOTIFICATION_INTERVAL_MINUTES) || '20', 10);
   // Jira es solo para el grafo LangGraph de equipo de desarrollo (src/graph/), no para
-  // la app de HouseMatch en sí — opcional a propósito, no debe romper el arranque del bot.
+  // la app de Brokaza en sí — opcional a propósito, no debe romper el arranque del bot.
   const jiraDomain = cleanEnvVar(process.env.JIRA_DOMAIN);
   const jiraEmail = cleanEnvVar(process.env.JIRA_EMAIL);
   const jiraProjectKey = cleanEnvVar(process.env.JIRA_PROJECT_KEY);

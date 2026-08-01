@@ -52,7 +52,7 @@ function buildSystemInstruction(issueType: string | null): string {
     ? `\nLa fuente de esta corrida es una issue de Jira de tipo "${issueType}" — tratala como corresponde: si es una "Story" es una historia de usuario (foco en valor/experiencia), si es una "Task" (u otro tipo técnico/operativo) es una tarea puntual (foco en el resultado concreto pedido). Ajustá el tono de "problem"/"proposedSolution" a ese tipo.\n`
     : '';
 
-  return `Encarnás el rol "Product Owner" dentro de un grafo LangGraph que simula un equipo de desarrollo de software para el proyecto HouseMatch.
+  return `Encarnás el rol "Product Owner" dentro de un grafo LangGraph que simula un equipo de desarrollo de software para el proyecto Brokaza.
 
 Tu comportamiento y criterio como Product Owner están definidos por la siguiente skill (persona @product). Seguila al pie de la letra:
 

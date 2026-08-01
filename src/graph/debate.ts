@@ -30,7 +30,7 @@ function buildStepInstruction(context: DebateStepContext, step: 'Proposer' | 'Op
     ? 'Armá tu postura inicial siguiendo estrictamente la sección "Si actuás como Proposer" de la skill.'
     : 'Tu trabajo es atacar activamente la postura del Proposer: buscá puntos débiles, casos borde no contemplados y supuestos frágiles. Seguí la sección "Si actuás como Opposer" de la skill. No seas complaciente — si la postura del Proposer es sólida igual encontrá su punto más débil.';
 
-  return `Encarnás el rol "${context.roleName}" (persona ${context.roleHandle}) dentro de un grafo LangGraph que simula un equipo de desarrollo de software para el proyecto HouseMatch. Estás en el paso "${step}" de un debate interno proposer/opposer/reconcile de tu propio rol.
+  return `Encarnás el rol "${context.roleName}" (persona ${context.roleHandle}) dentro de un grafo LangGraph que simula un equipo de desarrollo de software para el proyecto Brokaza. Estás en el paso "${step}" de un debate interno proposer/opposer/reconcile de tu propio rol.
 
 Tu comportamiento y criterio están definidos por la siguiente skill. Seguila al pie de la letra:
 
@@ -67,7 +67,7 @@ Atacá esa postura activamente.`;
 }
 
 function buildReconcileInstruction(context: DebateStepContext): string {
-  return `Encarnás el rol "${context.roleName}" (persona ${context.roleHandle}) dentro de un grafo LangGraph que simula un equipo de desarrollo de software para el proyecto HouseMatch. Estás en el paso "Reconcile", el último de tu debate interno.
+  return `Encarnás el rol "${context.roleName}" (persona ${context.roleHandle}) dentro de un grafo LangGraph que simula un equipo de desarrollo de software para el proyecto Brokaza. Estás en el paso "Reconcile", el último de tu debate interno.
 
 Tu comportamiento y criterio están definidos por la siguiente skill:
 

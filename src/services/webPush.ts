@@ -14,7 +14,7 @@ webpush.setVapidDetails(config.vapidEmail, config.vapidPublicKey, config.vapidPr
 // acceso propio, sin importar quién la dispare.
 export function buildMatchFoundPushPayload(searchId: string): Record<string, unknown> {
   return {
-    title: 'Matchouse',
+    title: 'Brokaza',
     body: 'Tenés un match nuevo — tocá para ver',
     tag: `search-match-${searchId}`,
     data: { url: '/' }
@@ -28,7 +28,7 @@ export function buildMatchFoundPushPayload(searchId: string): Record<string, unk
 // autenticado (GET /api/matches/incoming).
 export function buildIncomingMatchPushPayload(matchId: string): Record<string, unknown> {
   return {
-    title: 'Matchouse',
+    title: 'Brokaza',
     body: 'Un agente busca una propiedad como una de las tuyas — tocá para ver',
     tag: `incoming-match-${matchId}`,
     data: { url: '/' }

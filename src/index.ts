@@ -11,7 +11,6 @@ import * as fs from 'fs';
 import { Property, processExcelBufferWithColumnMap, peekExcelHeaders, syncPropertiesToDatabase } from './services/excel';
 import { resolveColumnMapping, confirmColumnMapping, toColumnMapRecord, ExcelMappingServiceError } from './services/excelMapping';
 import { ExcelMappingField } from './utils/excelHeaderMatcher';
-import { coordinator } from './services/coordinator';
 import { extractFromTextInput, extractZoneIntent, AITimeoutError } from './services/ai';
 import { findCrossTenantMatches } from './services/blindMatching';
 import { validateFreeSearchText } from './utils/searchValidation';
@@ -160,7 +159,7 @@ function clearCachedSession(token: string) {
 
 async function tenantAuthMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
   const { supabase, getTenantClient } = require('./services/supabase');
-  const token = req.cookies?.housematch_session;
+  const token = req.cookies?.brokaza_session;
   if (!token) {
     return res.status(401).json({ error: 'No autenticado.' });
   }
@@ -189,7 +188,7 @@ async function tenantAuthMiddleware(req: express.Request, res: express.Response,
     if (error || !user) {
       logger.warn({ supabaseError: error?.message }, '[AUTH] Sesión inválida o expirada en tenantAuthMiddleware');
       clearCachedSession(token);
-      res.clearCookie('housematch_session');
+      res.clearCookie('brokaza_session');
       return res.status(401).json({ error: 'Sesión inválida o expirada.' });
     }
     sessionCache.set(token, { tenantId: user.id, expiresAt: Date.now() + SESSION_CACHE_TTL_MS });
@@ -207,7 +206,7 @@ async function tenantAuthMiddleware(req: express.Request, res: express.Response,
 // ==========================================
 
 app.get('/api/auth/session', async (req, res) => {
-  const token = req.cookies?.housematch_session;
+  const token = req.cookies?.brokaza_session;
   if (!token) return res.json({ authenticated: false });
   try {
     const { supabase } = require('./services/supabase');
@@ -221,7 +220,7 @@ app.get('/api/auth/session', async (req, res) => {
     }
     if (error || !user) {
       logger.warn({ supabaseError: error?.message }, '[AUTH] Sesión inválida o expirada al chequear /session');
-      res.clearCookie('housematch_session');
+      res.clearCookie('brokaza_session');
       return res.json({ authenticated: false });
     }
     res.json({ authenticated: true, tenant: { id: user.id, email: user.email } });
@@ -301,7 +300,7 @@ app.post('/api/auth/exchange-token', async (req, res) => {
     if (profileError) {
       logger.error({ tenantId: user.id, err: profileError.message }, '[AUTH] Error al crear/actualizar perfil');
     }
-    res.cookie('housematch_session', access_token, {
+    res.cookie('brokaza_session', access_token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax' as const,
@@ -316,9 +315,9 @@ app.post('/api/auth/exchange-token', async (req, res) => {
 });
 
 app.post('/api/auth/logout', (req, res) => {
-  const token = req.cookies?.housematch_session;
+  const token = req.cookies?.brokaza_session;
   if (token) clearCachedSession(token);
-  res.clearCookie('housematch_session');
+  res.clearCookie('brokaza_session');
   res.json({ success: true });
 });
 
@@ -484,7 +483,6 @@ app.post('/api/upload', tenantAuthMiddleware, (req, res, next) => {
     }
 
     // Aislamiento por tenant
-    coordinator.setCatalog(tenantId, catalog);
     await syncPropertiesToDatabase(catalog, tenantId, tenantSupabase);
 
     if (priceParseErrors.length > 0) {
@@ -571,7 +569,6 @@ app.post('/api/upload/confirm-mapping', tenantAuthMiddleware, (req, res, next) =
       return res.status(400).json({ error: 'El archivo Excel no contiene propiedades legibles.' });
     }
 
-    coordinator.setCatalog(tenantId, catalog);
     await syncPropertiesToDatabase(catalog, tenantId, tenantSupabase);
 
     if (priceParseErrors.length > 0) {
@@ -591,10 +588,20 @@ app.post('/api/upload/confirm-mapping', tenantAuthMiddleware, (req, res, next) =
   }
 });
 
-app.get('/api/catalog', tenantAuthMiddleware, (req, res) => {
+app.get('/api/catalog', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
-  const catalog = coordinator.getCatalog(tenantId);
-  res.json({ count: catalog.length });
+  const tenantSupabase = (req as any).supabaseClient;
+  try {
+    const { count, error } = await tenantSupabase
+      .from('properties')
+      .select('id', { count: 'exact', head: true })
+      .eq('tenant_id', tenantId);
+    if (error) throw error;
+    res.json({ count: count || 0 });
+  } catch (error: any) {
+    logger.error({ tenantId, err: error.message }, '[CATALOGO] Error al contar propiedades del tenant');
+    res.status(500).json({ error: 'Error interno al obtener el catálogo.' });
+  }
 });
 
 // KAN-37: motor de matching bidireccional entre tenants, dirección búsqueda→cartera. Un tenant
@@ -1073,70 +1080,7 @@ app.post('/api/notifications/subscribe', tenantAuthMiddleware, async (req, res) 
 // ==========================================
 
 async function main() {
-  console.log('Iniciando HouseMatch MVP Multi-Tenant con Dashboard...');
-
-  const { supabase } = require('./services/supabase');
-
-  // KAN-64: la lista de tenants para precargar el catalogo en memoria salia antes de
-  // whatsapp_sessions (una fila por tenant con sesion de Baileys alguna vez iniciada) - esa
-  // tabla se elimino junto con el retiro de WhatsApp como canal de entrada. La fuente correcta
-  // ahora es profiles (todo agente inmobiliario registrado), sin depender de si alguna vez
-  // conecto WhatsApp.
-  let tenantIds: string[] = [];
-  try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id');
-
-    if (error) throw error;
-    tenantIds = (data || []).map((row: any) => row.id);
-  } catch (e) {
-    console.warn('[MAIN - SUPABASE] No se pudo recuperar la lista de tenants para el arranque inicial:', e);
-  }
-
-  // Precargar el catalogo en memoria de cada tenant registrado
-  for (const tenantId of tenantIds) {
-    if (tenantId === '00000000-0000-0000-0000-000000000000') {
-      continue;
-    }
-
-    let propertyCatalog: Property[] = [];
-    try {
-      const { data: dbProperties, error: propErr } = await supabase
-        .from('properties')
-        .select('*')
-        .eq('tenant_id', tenantId);
-
-      if (propErr) throw propErr;
-
-      if (dbProperties && dbProperties.length > 0) {
-        console.log(`[MAIN - SUPABASE] Catálogo cargado desde Supabase para tenant ${tenantId} (${dbProperties.length} propiedades).`);
-        propertyCatalog = dbProperties.map((p: any) => ({
-          address: p.address,
-          floor: p.floor || undefined,
-          unit: p.unit || undefined,
-          block: p.block || undefined,
-          lot: p.lot || undefined,
-          price: p.price,
-          currency: p.currency,
-          maintenance_fees: p.maintenance_fees,
-          bedrooms: p.bedrooms,
-          features: p.features || undefined,
-          contact_info: p.contact_info || undefined,
-          property_type: p.property_type,
-          operation: p.operation,
-          zone_display_name: p.sheet_name,
-          sheet_name: p.sheet_name,
-          latitude: p.latitude,
-          longitude: p.longitude
-        }));
-      }
-    } catch (e) {
-      console.warn(`[ARRANQUE] Error al cargar catálogo de Supabase del tenant ${tenantId}:`, e);
-    }
-
-    coordinator.setCatalog(tenantId, propertyCatalog);
-  }
+  console.log('Iniciando Brokaza MVP Multi-Tenant con Dashboard...');
 
   // Iniciar servicio de cotización de Dólar Blue (dinámico y horaria)
   startDolarService();

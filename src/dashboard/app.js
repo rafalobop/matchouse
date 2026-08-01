@@ -1380,13 +1380,13 @@ confirmRejectBtn.addEventListener('click', async () => {
 // PushManager no está disponible). Este banner se muestra ANTES de que el usuario llegue a pedir
 // el permiso, para explicar el paso previo necesario.
 
-const IOS_INSTALL_DISMISS_KEY = 'matchouse-ios-install-dismissed';
+const IOS_INSTALL_DISMISS_KEY = 'brokaza-ios-install-dismissed';
 
 function initIosInstallOnboarding() {
   const banner = document.getElementById('ios-install-banner');
-  if (!banner || !window.MatchouseIosOnboarding) return;
+  if (!banner || !window.BrokazaIosOnboarding) return;
 
-  if (!window.MatchouseIosOnboarding.shouldShowIosInstallOnboarding()) return;
+  if (!window.BrokazaIosOnboarding.shouldShowIosInstallOnboarding()) return;
   if (localStorage.getItem(IOS_INSTALL_DISMISS_KEY) === 'true') return;
 
   banner.classList.remove('hidden');
