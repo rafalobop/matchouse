@@ -9,7 +9,6 @@ function baseInput(overrides: Partial<ProfileInput> = {}): ProfileInput {
     phone_number: '+54 381 555-1234',
     agency_name: 'Inmobiliaria del Centro',
     city: 'San Miguel de Tucuman',
-    country: 'Argentina',
     ...overrides
   };
 }
@@ -36,10 +35,6 @@ test('profileValidation - rechaza agency_name faltante', () => {
 
 test('profileValidation - rechaza city faltante', () => {
   assert.notStrictEqual(validateProfileInput(baseInput({ city: undefined })), null);
-});
-
-test('profileValidation - rechaza country faltante', () => {
-  assert.notStrictEqual(validateProfileInput(baseInput({ country: null })), null);
 });
 
 test('profileValidation - rechaza tipos no-string (proteccion contra payloads inesperados)', () => {

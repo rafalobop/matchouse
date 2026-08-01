@@ -1,7 +1,9 @@
 // KAN-64: validacion del formulario de perfil que un agente completa despues del magic link
-// (telefono, inmobiliaria, ciudad, pais). Modulo puro separado de src/index.ts por el mismo
-// motivo que searchValidation.ts / activeSearches.ts (ese archivo arranca el servidor completo
-// al importarse, no se puede importar desde tests).
+// (nombre, apellido, telefono, inmobiliaria, ciudad). Modulo puro separado de src/index.ts por
+// el mismo motivo que searchValidation.ts / activeSearches.ts (ese archivo arranca el servidor
+// completo al importarse, no se puede importar desde tests).
+// KAN-93: `country` ya no es parte de este input — el negocio fija Argentina como unico pais
+// habilitado, se hardcodea en src/index.ts#POST /api/profile en vez de validarse acá.
 
 export interface ProfileInput {
   first_name?: unknown;
@@ -9,7 +11,6 @@ export interface ProfileInput {
   phone_number?: unknown;
   agency_name?: unknown;
   city?: unknown;
-  country?: unknown;
 }
 
 const MAX_PHONE_LENGTH = 20;
@@ -69,9 +70,6 @@ export function validateProfileInput(input: ProfileInput): string | null {
 
   const cityError = validateRequiredText(input.city, 'city', MAX_TEXT_FIELD_LENGTH);
   if (cityError) return cityError;
-
-  const countryError = validateRequiredText(input.country, 'country', MAX_TEXT_FIELD_LENGTH);
-  if (countryError) return countryError;
 
   return null;
 }
