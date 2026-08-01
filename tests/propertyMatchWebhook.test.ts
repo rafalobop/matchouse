@@ -189,7 +189,7 @@ test('processPropertyUploaded (KAN-79) - usa el snapshot del buscador (profiles)
   const mockClient = makeMockClient({
     searchRows: [sampleSearchRow()],
     existingDupCount: 0,
-    profilesByTenant: { 'tenant-searcher': { full_name: 'Juan Perez', phone_number: '5493815551234', agency_name: 'Inmobiliaria Test' } }
+    profilesByTenant: { 'tenant-searcher': { full_name: 'Juan Perez', phone_number: '5493815551234', agency_name: 'Inmobiliaria Test', email: 'juan.perez@example.com' } }
   });
 
   await processPropertyUploaded('prop-1', mockClient as any);
@@ -198,8 +198,22 @@ test('processPropertyUploaded (KAN-79) - usa el snapshot del buscador (profiles)
   assert.deepStrictEqual(insertCall!.args[0].searcher_snapshot, {
     full_name: 'Juan Perez',
     phone_number: '5493815551234',
-    agency_name: 'Inmobiliaria Test'
+    agency_name: 'Inmobiliaria Test',
+    email: 'juan.perez@example.com'
   });
+});
+
+test('processPropertyUploaded (KAN-89) - perfil del buscador sin email cae a null sin romper el snapshot', async () => {
+  const mockClient = makeMockClient({
+    searchRows: [sampleSearchRow()],
+    existingDupCount: 0,
+    profilesByTenant: { 'tenant-searcher': { full_name: 'Juan Perez', phone_number: '5493815551234', agency_name: 'Inmobiliaria Test' } }
+  });
+
+  await processPropertyUploaded('prop-1', mockClient as any);
+
+  const insertCall = mockClient.calls.find(c => c.table === 'blind_matches' && c.method === 'insert');
+  assert.strictEqual(insertCall!.args[0].searcher_snapshot.email, null);
 });
 
 test('processPropertyUploaded (KAN-79) - si falla el chequeo de duplicados (fail-open), igual intenta insertar', async () => {

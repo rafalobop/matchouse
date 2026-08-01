@@ -44,19 +44,20 @@ async function blindMatchAlreadyExists(searchId: string, propertyId: string, cli
 async function fetchSearcherSnapshot(searchTenantId: string, client: SupabaseClient): Promise<SearcherSnapshot> {
   const { data, error } = await client
     .from('profiles')
-    .select('full_name, phone_number, agency_name')
+    .select('full_name, phone_number, agency_name, email')
     .eq('id', searchTenantId)
     .single();
 
   if (error || !data) {
     logger.error({ error: error?.message, searchTenantId }, '[PROPERTY MATCH WEBHOOK] No se pudo cargar el perfil del buscador para el snapshot.');
-    return { full_name: null, phone_number: null, agency_name: null };
+    return { full_name: null, phone_number: null, agency_name: null, email: null };
   }
 
   return {
     full_name: data.full_name ?? null,
     phone_number: data.phone_number ?? null,
-    agency_name: data.agency_name ?? null
+    agency_name: data.agency_name ?? null,
+    email: data.email ?? null
   };
 }
 
