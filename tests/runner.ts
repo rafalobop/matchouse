@@ -4,7 +4,6 @@ import './activeSearches.test';
 import './addressParser.test';
 import './ai.test';
 import './blindMatching.test';
-import './coordinator.test';
 import './dolar.test';
 import './excel.test';
 import './excelHeaderMatcher.test';

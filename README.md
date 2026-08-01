@@ -1,4 +1,4 @@
-# Evolución del Proyecto HouseMatch
+# Evolución del Proyecto Brokaza
 
 Este directorio contiene la trazabilidad de las decisiones de arquitectura, diseño de agentes y especificaciones de características a medida que evolucionamos de un MVP lineal hacia un sistema multi-agente modular y escalable.
 

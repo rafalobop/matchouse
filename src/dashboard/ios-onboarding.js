@@ -1,7 +1,7 @@
 // KAN-47: deteccion de iOS + PWA no instalada, extraida a un archivo aparte (en vez de vivir
 // inline en app.js) para poder testear la logica pura con node:test sin necesitar un DOM real -
 // app.js si depende de document.getElementById de punta a punta y no se puede cargar en Node.
-// Se expone como <script> clasico (window.MatchouseIosOnboarding) y como CommonJS (module.exports)
+// Se expone como <script> clasico (window.BrokazaIosOnboarding) y como CommonJS (module.exports)
 // para que el mismo archivo sirva tal cual al browser y a los tests.
 (function (root) {
   function isIosDevice(nav) {
@@ -31,6 +31,6 @@
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;
   } else {
-    root.MatchouseIosOnboarding = api;
+    root.BrokazaIosOnboarding = api;
   }
 })(typeof window !== 'undefined' ? window : globalThis);

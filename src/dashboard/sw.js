@@ -8,18 +8,18 @@ self.addEventListener('push', function(event) {
         badge: '/logo-icon',
         vibrate: [100, 50, 100],
         data: data.data || {},
-        tag: data.tag || 'housematch-notification',
+        tag: data.tag || 'brokaza-notification',
         actions: [
           { action: 'open', title: 'Tocá para ver' }
         ]
       };
       event.waitUntil(
-        self.registration.showNotification(data.title || 'Matchouse', options)
+        self.registration.showNotification(data.title || 'Brokaza', options)
       );
     } catch (e) {
       console.error('Error al decodificar JSON del push:', e);
       event.waitUntil(
-        self.registration.showNotification('Matchouse', {
+        self.registration.showNotification('Brokaza', {
           body: event.data.text()
         })
       );

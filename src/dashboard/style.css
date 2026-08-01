@@ -1,5 +1,5 @@
 :root {
-  /* Paleta de marca (Matchouse Visual Brain v1.0) */
+  /* Paleta de marca (Brokaza Visual Brain v1.0) */
   --forest: #36461E;
   --olive: #6C863A;
   --olive-hover: #56702E;
@@ -516,8 +516,73 @@ h1, h2, h3 {
 /* Matches Panel */
 .matches-header {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
+  gap: 0.75rem;
+}
+
+.matches-controls {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.sort-control {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.sort-select {
+  background: rgba(97, 121, 144, 0.1);
+  border: 1px solid var(--card-border);
+  color: var(--text-primary);
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  outline: none;
+  cursor: pointer;
+  font-family: var(--font-family);
+  font-size: 0.8rem;
+  max-width: 100%;
+}
+
+.pagination-container {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  padding: 0.5rem 0.25rem 0;
+}
+
+.pagination-info {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.pagination-count {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.pagination-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.pagination-page-text {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 /* Matches: acordeón (un <details> por match) */
@@ -650,6 +715,51 @@ h1, h2, h3 {
 
   .card {
     padding: 1.5rem;
+  }
+}
+
+/* Celulares chicos: el padding fijo de overlays/modales (pensado para desktop) se come
+   demasiado ancho útil en viewports de ~320-400px, y el widget de inventario forzado en fila
+   (icono + stat + botón "Cargar Excel") no entra en una sola línea sin apretarse. */
+@media (max-width: 480px) {
+  .overlay-card {
+    padding: 1.75rem 1.25rem;
+  }
+
+  .modal-card {
+    padding: 1.25rem;
+  }
+
+  .modal-card-wide {
+    max-height: 92vh;
+  }
+
+  .inventory-dropzone {
+    flex-direction: column;
+    align-items: stretch;
+    text-align: center;
+  }
+
+  .inventory-icon {
+    justify-content: center;
+  }
+
+  .inventory-stat {
+    align-items: center;
+  }
+
+  .modal-actions {
+    flex-direction: column;
+  }
+
+  .pagination-container {
+    justify-content: center;
+    text-align: center;
+  }
+
+  .pagination-buttons {
+    justify-content: center;
+    width: 100%;
   }
 }
 

@@ -1,6 +1,6 @@
 // Estado compartido del grafo LangGraph de equipo de desarrollo.
 // Es sobre el PROCESO de desarrollo (specs, roles, tareas, QA), no sobre
-// entidades de dominio de HouseMatch (esas viven en src/services, src/utils).
+// entidades de dominio de Brokaza (esas viven en src/services, src/utils).
 
 export interface DevTeamState {
   // Entrada: key de Jira de la tarea/historia a atacar (ej. "HOUSE-42"), elegida
