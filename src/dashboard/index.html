@@ -315,13 +315,25 @@
           <label for="profile-agency-input" style="display: block; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.3rem;">Inmobiliaria</label>
           <input type="text" id="profile-agency-input" maxlength="150" placeholder="Nombre de tu inmobiliaria" required style="width: 100%; padding: 0.65rem 0.75rem; background: rgba(97, 121, 144, 0.08); border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-primary); outline: none; font-size: 0.95rem; box-sizing: border-box;">
         </div>
-        <div style="text-align: left; width: 100%;">
-          <label for="profile-city-input" style="display: block; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.3rem;">Ciudad</label>
-          <input type="text" id="profile-city-input" maxlength="150" placeholder="Ej: San Miguel de Tucumán" required style="width: 100%; padding: 0.65rem 0.75rem; background: rgba(97, 121, 144, 0.08); border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-primary); outline: none; font-size: 0.95rem; box-sizing: border-box;">
-        </div>
+        <!-- KAN-93: País y Provincia fijos a Argentina/Tucumán a propósito (no habilitamos otro
+             país/provincia hasta tener un producto local sólido) — solo informativos, disabled
+             así ningún valor se manda en el submit; el backend igual hardcodea "Argentina". -->
         <div style="text-align: left; width: 100%;">
           <label for="profile-country-input" style="display: block; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.3rem;">País</label>
-          <input type="text" id="profile-country-input" maxlength="150" placeholder="Ej: Argentina" required style="width: 100%; padding: 0.65rem 0.75rem; background: rgba(97, 121, 144, 0.08); border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-primary); outline: none; font-size: 0.95rem; box-sizing: border-box;">
+          <input type="text" id="profile-country-input" value="Argentina" disabled style="width: 100%; padding: 0.65rem 0.75rem; background: rgba(97, 121, 144, 0.04); border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-secondary); outline: none; font-size: 0.95rem; box-sizing: border-box; cursor: not-allowed;">
+        </div>
+        <div style="text-align: left; width: 100%;">
+          <label for="profile-province-input" style="display: block; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.3rem;">Provincia</label>
+          <input type="text" id="profile-province-input" value="Tucumán" disabled style="width: 100%; padding: 0.65rem 0.75rem; background: rgba(97, 121, 144, 0.04); border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-secondary); outline: none; font-size: 0.95rem; box-sizing: border-box; cursor: not-allowed;">
+        </div>
+        <div style="text-align: left; width: 100%;">
+          <label for="profile-city-select" style="display: block; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.3rem;">Ciudad</label>
+          <select id="profile-city-select" required style="width: 100%; padding: 0.65rem 0.75rem; background: rgba(97, 121, 144, 0.08); border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-primary); outline: none; font-size: 0.95rem; box-sizing: border-box;">
+            <option value="" disabled selected>Cargando localidades de Tucumán...</option>
+          </select>
+          <div id="profile-city-manual-container" class="hidden" style="margin-top: 0.5rem;">
+            <input type="text" id="profile-city-manual-input" maxlength="150" placeholder="Escribí el nombre de tu localidad" style="width: 100%; padding: 0.65rem 0.75rem; background: rgba(97, 121, 144, 0.08); border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-primary); outline: none; font-size: 0.95rem; box-sizing: border-box;">
+          </div>
         </div>
 
         <button type="submit" id="profile-save-btn" class="btn btn-primary" style="width: 100%; padding: 0.75rem; margin-top: 0.5rem;">Guardar y continuar</button>

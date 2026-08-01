@@ -17,6 +17,7 @@ import { findCrossTenantMatches } from './services/blindMatching';
 import { validateFreeSearchText } from './utils/searchValidation';
 import { calculateDaysRemaining } from './utils/activeSearches';
 import { validateProfileInput } from './utils/profileValidation';
+import { getTucumanLocalities } from './services/localitiesService';
 import { isValidUUID } from './utils/idValidation';
 import { isValidInternalWebhookSecret } from './utils/internalWebhookAuth';
 import { sendWebPushToTenant, buildMatchFoundPushPayload, buildIncomingMatchPushPayload, hasActivePushSubscriptions } from './services/webPush';
@@ -327,6 +328,21 @@ app.post('/api/auth/logout', (req, res) => {
 // Con el retiro de WhatsApp/Baileys como canal de entrada, el agente inmobiliario completa su
 // perfil (telefono, inmobiliaria, ciudad, pais) despues del magic link, no via WhatsApp OTP.
 
+// KAN-93: única fuente de valores para el combobox de "Ciudad" del formulario de perfil —
+// alcance geográfico fijo a Tucumán (decisión de negocio, ver .agent/CONTEXT.md), nunca un
+// listado de otras provincias/países. Protegido por auth igual que el resto de /api/profile,
+// aunque no dependa de datos del tenant — es contenido de referencia mostrado dentro del overlay
+// de perfil, que solo aparece después del magic link.
+app.get('/api/localities/tucuman', tenantAuthMiddleware, async (req, res) => {
+  try {
+    const localities = await getTucumanLocalities();
+    res.json({ localities });
+  } catch (error: any) {
+    logger.error({ error: error.message || error }, '[PERFIL] Error inesperado al obtener localidades de Tucumán');
+    res.status(500).json({ error: 'Error interno al obtener las localidades.' });
+  }
+});
+
 app.get('/api/profile', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
   const tenantSupabase = (req as any).supabaseClient;
@@ -354,9 +370,13 @@ app.post('/api/profile', tenantAuthMiddleware, async (req, res) => {
   // `full_name`, un campo combinado desde SPEC-0012) — se piden separados en el formulario para
   // que queden marcados como dos campos obligatorios distintos (AC1), y acá se combinan en
   // `full_name` al persistir, sin necesidad de una migración de schema para este fix.
-  const { first_name, last_name, phone_number, agency_name, city, country } = req.body;
+  // KAN-93: `country` ya NO se acepta del cliente — el negocio fija Argentina como único país
+  // habilitado hasta tener un producto local sólido (decisión documentada en .agent/CONTEXT.md),
+  // así que se hardcodea acá en vez de confiar en lo que mande el body (defensa en profundidad,
+  // ni un payload manipulado puede setear otro país).
+  const { first_name, last_name, phone_number, agency_name, city } = req.body;
 
-  const validationError = validateProfileInput({ first_name, last_name, phone_number, agency_name, city, country });
+  const validationError = validateProfileInput({ first_name, last_name, phone_number, agency_name, city });
   if (validationError) {
     return res.status(400).json({ error: validationError });
   }
@@ -370,7 +390,7 @@ app.post('/api/profile', tenantAuthMiddleware, async (req, res) => {
         phone_number: (phone_number as string).trim(),
         agency_name: (agency_name as string).trim(),
         city: (city as string).trim(),
-        country: (country as string).trim(),
+        country: 'Argentina',
         profile_completed: true
       })
       .eq('id', tenantId)

@@ -20,6 +20,7 @@ import './graph-taskcreation.test';
 import './graph-techlead.test';
 import './idValidation.test';
 import './iosOnboarding.test';
+import './localitiesService.test';
 import './logger.test';
 import './matcher.test';
 import './notifications.test';
