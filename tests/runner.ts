@@ -28,6 +28,8 @@ import './notifier-email.test';
 import './profileValidation.test';
 import './propertyMatchWebhook.test';
 import './rateLimit.test';
+import './realtimeHub.test';
+import './realtimeMatches.test';
 import './searchExpiration.test';
 import './searchValidation.test';
 import './supabase.test';
