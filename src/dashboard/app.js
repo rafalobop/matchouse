@@ -113,6 +113,15 @@ let incomingMatchesInterval = null;
 let isUserAuthenticated = false;
 let currentTenantInfo = null;
 
+// KAN-88: socket del contador de matches en tiempo real. La lógica pura (armado de la URL,
+// decisión de refetch por mensaje, cálculo del backoff) vive en realtimeMatches.js para poder
+// testearla con node:test sin DOM real (mismo patrón que ios-onboarding.js/KAN-47).
+const { buildMatchCountSocketUrl, shouldRefetchOnMessage, nextReconnectDelayMs, DEFAULT_INITIAL_DELAY_MS } = window.BrokazaRealtimeMatches;
+let matchCountSocket = null;
+let matchCountSocketReconnectTimer = null;
+let matchCountSocketReconnectDelayMs = DEFAULT_INITIAL_DELAY_MS;
+let matchCountSocketShouldReconnect = false;
+
 // Interceptor Global de Fetch para desloguear ante error 401 (Sesión Única Estricta)
 const originalFetch = window.fetch;
 window.fetch = async function (...args) {
@@ -419,6 +428,8 @@ function startDashboardPolling() {
   catalogInterval = setInterval(loadCatalogInfo, 5000);
   activeSearchesInterval = setInterval(loadActiveSearches, 10000);
   incomingMatchesInterval = setInterval(loadIncomingMatches, 10000);
+
+  connectMatchCountSocket();
 }
 
 function stopDashboardPolling() {
@@ -437,6 +448,76 @@ function stopDashboardPolling() {
   if (incomingMatchesInterval) {
     clearInterval(incomingMatchesInterval);
     incomingMatchesInterval = null;
+  }
+
+  disconnectMatchCountSocket();
+}
+
+// ==========================================
+// CONTADOR DE MATCHES EN TIEMPO REAL (KAN-88)
+// ==========================================
+// Complementa el polling de loadActiveSearches/loadIncomingMatches (cada 10s) en vez de
+// reemplazarlo: el servidor (src/services/realtimeHub.ts) empuja un evento liviano
+// {"type":"match_count_changed"} por WebSocket cuando se persiste un match nuevo (búsqueda→cartera
+// o cartera→búsqueda), sin ningún dato del match — este handler solo dispara un refetch inmediato
+// de los mismos endpoints que ya pollean, así que nunca puede quedar desincronizado del dato real
+// de la base (el WS es un disparador, no una fuente de verdad). Si el socket se cae, el polling
+// existente sigue funcionando igual que antes de este ticket — el WS es pura mejora de latencia.
+function connectMatchCountSocket() {
+  if (matchCountSocket && (matchCountSocket.readyState === WebSocket.OPEN || matchCountSocket.readyState === WebSocket.CONNECTING)) {
+    return; // Ya conectado o conectando
+  }
+
+  matchCountSocketShouldReconnect = true;
+
+  const socket = new WebSocket(buildMatchCountSocketUrl(window.location));
+  matchCountSocket = socket;
+
+  socket.addEventListener('open', () => {
+    matchCountSocketReconnectDelayMs = DEFAULT_INITIAL_DELAY_MS; // reset del backoff tras una conexión exitosa
+  });
+
+  socket.addEventListener('message', (event) => {
+    if (shouldRefetchOnMessage(event.data)) {
+      loadActiveSearches();
+      loadIncomingMatches();
+    }
+  });
+
+  socket.addEventListener('close', () => {
+    if (matchCountSocket === socket) matchCountSocket = null;
+    scheduleMatchCountSocketReconnect();
+  });
+
+  socket.addEventListener('error', (error) => {
+    console.error('[REALTIME] Error en el socket del contador de matches:', error);
+  });
+}
+
+function scheduleMatchCountSocketReconnect() {
+  if (!matchCountSocketShouldReconnect || matchCountSocketReconnectTimer) return;
+
+  matchCountSocketReconnectTimer = setTimeout(() => {
+    matchCountSocketReconnectTimer = null;
+    if (matchCountSocketShouldReconnect) connectMatchCountSocket();
+  }, matchCountSocketReconnectDelayMs);
+
+  matchCountSocketReconnectDelayMs = nextReconnectDelayMs(matchCountSocketReconnectDelayMs);
+}
+
+function disconnectMatchCountSocket() {
+  matchCountSocketShouldReconnect = false;
+
+  if (matchCountSocketReconnectTimer) {
+    clearTimeout(matchCountSocketReconnectTimer);
+    matchCountSocketReconnectTimer = null;
+  }
+
+  matchCountSocketReconnectDelayMs = DEFAULT_INITIAL_DELAY_MS;
+
+  if (matchCountSocket) {
+    matchCountSocket.close();
+    matchCountSocket = null;
   }
 }
 
@@ -1051,9 +1132,12 @@ function buildIncomingMatchItem(m) {
   const phoneHtml = phone
     ? `<a href="https://wa.me/${phone}" target="_blank" class="contact-link">${escapeHtml(contact.phone_number)}</a>`
     : (contact.phone_number ? escapeHtml(contact.phone_number) : '');
+  const emailHtml = contact.email
+    ? `<a href="mailto:${escapeHtml(contact.email)}" class="contact-link">${escapeHtml(contact.email)}</a>`
+    : '';
 
   const tdContacto = document.createElement('p');
-  tdContacto.innerHTML = `<strong>Interesado:</strong> ${contactLabel}${phoneHtml ? ` — ${phoneHtml}` : ''}`;
+  tdContacto.innerHTML = `<strong>Interesado:</strong> ${contactLabel}${phoneHtml ? ` — ${phoneHtml}` : ''}${emailHtml ? ` — ${emailHtml}` : ''}`;
 
   const divDetails = document.createElement('div');
   divDetails.className = 'match-reasons';

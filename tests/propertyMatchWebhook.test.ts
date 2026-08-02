@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import { processPropertyUploaded } from '../src/services/propertyMatchWebhook';
+import { registerSocket, unregisterSocket } from '../src/services/realtimeHub';
 
 const PROPERTY_ROW = {
   id: 'prop-1',
@@ -189,7 +190,7 @@ test('processPropertyUploaded (KAN-79) - usa el snapshot del buscador (profiles)
   const mockClient = makeMockClient({
     searchRows: [sampleSearchRow()],
     existingDupCount: 0,
-    profilesByTenant: { 'tenant-searcher': { full_name: 'Juan Perez', phone_number: '5493815551234', agency_name: 'Inmobiliaria Test' } }
+    profilesByTenant: { 'tenant-searcher': { full_name: 'Juan Perez', phone_number: '5493815551234', agency_name: 'Inmobiliaria Test', email: 'juan.perez@example.com' } }
   });
 
   await processPropertyUploaded('prop-1', mockClient as any);
@@ -198,8 +199,22 @@ test('processPropertyUploaded (KAN-79) - usa el snapshot del buscador (profiles)
   assert.deepStrictEqual(insertCall!.args[0].searcher_snapshot, {
     full_name: 'Juan Perez',
     phone_number: '5493815551234',
-    agency_name: 'Inmobiliaria Test'
+    agency_name: 'Inmobiliaria Test',
+    email: 'juan.perez@example.com'
   });
+});
+
+test('processPropertyUploaded (KAN-89) - perfil del buscador sin email cae a null sin romper el snapshot', async () => {
+  const mockClient = makeMockClient({
+    searchRows: [sampleSearchRow()],
+    existingDupCount: 0,
+    profilesByTenant: { 'tenant-searcher': { full_name: 'Juan Perez', phone_number: '5493815551234', agency_name: 'Inmobiliaria Test' } }
+  });
+
+  await processPropertyUploaded('prop-1', mockClient as any);
+
+  const insertCall = mockClient.calls.find(c => c.table === 'blind_matches' && c.method === 'insert');
+  assert.strictEqual(insertCall!.args[0].searcher_snapshot.email, null);
 });
 
 test('processPropertyUploaded (KAN-79) - si falla el chequeo de duplicados (fail-open), igual intenta insertar', async () => {
@@ -222,4 +237,49 @@ test('processPropertyUploaded (KAN-79) - si falla el chequeo de duplicados (fail
   const result = await processPropertyUploaded('prop-1', mockClient as any);
 
   assert.strictEqual(result.matchesInserted, 1, 'Un error en el chequeo de duplicados no debe bloquear la persistencia (fail-open).');
+});
+
+function makeFakeSocket() {
+  const sent: string[] = [];
+  return { readyState: 1, OPEN: 1, sent, send: (payload: string) => { sent.push(payload); } } as any;
+}
+
+test('processPropertyUploaded (KAN-88) - un match nuevo avisa por WS al buscador y al dueño de la propiedad, sin duplicar', async () => {
+  const mockClient = makeMockClient({
+    searchRows: [
+      sampleSearchRow({ id: 'search-1', tenant_id: 'tenant-searcher' }),
+      sampleSearchRow({ id: 'search-2', tenant_id: 'tenant-searcher' })
+    ],
+    existingDupCount: 0
+  });
+
+  const searcherSocket = makeFakeSocket();
+  const ownerSocket = makeFakeSocket();
+  registerSocket('tenant-searcher', searcherSocket);
+  registerSocket('tenant-owner', ownerSocket);
+
+  try {
+    await processPropertyUploaded('prop-1', mockClient as any);
+
+    assert.strictEqual(searcherSocket.sent.length, 1, 'Dos matches nuevos del mismo tenant deben generar un solo evento WS, no uno por match.');
+    assert.deepStrictEqual(JSON.parse(searcherSocket.sent[0]), { type: 'match_count_changed' });
+    assert.strictEqual(ownerSocket.sent.length, 1);
+  } finally {
+    unregisterSocket('tenant-searcher', searcherSocket);
+    unregisterSocket('tenant-owner', ownerSocket);
+  }
+});
+
+test('processPropertyUploaded (KAN-88) - sin matches nuevos (todo duplicado), no manda eventos WS', async () => {
+  const mockClient = makeMockClient({ searchRows: [sampleSearchRow()], existingDupCount: 1 });
+
+  const searcherSocket = makeFakeSocket();
+  registerSocket('tenant-searcher', searcherSocket);
+
+  try {
+    await processPropertyUploaded('prop-1', mockClient as any);
+    assert.strictEqual(searcherSocket.sent.length, 0);
+  } finally {
+    unregisterSocket('tenant-searcher', searcherSocket);
+  }
 });

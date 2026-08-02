@@ -1,6 +1,7 @@
 import dns from 'dns';
 dns.setDefaultResultOrder('ipv4first');
 
+import http from 'http';
 import express from 'express';
 import helmet from 'helmet';
 import crypto from 'crypto';
@@ -23,6 +24,7 @@ import { sendWebPushToTenant, buildMatchFoundPushPayload, buildIncomingMatchPush
 import { sendBlindMatchEmailFallback, sendIncomingMatchEmailFallback } from './services/notifier-email';
 import { notifyMatchFound } from './services/notifications';
 import { processPropertyUploaded } from './services/propertyMatchWebhook';
+import { initRealtimeHub, broadcastMatchCountChanged } from './services/realtimeHub';
 import { startDolarService } from './services/dolar';
 import { startSearchExpirationService } from './services/searchExpiration';
 import { config } from './config/env';
@@ -673,12 +675,12 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
     // snapshot del propio perfil (buscador) para que el dueño de la propiedad matcheada pueda
     // contactarlo más adelante sin depender de que este mire a tiempo su notificación/email.
     let matchIds: (string | null)[] = mappedMatches.map(() => null);
-    let searcherSnapshot: SearcherSnapshot = { full_name: null, phone_number: null, agency_name: null };
+    let searcherSnapshot: SearcherSnapshot = { full_name: null, phone_number: null, agency_name: null, email: null };
     if (mappedMatches.length > 0) {
       try {
         const { data: ownProfile, error: profileErr } = await tenantSupabase
           .from('profiles')
-          .select('full_name, phone_number, agency_name')
+          .select('full_name, phone_number, agency_name, email')
           .eq('id', tenantId)
           .single();
         if (profileErr) throw profileErr;
@@ -686,7 +688,8 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
         searcherSnapshot = {
           full_name: ownProfile?.full_name ?? null,
           phone_number: ownProfile?.phone_number ?? null,
-          agency_name: ownProfile?.agency_name ?? null
+          agency_name: ownProfile?.agency_name ?? null,
+          email: ownProfile?.email ?? null
         };
 
         const insertRows = buildBlindMatchInsertRows(tenantId, search.id, text, searcherSnapshot, mappedMatches);
@@ -735,6 +738,12 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
       // tiempo. Se agrupa por dueño para no spamear a un tenant con varias propiedades matcheadas
       // en la misma búsqueda.
       const bySearcherOwner = groupMatchesByMatchedTenant(mappedMatches);
+
+      // KAN-88: evento en vivo del contador de matches — ademas del buscador (tenantId, por si
+      // tiene otra pestaña/dispositivo abierto), cada dueño de propiedad matcheada recibe el
+      // aviso para que su "Interesados en tus propiedades" se actualice sin esperar el poll.
+      broadcastMatchCountChanged([tenantId, ...Object.keys(bySearcherOwner)]);
+
       for (const [ownerTenantId, ownerMatches] of Object.entries(bySearcherOwner)) {
         notifyMatchFound({
           hasActivePush: () => hasActivePushSubscriptions(ownerTenantId),
@@ -1093,8 +1102,11 @@ async function main() {
   // matching 100% web (nada escribía filas nuevas en match_queue). El único canal de notificación
   // activo hoy es el del matching ciego (notifyMatchFound, disparado desde POST /api/search).
 
-  // Levantar servidor Express
-  app.listen(PORT, () => {
+  // Levantar servidor Express + WebSocket (KAN-88) sobre el mismo puerto/servidor HTTP.
+  const server = http.createServer(app);
+  initRealtimeHub(server);
+
+  server.listen(PORT, () => {
     console.log(`\n=========================================`);
     console.log(`DASHBOARD DISPONIBLE EN: http://localhost:${PORT}`);
     console.log(`=========================================\n`);
