@@ -15,6 +15,7 @@ import {
 import { notifyMatchFound } from './notifications';
 import { sendWebPushToTenant, buildMatchFoundPushPayload, buildIncomingMatchPushPayload, hasActivePushSubscriptions } from './webPush';
 import { sendBlindMatchEmailFallback, sendIncomingMatchEmailFallback } from './notifier-email';
+import { broadcastMatchCountChanged } from './realtimeHub';
 import { logger } from './logger';
 
 export interface ProcessPropertyUploadedResult {
@@ -83,6 +84,10 @@ export async function processPropertyUploaded(
 
   let matchesInserted = 0;
   let matchesSkippedDuplicate = 0;
+  // KAN-88: tenants a avisar por WS de que su conteo de matches pudo cambiar. Se junta en un Set
+  // y se emite una sola vez al final (no por match) — una propiedad puede matchear varias
+  // búsquedas del mismo tenant, y no tiene sentido mandarle el mismo evento repetido.
+  const tenantsToNotifyRealtime = new Set<string>();
 
   for (const match of matches) {
     const isDuplicate = await blindMatchAlreadyExists(match.search_id, propertyId, client);
@@ -112,6 +117,8 @@ export async function processPropertyUploaded(
     }
 
     matchesInserted++;
+    tenantsToNotifyRealtime.add(match.tenant_id);
+    tenantsToNotifyRealtime.add(propertyOwnerTenantId);
 
     const mappedMatchForNotify = {
       tenant_id: propertyOwnerTenantId,
@@ -137,6 +144,10 @@ export async function processPropertyUploaded(
     }).catch((notifyErr: any) => {
       logger.error({ error: notifyErr.message || notifyErr, tenantId: propertyOwnerTenantId, searchId: match.search_id }, '[PROPERTY MATCH WEBHOOK] Error al notificar al dueño de la propiedad nueva (no afecta el match ya persistido).');
     });
+  }
+
+  if (tenantsToNotifyRealtime.size > 0) {
+    broadcastMatchCountChanged(tenantsToNotifyRealtime);
   }
 
   return { propertyId, matchesFound: matches.length, matchesInserted, matchesSkippedDuplicate };
