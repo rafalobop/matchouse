@@ -84,6 +84,39 @@ const dashboardPath = fs.existsSync(path.join(__dirname, 'dashboard'))
   : path.join(process.cwd(), 'src', 'dashboard');
 const dashboardIndexHtml = fs.readFileSync(path.join(dashboardPath, 'index.html'), 'utf-8');
 
+// Gate temporal de acceso privado (pre-lanzamiento): mientras ACCESS_GATE_CODE esté seteada,
+// nadie sin la cookie de acceso puede ver el dashboard ni pegarle a la API. El valor de la
+// cookie es un HMAC del código (no el código en texto plano) firmado con internalWebhookSecret,
+// así que no se puede forjar sin conocer el código. /internal/* queda afuera porque lo llama el
+// trigger de Postgres (pg_net), no un navegador, y ya tiene su propio secreto compartido.
+if (config.accessGateCode) {
+  const gateCookieName = 'brokaza_access';
+  const gateToken = crypto.createHmac('sha256', config.internalWebhookSecret).update(config.accessGateCode).digest('hex');
+  const gatePageHtml = fs.readFileSync(path.join(dashboardPath, 'access-gate.html'), 'utf-8');
+
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/internal/')) return next();
+
+    const queryCode = typeof req.query.access === 'string' ? req.query.access : undefined;
+    if (queryCode === config.accessGateCode) {
+      res.cookie(gateCookieName, gateToken, {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: config.appUrl.startsWith('https'),
+        maxAge: 30 * 24 * 60 * 60 * 1000
+      });
+      return res.redirect(req.path);
+    }
+
+    if (req.cookies?.[gateCookieName] === gateToken) return next();
+
+    if (req.path.startsWith('/api/')) {
+      return res.status(503).json({ error: 'Aplicación en acceso privado.' });
+    }
+    return res.status(503).type('html').send(gatePageHtml);
+  });
+}
+
 // KAN-69: el script que fija el tema (public/scripts/themeSetter.js) necesita el
 // nonce de la request para pasar la CSP — express.static no puede inyectarlo,
 // así que el index.html se sirve con esta ruta dedicada, antes del static del dashboard.
