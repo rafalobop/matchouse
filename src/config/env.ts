@@ -30,6 +30,7 @@ export interface Config {
   uploadRateLimitWindowMs: number;
   uploadMaxFileSizeBytes: number;
   internalWebhookSecret: string;
+  accessGateCode?: string;
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -95,6 +96,10 @@ export function validateConfig(): Config {
   // quedaría abierto a cualquiera que adivine la URL. El mismo valor debe estar guardado en
   // Supabase Vault (secret 'internal_webhook_secret'), leído por la función del trigger.
   const internalWebhookSecret = cleanEnvVar(process.env.INTERNAL_WEBHOOK_SECRET);
+  // Gate temporal de acceso privado (pre-lanzamiento): si está seteada, toda la app queda
+  // detrás de una pantalla de "acceso privado" hasta que se visite /?access=<código>. Opcional
+  // a propósito — sin esta variable la app funciona igual que siempre, sin gate.
+  const accessGateCode = cleanEnvVar(process.env.ACCESS_GATE_CODE);
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
@@ -145,7 +150,8 @@ export function validateConfig(): Config {
     uploadRateLimitMax,
     uploadRateLimitWindowMs,
     uploadMaxFileSizeBytes,
-    internalWebhookSecret
+    internalWebhookSecret,
+    accessGateCode
   };
 }
 
