@@ -7,6 +7,7 @@ import {
   findNeighborhoodByPoint,
   resolveNeighborhoodIdByText,
   resolveNeighborhoodByText,
+  resolveMultipleNeighborhoodsByText,
   resolvePropertyZoneId,
   __clearZoneKeywordCacheForTests,
   ZonesServiceError
@@ -393,4 +394,57 @@ test('resolvePropertyZoneId - si el punto no resuelve ninguna zona, cae al fallb
   );
 
   assert.strictEqual(result, 'n-yb', 'Debe caer al fallback de texto cuando el punto no cae dentro ni cerca de ninguna zona.');
+});
+
+// --- Estados de zona (2026-08-11): resolveMultipleNeighborhoodsByText, soporte multi-zona OR ---
+
+test('resolveMultipleNeighborhoodsByText - resuelve varias menciones a zonas distintas', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-lujan', name: 'Villa Lujan' }, { id: 'n-tafi', name: 'Tafi Viejo' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const result = await resolveMultipleNeighborhoodsByText(['villa lujan', 'tafi viejo'], mockClient as any);
+
+  assert.deepStrictEqual(
+    result.map(r => r.id).sort(),
+    ['n-lujan', 'n-tafi'],
+    'Debe resolver ambas menciones, no solo la primera.'
+  );
+});
+
+test('resolveMultipleNeighborhoodsByText - deduplica cuando dos menciones distintas resuelven a la misma zona', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
+    neighborhood_aliases: { rows: [{ alias: 'yb', neighborhood_id: 'n-yb', neighborhoods: { name: 'Yerba Buena' } }] }
+  });
+
+  const result = await resolveMultipleNeighborhoodsByText(['yerba buena', 'yb'], mockClient as any);
+
+  assert.strictEqual(result.length, 1, 'Dos menciones que resuelven a la misma zona deben aparecer una sola vez.');
+  assert.strictEqual(result[0].id, 'n-yb');
+});
+
+test('resolveMultipleNeighborhoodsByText - una mención sin match se omite sin romper la resolución de las demás', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const result = await resolveMultipleNeighborhoodsByText(['yerba buena', 'barrio inexistente xyz'], mockClient as any);
+
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].id, 'n-yb');
+});
+
+test('resolveMultipleNeighborhoodsByText - array vacío de menciones devuelve array vacío', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({ neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] }, neighborhood_aliases: { rows: [] } });
+
+  const result = await resolveMultipleNeighborhoodsByText([], mockClient as any);
+
+  assert.deepStrictEqual(result, []);
 });

@@ -179,6 +179,33 @@ export async function resolveNeighborhoodByText(text: string, client: SupabaseCl
 }
 
 /**
+ * Resuelve MÚLTIPLES menciones de ubicación (ej. ["villa lujan", "tafi viejo"]) contra el mismo
+ * índice cacheado que `resolveNeighborhoodByText`, en vez de quedarse solo con la primera.
+ * Deduplica por `neighborhoodId` (si dos menciones distintas resuelven a la misma zona, aparece
+ * una sola vez en el resultado). Menciones que no resuelven ningún keyword simplemente se omiten
+ * del resultado — no es un error por mención individual, el llamador decide si "ninguna resolvió"
+ * implica un estado bloqueante (ver ai.ts#resolveZoneIntent).
+ */
+export async function resolveMultipleNeighborhoodsByText(
+  mentions: string[],
+  client: SupabaseClient = supabase
+): Promise<NeighborhoodTextMatch[]> {
+  const keywords = await getZoneKeywordIndex(client);
+  const results = new Map<string, NeighborhoodTextMatch>();
+
+  for (const mention of mentions) {
+    const normalized = mention.toLowerCase();
+    if (!normalized.trim()) continue;
+    const match = keywords.find((entry) => normalized.includes(entry.keyword));
+    if (match && !results.has(match.neighborhoodId)) {
+      results.set(match.neighborhoodId, { id: match.neighborhoodId, name: match.neighborhoodName });
+    }
+  }
+
+  return Array.from(results.values());
+}
+
+/**
  * Igual que `resolveNeighborhoodByText`, pero solo el id — usada donde no hace falta el nombre
  * (ej. `resolvePropertyZoneId`, que estampa `property.neighborhood_id` para comparación interna).
  */

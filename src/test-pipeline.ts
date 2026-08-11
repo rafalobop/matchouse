@@ -135,21 +135,27 @@ const mockExtractedEntities: Record<number, ExtractedRealEstateRequest> = {
 // 4. Intenciones de zonas simuladas para el Agente 2
 const mockZoneIntents: Record<number, ZoneIntentRequest> = {
   1: {
-    zona_id: 'YERBA_BUENA',
+    zone_status: 'DEFINIDA',
+    zona_ids: ['YERBA_BUENA'],
+    zona_nombres: ['Yerba Buena'],
     texto_ubicacion_original: 'Yerba Buena',
     dormitorios_min: 1,
     caracteristicas_claves: ['cochera'],
     operacion: 'ALQUILER'
   },
   3: {
-    zona_id: 'YERBA_BUENA',
+    zone_status: 'DEFINIDA',
+    zona_ids: ['YERBA_BUENA'],
+    zona_nombres: ['Yerba Buena'],
     texto_ubicacion_original: 'YB, zona Marcos Paz o Lomas',
     dormitorios_min: null,
     caracteristicas_claves: ['apto credito'],
     operacion: 'COMPRA'
   },
   5: {
-    zona_id: 'BARRIO_NORTE',
+    zone_status: 'DEFINIDA',
+    zona_ids: ['BARRIO_NORTE'],
+    zona_nombres: ['Barrio Norte'],
     texto_ubicacion_original: 'Barrio Norte o Centro',
     dormitorios_min: 2,
     caracteristicas_claves: ['pileta'],

@@ -8,8 +8,9 @@ import {
   findMatchingActiveSearchesForProperty,
   ActiveSearchCandidate
 } from '../src/services/blindMatching';
-import { ExtractedRealEstateRequest } from '../src/services/ai';
+import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../src/services/ai';
 import { Property } from '../src/services/excel';
+import { __clearZoneKeywordCacheForTests } from '../src/services/zonesService';
 
 function baseRequest(overrides: Partial<ExtractedRealEstateRequest> = {}): ExtractedRealEstateRequest {
   return {
@@ -21,6 +22,19 @@ function baseRequest(overrides: Partial<ExtractedRealEstateRequest> = {}): Extra
     bedrooms: null,
     key_features: [],
     country: 'indiferente',
+    ...overrides
+  };
+}
+
+function baseZoneIntent(overrides: Partial<ZoneIntentRequest> = {}): ZoneIntentRequest {
+  return {
+    zone_status: 'INDEFINIDA',
+    zona_ids: [],
+    zona_nombres: [],
+    texto_ubicacion_original: '',
+    dormitorios_min: null,
+    caracteristicas_claves: [],
+    operacion: 'DESCONOCIDO',
     ...overrides
   };
 }
@@ -128,13 +142,20 @@ test('BlindMatching - findCrossTenantMatches (regresión QA KAN-37): una búsque
 // KAN-79: mock mínimo de query builder encadenable, mismo estilo que tests/searchExpiration.ts —
 // distingue entre la tabla 'properties' (termina en .single()) y 'active_searches' (thenable, el
 // query builder real de supabase-js se puede awaitear directo sin .select()/.single() final).
+// Extendido (2026-08-11) con 'neighborhoods'/'neighborhood_aliases' (usadas por el self-healing de
+// zonas DESCONOCIDA vía resolveMultipleNeighborhoodsByText/resolvePropertyZoneId) y un `.update()`
+// encadenable sobre 'active_searches' para capturar la persistencia de la curación.
 function makeCrossTenantMockClient(options: {
   propertyRow?: any;
   propertyError?: any;
   searchRows?: any[];
   searchError?: any;
+  neighborhoodRows?: any[];
+  aliasRows?: any[];
+  rpcRows?: any[];
 } = {}) {
   const calls: { table: string; method: string; args: any[] }[] = [];
+  const updateCalls: { table: string; payload: any; eqArgs: any[] }[] = [];
 
   function propertiesBuilder() {
     const builder: any = {
@@ -154,15 +175,44 @@ function makeCrossTenantMockClient(options: {
       eq: (...args: any[]) => { calls.push({ table: 'active_searches', method: 'eq', args }); return builder; },
       neq: (...args: any[]) => { calls.push({ table: 'active_searches', method: 'neq', args }); return builder; },
       or: (...args: any[]) => { calls.push({ table: 'active_searches', method: 'or', args }); return builder; },
+      update: (payload: any) => {
+        calls.push({ table: 'active_searches', method: 'update', args: [payload] });
+        return {
+          eq: (...eqArgs: any[]) => {
+            updateCalls.push({ table: 'active_searches', payload, eqArgs });
+            return Promise.resolve({ error: null });
+          }
+        };
+      },
       then: (resolve: any, reject: any) =>
         Promise.resolve({ data: options.searchRows ?? [], error: options.searchError ?? null }).then(resolve, reject)
     };
     return builder;
   }
 
+  function simpleSelectBuilder(table: string, rows: any[]) {
+    return {
+      select: (...args: any[]) => {
+        calls.push({ table, method: 'select', args });
+        return Promise.resolve({ data: rows, error: null });
+      }
+    };
+  }
+
   return {
-    from: (table: string) => (table === 'properties' ? propertiesBuilder() : activeSearchesBuilder()),
-    calls
+    from: (table: string) => {
+      if (table === 'properties') return propertiesBuilder();
+      if (table === 'active_searches') return activeSearchesBuilder();
+      if (table === 'neighborhoods') return simpleSelectBuilder('neighborhoods', options.neighborhoodRows ?? []);
+      if (table === 'neighborhood_aliases') return simpleSelectBuilder('neighborhood_aliases', options.aliasRows ?? []);
+      return activeSearchesBuilder();
+    },
+    rpc: (fn: string, params: any) => {
+      calls.push({ table: 'rpc', method: fn, args: [params] });
+      return Promise.resolve({ data: options.rpcRows ?? [], error: null });
+    },
+    calls,
+    updateCalls
   };
 }
 
@@ -206,7 +256,7 @@ test('BlindMatching (KAN-79 AC1) - findCrossTenantMatches NO filtra property_typ
 test('BlindMatching (KAN-79) - matchActiveSearchesAgainstProperty: descarta candidatos que no matchean', () => {
   const property = baseProperty({ operation: 'venta' });
   const candidates: ActiveSearchCandidate[] = [
-    { tenant_id: 'tenant-b', search_id: 'search-1', raw_text: 'busco algo', criteria: baseRequest({ operation: 'alquiler' }) }
+    { tenant_id: 'tenant-b', search_id: 'search-1', raw_text: 'busco algo', criteria: baseRequest({ operation: 'alquiler' }), zoneIntent: baseZoneIntent() }
   ];
 
   const result = matchActiveSearchesAgainstProperty(property, candidates);
@@ -219,8 +269,8 @@ test('BlindMatching (KAN-79) - matchActiveSearchesAgainstProperty: atribuye tena
   // faltante) debe puntuar peor que la que pide 'pileta' (característica presente).
   const property = baseProperty({ features: 'Cuenta con pileta climatizada' });
   const candidates: ActiveSearchCandidate[] = [
-    { tenant_id: 'tenant-low', search_id: 'search-low', raw_text: 'busco con cochera', criteria: baseRequest({ key_features: ['cochera'] }) },
-    { tenant_id: 'tenant-high', search_id: 'search-high', raw_text: 'busco con pileta', criteria: baseRequest({ key_features: ['pileta'] }) }
+    { tenant_id: 'tenant-low', search_id: 'search-low', raw_text: 'busco con cochera', criteria: baseRequest({ key_features: ['cochera'] }), zoneIntent: baseZoneIntent() },
+    { tenant_id: 'tenant-high', search_id: 'search-high', raw_text: 'busco con pileta', criteria: baseRequest({ key_features: ['pileta'] }), zoneIntent: baseZoneIntent() }
   ];
 
   const result = matchActiveSearchesAgainstProperty(property, candidates);
@@ -292,4 +342,87 @@ test('BlindMatching (KAN-79) - findMatchingActiveSearchesForProperty: propaga er
   const mockClient = makeCrossTenantMockClient({ propertyRow, searchError: { message: 'fallo simulado' } });
 
   await assert.rejects(() => findMatchingActiveSearchesForProperty('prop-1', mockClient as any));
+});
+
+// --- Self-healing de zonas DESCONOCIDA (2026-08-11) ---
+
+test('BlindMatching (self-healing) - una búsqueda DESCONOCIDA cuya zona ahora resuelve se cura (UPDATE) y matchea la propiedad nueva', async () => {
+  __clearZoneKeywordCacheForTests();
+  const propertyRow = {
+    id: 'prop-1', tenant_id: 'tenant-owner', address: 'Villa Lujan 100', price: 100000, currency: 'USD',
+    bedrooms: 2, operation: 'venta', property_type: 'casa', sheet_name: 'Ventas'
+  };
+  const searchRows = [{
+    id: 'search-1', tenant_id: 'tenant-searcher', raw_text: 'busco casa en villa lujan',
+    criteria: baseRequest({ operation: 'venta', property_type: 'casa' }),
+    zone_status: 'DESCONOCIDA', zone_ids: [], zone_names: [], zone_text_original: 'villa lujan'
+  }];
+  const mockClient = makeCrossTenantMockClient({
+    propertyRow,
+    searchRows,
+    neighborhoodRows: [{ id: 'n-lujan', name: 'Villa Lujan' }],
+    aliasRows: []
+  });
+
+  const result = await findMatchingActiveSearchesForProperty('prop-1', mockClient as any);
+
+  assert.ok(result);
+  assert.strictEqual(result!.matches.length, 1, 'Tras curarse, la búsqueda debe matchear la propiedad recién cargada (misma zona).');
+  assert.strictEqual(result!.matches[0].search_id, 'search-1');
+
+  const updateCall = (mockClient as any).updateCalls.find((c: any) => c.eqArgs[1] === 'search-1');
+  assert.ok(updateCall, 'Debe persistir la curación con un UPDATE sobre la fila de active_searches.');
+  assert.strictEqual(updateCall.payload.zone_status, 'DEFINIDA');
+  assert.deepStrictEqual(updateCall.payload.zone_ids, ['n-lujan']);
+  assert.deepStrictEqual(updateCall.payload.zone_names, ['Villa Lujan']);
+});
+
+test('BlindMatching (self-healing) - una búsqueda DESCONOCIDA que sigue sin resolver no se persiste (sin UPDATE) y no matchea', async () => {
+  __clearZoneKeywordCacheForTests();
+  const propertyRow = {
+    id: 'prop-1', tenant_id: 'tenant-owner', address: 'Calle Nueva 100', price: 100000, currency: 'USD',
+    bedrooms: 2, operation: 'venta', property_type: 'casa', sheet_name: 'Ventas'
+  };
+  const searchRows = [{
+    id: 'search-1', tenant_id: 'tenant-searcher', raw_text: 'busco casa en planeta marte',
+    criteria: baseRequest({ operation: 'venta', property_type: 'casa' }),
+    zone_status: 'DESCONOCIDA', zone_ids: [], zone_names: [], zone_text_original: 'planeta marte'
+  }];
+  const mockClient = makeCrossTenantMockClient({
+    propertyRow,
+    searchRows,
+    neighborhoodRows: [{ id: 'n-lujan', name: 'Villa Lujan' }],
+    aliasRows: []
+  });
+
+  const result = await findMatchingActiveSearchesForProperty('prop-1', mockClient as any);
+
+  assert.ok(result);
+  assert.strictEqual(result!.matches.length, 0, 'DESCONOCIDA sin resolver sigue siendo un filtro duro: no debe matchear.');
+  assert.strictEqual((mockClient as any).updateCalls.length, 0, 'No debe reescribir la fila si sigue sin resolver (evita UPDATEs vacíos repetidos).');
+});
+
+test('BlindMatching (self-healing) - una búsqueda ya DEFINIDA no dispara ningún trabajo de self-healing', async () => {
+  __clearZoneKeywordCacheForTests();
+  const propertyRow = {
+    id: 'prop-1', tenant_id: 'tenant-owner', address: 'Villa Lujan 100', price: 100000, currency: 'USD',
+    bedrooms: 2, operation: 'venta', property_type: 'casa', sheet_name: 'Ventas'
+  };
+  const searchRows = [{
+    id: 'search-1', tenant_id: 'tenant-searcher', raw_text: 'busco casa en villa lujan',
+    criteria: baseRequest({ operation: 'venta', property_type: 'casa' }),
+    zone_status: 'DEFINIDA', zone_ids: ['n-lujan'], zone_names: ['Villa Lujan'], zone_text_original: 'villa lujan'
+  }];
+  const mockClient = makeCrossTenantMockClient({
+    propertyRow,
+    searchRows,
+    neighborhoodRows: [{ id: 'n-lujan', name: 'Villa Lujan' }],
+    aliasRows: []
+  });
+
+  const result = await findMatchingActiveSearchesForProperty('prop-1', mockClient as any);
+
+  assert.ok(result);
+  assert.strictEqual(result!.matches.length, 1, 'Ya estaba DEFINIDA y la propiedad cae en la misma zona: debe matchear directo, sin self-healing.');
+  assert.strictEqual((mockClient as any).updateCalls.length, 0, 'No hay nada que curar si ya estaba DEFINIDA.');
 });

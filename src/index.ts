@@ -12,7 +12,7 @@ import * as fs from 'fs';
 import { Property, processExcelBufferWithColumnMap, peekExcelHeaders, syncPropertiesToDatabase } from './services/excel';
 import { resolveColumnMapping, confirmColumnMapping, toColumnMapRecord, ExcelMappingServiceError } from './services/excelMapping';
 import { ExcelMappingField } from './utils/excelHeaderMatcher';
-import { extractFromTextInput, extractZoneIntent, AITimeoutError } from './services/ai';
+import { extractFromTextInput, extractZoneIntent, segmentSearchRequests, ZoneIntentRequest, AITimeoutError } from './services/ai';
 import { findCrossTenantMatches } from './services/blindMatching';
 import { validateFreeSearchText } from './utils/searchValidation';
 import { calculateDaysRemaining } from './utils/activeSearches';
@@ -639,17 +639,152 @@ app.get('/api/catalog', tenantAuthMiddleware, async (req, res) => {
   }
 });
 
+interface SearchSegmentResult {
+  success: boolean;
+  raw_text: string;
+  search?: { id: string; criteria: any; zone_status: string; zone_names: string[]; expires_at: string };
+  matches?: any[];
+  error?: string;
+  code?: string;
+}
+
+// Procesa UN segmento de búsqueda ya extraído del mensaje original (ver segmentSearchRequests) a
+// través del pipeline completo: Agente 1 -> Agente 2 (zona) -> insert en active_searches (ya con
+// el estado de zona persistido) -> matching cross-tenant -> persistencia de blind_matches ->
+// notificaciones bidireccionales. Extraído a función propia para poder correrlo una vez por cada
+// sub-búsqueda de un mensaje multi-búsqueda.
+async function processSingleSearchSegment(
+  tenantId: string,
+  tenantSupabase: any,
+  segmentText: string
+): Promise<SearchSegmentResult> {
+  const extractedData = await extractFromTextInput(segmentText);
+
+  if (extractedData.operation === 'desconocido') {
+    return { success: false, raw_text: segmentText, error: 'No pudimos clasificar el texto como un pedido de propiedad.' };
+  }
+
+  // KAN-22 + estados de zona (2026-08-11): zoneIntent (Agente 2) se resuelve ANTES del insert (no
+  // después, como antes de este cambio) para poder persistir zone_status/zone_ids/zone_names/
+  // zone_text_original en el mismo insert — elimina la ventana donde una fila de active_searches
+  // existía sin haber corrido el Agente 2 todavía. extractZoneIntent nunca lanza (fallback
+  // silencioso ante fallo total de IA), así que no necesita try/catch propio.
+  const zoneIntent = await extractZoneIntent(segmentText, extractedData.operation);
+
+  const { data: search, error: insertErr } = await tenantSupabase
+    .from('active_searches')
+    .insert({
+      tenant_id: tenantId,
+      raw_text: segmentText,
+      criteria: extractedData,
+      zone_status: zoneIntent.zone_status,
+      zone_ids: zoneIntent.zona_ids,
+      zone_names: zoneIntent.zona_nombres,
+      zone_text_original: zoneIntent.texto_ubicacion_original
+    })
+    .select('id, criteria, zone_status, zone_names, created_at, expires_at')
+    .single();
+
+  if (insertErr) throw insertErr;
+
+  const matches = await findCrossTenantMatches(tenantId, extractedData, zoneIntent);
+
+  const mappedMatches = matches.map(m => ({
+    tenant_id: m.tenant_id,
+    score: m.score,
+    reasons: m.reasons,
+    property: mapPropertyToBlindMatchShape(m.property)
+  }));
+
+  // KAN-78: persistencia del resultado del matching ciego — se arma un snapshot del propio perfil
+  // (buscador) para que el dueño de la propiedad matcheada pueda contactarlo más adelante sin
+  // depender de que este mire a tiempo su notificación/email.
+  let matchIds: (string | null)[] = mappedMatches.map(() => null);
+  let searcherSnapshot: SearcherSnapshot = { full_name: null, phone_number: null, agency_name: null, email: null };
+  if (mappedMatches.length > 0) {
+    try {
+      const { data: ownProfile, error: profileErr } = await tenantSupabase
+        .from('profiles')
+        .select('full_name, phone_number, agency_name, email')
+        .eq('id', tenantId)
+        .single();
+      if (profileErr) throw profileErr;
+
+      searcherSnapshot = {
+        full_name: ownProfile?.full_name ?? null,
+        phone_number: ownProfile?.phone_number ?? null,
+        agency_name: ownProfile?.agency_name ?? null,
+        email: ownProfile?.email ?? null
+      };
+
+      const insertRows = buildBlindMatchInsertRows(tenantId, search.id, segmentText, searcherSnapshot, mappedMatches);
+      const { data: insertedMatches, error: matchInsertErr } = await tenantSupabase
+        .from('blind_matches')
+        .insert(insertRows)
+        .select('id');
+
+      if (matchInsertErr) throw matchInsertErr;
+      matchIds = (insertedMatches || []).map((row: any) => row.id);
+    } catch (persistErr: any) {
+      // Best-effort: los matches ya se calcularon, no tiene sentido fallar una búsqueda exitosa
+      // porque la persistencia falló — solo se pierde el historial/aviso al dueño de esta tanda.
+      logger.error({ error: persistErr.message || persistErr, tenantId, searchId: search.id }, '[BUSQUEDA] Error al persistir los matches en blind_matches (no afecta la búsqueda ya calculada)');
+    }
+  }
+
+  const mappedMatchesWithIds = mappedMatches.map((m, i) => ({ ...m, id: matchIds[i] ?? null }));
+
+  // KAN-44: evento "match encontrado" en el único punto donde hoy se genera en vivo (una búsqueda
+  // nueva). Fire-and-forget: no bloquea ni puede hacer fallar la respuesta ya devuelta al caller.
+  // KAN-48: email como respaldo permanente — notifyMatchFound() solo lo dispara si el tenant no
+  // tiene ninguna suscripción push activa, para no duplicar el aviso.
+  if (mappedMatches.length > 0) {
+    notifyMatchFound({
+      hasActivePush: () => hasActivePushSubscriptions(tenantId),
+      sendPush: () => sendWebPushToTenant(tenantId, buildMatchFoundPushPayload(search.id)),
+      sendEmailFallback: () => sendBlindMatchEmailFallback(tenantId, segmentText, mappedMatches)
+    }).catch((notifyErr: any) => {
+      logger.error({ error: notifyErr.message || notifyErr, tenantId, searchId: search.id }, '[BUSQUEDA] Error al notificar el match encontrado (no afecta la búsqueda ya confirmada)');
+    });
+
+    // KAN-78: dirección recíproca — avisar también al dueño de cada propiedad matcheada.
+    const bySearcherOwner = groupMatchesByMatchedTenant(mappedMatches);
+
+    // KAN-88: evento en vivo del contador de matches.
+    broadcastMatchCountChanged([tenantId, ...Object.keys(bySearcherOwner)]);
+
+    for (const [ownerTenantId, ownerMatches] of Object.entries(bySearcherOwner)) {
+      notifyMatchFound({
+        hasActivePush: () => hasActivePushSubscriptions(ownerTenantId),
+        sendPush: () => sendWebPushToTenant(ownerTenantId, buildIncomingMatchPushPayload(search.id)),
+        sendEmailFallback: () => sendIncomingMatchEmailFallback(ownerTenantId, searcherSnapshot, segmentText, ownerMatches)
+      }).catch((notifyErr: any) => {
+        logger.error({ error: notifyErr.message || notifyErr, tenantId: ownerTenantId, searchId: search.id }, '[BUSQUEDA] Error al notificar al dueño de una propiedad matcheada (no afecta la búsqueda ya confirmada)');
+      });
+    }
+  }
+
+  return {
+    success: true,
+    raw_text: segmentText,
+    search: { id: search.id, criteria: search.criteria, zone_status: search.zone_status, zone_names: search.zone_names, expires_at: search.expires_at },
+    matches: mappedMatchesWithIds
+  };
+}
+
 // KAN-37: motor de matching bidireccional entre tenants, dirección búsqueda→cartera. Un tenant
 // describe lo que busca en texto libre y recibe matches de la cartera de OTROS tenants (excluye
-// la propia). La dirección cartera→búsqueda (auto-revisar active_searches de otros tenants al
-// sincronizar una propiedad nueva) queda fuera de alcance de este ticket.
+// la propia). Un mismo mensaje puede describir 2+ pedidos independientes — se segmenta primero
+// (Agente 0, ver ai.ts#segmentSearchRequests) y cada segmento se procesa por separado, generando
+// su propia fila de active_searches y su propio set de matches/notificaciones.
 app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
   const tenantSupabase = (req as any).supabaseClient;
   const { text } = req.body;
 
   // KAN-71: rate limit por tenant — este endpoint dispara llamadas pagas a Gemini/OpenAI por
-  // request (extractFromTextInput), así que abuso acá tiene costo real, no solo carga de CPU.
+  // request (extractFromTextInput, y ahora también segmentSearchRequests), así que abuso acá
+  // tiene costo real, no solo carga de CPU.
   if (!searchRateLimiter.check(tenantId)) {
     logger.warn({ tenantId }, '[BUSQUEDA] Rate limit excedido en POST /api/search');
     return res.status(429).json({ error: 'Demasiadas búsquedas. Esperá un minuto e intentá de nuevo.' });
@@ -668,134 +803,42 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
     return res.status(501).json({ error: 'La búsqueda de texto libre (matching ciego) todavía no está habilitada.' });
   }
 
+  let segments: string[];
   try {
-    const extractedData = await extractFromTextInput(text);
-
-    if (extractedData.operation === 'desconocido') {
-      return res.status(400).json({ error: 'No pudimos clasificar el texto como un pedido de propiedad.' });
-    }
-
-    const { data: search, error: insertErr } = await tenantSupabase
-      .from('active_searches')
-      .insert({
-        tenant_id: tenantId,
-        raw_text: text,
-        criteria: extractedData
-      })
-      .select('id, criteria, created_at, expires_at')
-      .single();
-
-    if (insertErr) throw insertErr;
-
-    // KAN-22: zoneIntent (Agente 2) resuelve zona_id vía PostGIS/alias contra `neighborhoods`
-    // (ver ai.ts#extractZoneIntent) — antes de este ticket nunca se calculaba ni se pasaba acá,
-    // así que ZoneMatchingStrategy solo podía usar el branch de `request.zones` (Agente 1,
-    // comparación textual contra sheet_name). extractZoneIntent nunca lanza (ídem
-    // extractFromTextInput con fallback silencioso), así que no necesita try/catch propio.
-    const zoneIntent = await extractZoneIntent(text, extractedData.operation);
-
-    const matches = await findCrossTenantMatches(tenantId, extractedData, zoneIntent);
-
-    const mappedMatches = matches.map(m => ({
-      tenant_id: m.tenant_id,
-      score: m.score,
-      reasons: m.reasons,
-      property: mapPropertyToBlindMatchShape(m.property)
-    }));
-
-    // KAN-78: persistencia del resultado del matching ciego — hasta este ticket, findCrossTenantMatches
-    // no guardaba nada, los matches se devolvían una única vez en esta respuesta HTTP. Se arma un
-    // snapshot del propio perfil (buscador) para que el dueño de la propiedad matcheada pueda
-    // contactarlo más adelante sin depender de que este mire a tiempo su notificación/email.
-    let matchIds: (string | null)[] = mappedMatches.map(() => null);
-    let searcherSnapshot: SearcherSnapshot = { full_name: null, phone_number: null, agency_name: null, email: null };
-    if (mappedMatches.length > 0) {
-      try {
-        const { data: ownProfile, error: profileErr } = await tenantSupabase
-          .from('profiles')
-          .select('full_name, phone_number, agency_name, email')
-          .eq('id', tenantId)
-          .single();
-        if (profileErr) throw profileErr;
-
-        searcherSnapshot = {
-          full_name: ownProfile?.full_name ?? null,
-          phone_number: ownProfile?.phone_number ?? null,
-          agency_name: ownProfile?.agency_name ?? null,
-          email: ownProfile?.email ?? null
-        };
-
-        const insertRows = buildBlindMatchInsertRows(tenantId, search.id, text, searcherSnapshot, mappedMatches);
-        const { data: insertedMatches, error: matchInsertErr } = await tenantSupabase
-          .from('blind_matches')
-          .insert(insertRows)
-          .select('id');
-
-        if (matchInsertErr) throw matchInsertErr;
-        matchIds = (insertedMatches || []).map((row: any) => row.id);
-      } catch (persistErr: any) {
-        // Best-effort: los matches ya se calcularon, no tiene sentido fallar una búsqueda exitosa
-        // porque la persistencia falló — solo se pierde el historial/aviso al dueño de esta tanda.
-        logger.error({ error: persistErr.message || persistErr, tenantId, searchId: search.id }, '[BUSQUEDA] Error al persistir los matches en blind_matches (no afecta la búsqueda ya calculada)');
-      }
-    }
-
-    const mappedMatchesWithIds = mappedMatches.map((m, i) => ({ ...m, id: matchIds[i] ?? null }));
-
-    res.json({
-      success: true,
-      search: { id: search.id, criteria: search.criteria, expires_at: search.expires_at },
-      matches: mappedMatchesWithIds
-    });
-
-    // KAN-44: evento "match encontrado" en el único punto donde hoy se genera en vivo (una
-    // búsqueda nueva). GET /api/searches recalcula el mismo conteo cada 10s vía polling del
-    // dashboard (KAN-42) — engancharlo ahí spamearía un push por poll mientras la búsqueda siga
-    // activa. Fire-and-forget: no bloquea ni puede hacer fallar la respuesta ya enviada.
-    // Payload sin datos de la propiedad/contacto (esos ya viajaron en la respuesta HTTP, detrás
-    // de auth) — el push es solo un aviso genérico para evitar filtrar info de otro tenant por un
-    // canal sin control de acceso propio.
-    // KAN-48: email como respaldo permanente, no como reemplazo — notifyMatchFound() solo lo
-    // dispara si el tenant no tiene ninguna suscripción push activa, para no duplicar el aviso.
-    if (mappedMatches.length > 0) {
-      notifyMatchFound({
-        hasActivePush: () => hasActivePushSubscriptions(tenantId),
-        sendPush: () => sendWebPushToTenant(tenantId, buildMatchFoundPushPayload(search.id)),
-        sendEmailFallback: () => sendBlindMatchEmailFallback(tenantId, text, mappedMatches)
-      }).catch((notifyErr: any) => {
-        logger.error({ error: notifyErr.message || notifyErr, tenantId, searchId: search.id }, '[BUSQUEDA] Error al notificar el match encontrado (no afecta la búsqueda ya confirmada)');
-      });
-
-      // KAN-78: dirección recíproca — avisar también al dueño de cada propiedad matcheada, para
-      // que el match no dependa 100% de que el buscador revise su propia notificación/email a
-      // tiempo. Se agrupa por dueño para no spamear a un tenant con varias propiedades matcheadas
-      // en la misma búsqueda.
-      const bySearcherOwner = groupMatchesByMatchedTenant(mappedMatches);
-
-      // KAN-88: evento en vivo del contador de matches — ademas del buscador (tenantId, por si
-      // tiene otra pestaña/dispositivo abierto), cada dueño de propiedad matcheada recibe el
-      // aviso para que su "Interesados en tus propiedades" se actualice sin esperar el poll.
-      broadcastMatchCountChanged([tenantId, ...Object.keys(bySearcherOwner)]);
-
-      for (const [ownerTenantId, ownerMatches] of Object.entries(bySearcherOwner)) {
-        notifyMatchFound({
-          hasActivePush: () => hasActivePushSubscriptions(ownerTenantId),
-          sendPush: () => sendWebPushToTenant(ownerTenantId, buildIncomingMatchPushPayload(search.id)),
-          sendEmailFallback: () => sendIncomingMatchEmailFallback(ownerTenantId, searcherSnapshot, text, ownerMatches)
-        }).catch((notifyErr: any) => {
-          logger.error({ error: notifyErr.message || notifyErr, tenantId: ownerTenantId, searchId: search.id }, '[BUSQUEDA] Error al notificar al dueño de una propiedad matcheada (no afecta la búsqueda ya confirmada)');
-        });
-      }
-    }
+    segments = await segmentSearchRequests(text); // Agente 0 — fail-soft, nunca lanza
   } catch (error: any) {
-    logger.error({ error: error.message || error, tenantId }, '[BUSQUEDA] Error al procesar búsqueda de matching ciego');
-    // KAN-70: distinguible del 500 genérico para que el frontend pueda mostrar un mensaje
-    // específico ("el servicio de IA tardó demasiado") en vez del error interno genérico.
-    if (error instanceof AITimeoutError) {
-      return res.status(504).json({ error: error.message, code: 'AI_TIMEOUT' });
-    }
-    res.status(500).json({ error: error.message || 'Error interno al procesar la búsqueda.' });
+    // Defensivo: aunque segmentSearchRequests no debería lanzar, un fallo acá no debe bloquear
+    // el flujo — degradar al mensaje completo como única búsqueda.
+    logger.error({ error: error.message || error, tenantId }, '[BUSQUEDA] Error inesperado en segmentación; se procesa como búsqueda única.');
+    segments = [text];
   }
+
+  const results: SearchSegmentResult[] = [];
+  let anyAITimeout = false;
+
+  for (const segmentText of segments) {
+    try {
+      const result = await processSingleSearchSegment(tenantId, tenantSupabase, segmentText);
+      results.push(result);
+    } catch (error: any) {
+      if (error instanceof AITimeoutError) {
+        anyAITimeout = true;
+        results.push({ success: false, raw_text: segmentText, error: error.message, code: 'AI_TIMEOUT' });
+        continue; // seguir con los demás segmentos, no abortar todo el lote por un timeout puntual
+      }
+      logger.error({ error: error.message || error, tenantId, segmentText }, '[BUSQUEDA] Error al procesar un segmento de búsqueda.');
+      results.push({ success: false, raw_text: segmentText, error: error.message || 'Error interno al procesar este segmento.' });
+    }
+  }
+
+  const allFailed = results.every(r => !r.success);
+  const httpStatus = allFailed ? (anyAITimeout ? 504 : 500) : 200;
+
+  res.status(httpStatus).json({
+    success: !allFailed,
+    segmented: segments.length > 1,
+    searches: results
+  });
 });
 
 // KAN-39: listado de búsquedas activas propias con conteo de matches cross-tenant. El conteo se
@@ -812,7 +855,7 @@ app.get('/api/searches', tenantAuthMiddleware, async (req, res) => {
   try {
     const { data: searches, error } = await tenantSupabase
       .from('active_searches')
-      .select('id, raw_text, criteria, status, created_at, expires_at')
+      .select('id, raw_text, criteria, status, zone_status, zone_ids, zone_names, zone_text_original, created_at, expires_at')
       .eq('tenant_id', tenantId)
       .in('status', ['active', 'expired'])
       .order('created_at', { ascending: false });
@@ -822,7 +865,18 @@ app.get('/api/searches', tenantAuthMiddleware, async (req, res) => {
     const results = await Promise.all((searches || []).map(async (search: any) => {
       let matchesCount = 0;
       try {
-        const matches = await findCrossTenantMatches(tenantId, search.criteria);
+        // Reconstruye el zoneIntent persistido para que el recálculo en vivo respete el estado de
+        // zona real de la búsqueda (antes de este cambio se ignoraba por completo acá).
+        const zoneIntent: ZoneIntentRequest = {
+          zone_status: search.zone_status,
+          zona_ids: search.zone_ids || [],
+          zona_nombres: search.zone_names || [],
+          texto_ubicacion_original: search.zone_text_original || '',
+          dormitorios_min: null,
+          caracteristicas_claves: [],
+          operacion: 'DESCONOCIDO'
+        };
+        const matches = await findCrossTenantMatches(tenantId, search.criteria, zoneIntent);
         matchesCount = matches.length;
       } catch (matchError: any) {
         logger.error({ error: matchError.message || matchError, tenantId, searchId: search.id }, '[BUSQUEDAS] Error al calcular el conteo de matches de una búsqueda activa');
@@ -833,6 +887,8 @@ app.get('/api/searches', tenantAuthMiddleware, async (req, res) => {
         raw_text: search.raw_text,
         criteria: search.criteria,
         status: search.status,
+        zone_status: search.zone_status,
+        zone_names: search.zone_names || [],
         created_at: search.created_at,
         expires_at: search.expires_at,
         days_remaining: calculateDaysRemaining(search.expires_at),

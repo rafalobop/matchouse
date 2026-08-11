@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brokaza — Cómo funciona</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Lao+Looped:wght@400;600;700;800&family=Nunito+Sans:opsz,wght@6..12,400;6..12,500;6..12,600;6..12,700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bosque:#36461E;
+    --oliva:#6C863A;
+    --teal:#2A3638;
+    --pizarra:#617990;
+    --salvia:#DEE2DC;
+    --papel:#F7F8F4;
+    --linea:#CCD3CC;
+    --muted:#68706A;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--papel);
+    color:var(--bosque);
+    font-family:"Nunito Sans",Arial,sans-serif;
+    line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+  .display{font-family:"Noto Sans Lao Looped","Nunito Sans",Arial,sans-serif}
+
+  /* ---------- HERO ---------- */
+  .hero{
+    background:var(--teal);
+    color:var(--papel);
+    padding:56px 24px 64px;
+    text-align:center;
+  }
+  .hero .eyebrow{
+    display:inline-block;
+    font-size:12px;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    color:var(--salvia);
+    border:1px solid rgba(222,226,220,.3);
+    padding:6px 14px;
+    border-radius:999px;
+    margin-bottom:22px;
+  }
+  .hero h1{
+    font-size:clamp(28px,7vw,42px);
+    font-weight:800;
+    letter-spacing:-.02em;
+    line-height:1.15;
+    max-width:640px;
+    margin:0 auto 16px;
+  }
+  .hero h1 em{color:#A8C36B;font-style:normal}
+  .hero p{
+    max-width:480px;
+    margin:0 auto;
+    color:#C7CFC5;
+    font-size:16px;
+  }
+
+  /* ---------- SECTION SHELL ---------- */
+  section{padding:52px 24px;max-width:640px;margin:0 auto}
+  section.wide{max-width:720px}
+  h2.kicker{
+    font-size:12px;
+    letter-spacing:.12em;
+    text-transform:uppercase;
+    color:var(--oliva);
+    font-weight:700;
+    margin-bottom:10px;
+  }
+  h2.title{
+    font-size:clamp(22px,5vw,28px);
+    font-weight:800;
+    letter-spacing:-.01em;
+    margin-bottom:14px;
+  }
+  .lede{color:var(--muted);font-size:16px;max-width:520px}
+
+  /* ---------- PROBLEMA ---------- */
+  .problema{background:var(--salvia)}
+  .chat-mock{
+    margin-top:28px;
+    background:var(--papel);
+    border:1px solid var(--linea);
+    border-radius:16px;
+    padding:18px 18px 10px;
+  }
+  .bubble{
+    background:#fff;
+    border:1px solid var(--linea);
+    border-radius:12px;
+    padding:10px 14px;
+    font-size:13.5px;
+    margin-bottom:10px;
+    max-width:84%;
+    color:var(--teal);
+  }
+  .bubble b{color:var(--bosque)}
+  .bubble.fade{opacity:.45}
+  .chat-caption{
+    font-size:12.5px;
+    color:var(--muted);
+    text-align:center;
+    padding:8px 0 4px;
+  }
+
+  /* ---------- COMO FUNCIONA — pasos ---------- */
+  .pasos{background:var(--papel)}
+  .paso{
+    display:grid;
+    grid-template-columns:40px 1fr;
+    gap:16px;
+    padding:22px 0;
+    border-top:1px solid var(--linea);
+  }
+  .paso:first-of-type{border-top:none;padding-top:8px}
+  .paso .num{
+    width:36px;height:36px;
+    border-radius:10px;
+    background:var(--bosque);
+    color:var(--papel);
+    display:flex;align-items:center;justify-content:center;
+    font-weight:800;font-size:14px;
+    font-family:"Noto Sans Lao Looped";
+  }
+  .paso h3{font-size:17px;font-weight:700;margin-bottom:4px}
+  .paso p{color:var(--muted);font-size:14.5px}
+
+  /* ---------- MATCH VISUAL (pieza firma) ---------- */
+  .match-stage{
+    background:var(--teal);
+    padding:56px 24px 64px;
+  }
+  .match-stage .head{max-width:640px;margin:0 auto 36px;text-align:center}
+  .match-stage h2.kicker{color:#A8C36B}
+  .match-stage h2.title{color:var(--papel)}
+  .match-stage .lede{color:#AAB4A8;margin:0 auto}
+
+  .match-board{
+    max-width:560px;
+    margin:0 auto;
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:0;
+    align-items:center;
+    position:relative;
+  }
+  .agent-card{
+    background:var(--papel);
+    border-radius:16px;
+    padding:20px;
+    position:relative;
+    z-index:2;
+  }
+  .agent-card .tag{
+    font-size:10.5px;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+    color:var(--pizarra);
+    font-weight:700;
+    margin-bottom:8px;
+  }
+  .agent-card .who{font-weight:800;font-size:15px;margin-bottom:6px}
+  .agent-card .what{
+    font-size:13px;
+    color:var(--muted);
+    background:var(--salvia);
+    border-radius:8px;
+    padding:8px 10px;
+    display:inline-block;
+  }
+  .agent-card.private::after{
+    content:"🔒 solo vos la ves";
+    display:block;
+    margin-top:10px;
+    font-size:11px;
+    color:var(--pizarra);
+  }
+  .connector{
+    grid-column:1/-1;
+    height:64px;
+    position:relative;
+    margin:-10px 0;
+    z-index:1;
+  }
+  .connector svg{width:100%;height:100%;display:block}
+  .connector .pulse{
+    animation:pulse 2.2s ease-in-out infinite;
+  }
+  @keyframes pulse{
+    0%,100%{opacity:.55}
+    50%{opacity:1}
+  }
+  .match-flag{
+    max-width:560px;
+    margin:22px auto 0;
+    text-align:center;
+    background:var(--oliva);
+    color:var(--papel);
+    font-weight:700;
+    font-size:14px;
+    padding:12px 16px;
+    border-radius:12px;
+  }
+  .match-flag span{opacity:.85;font-weight:500;display:block;font-size:12.5px;margin-top:2px}
+
+  /* ---------- CIEGO POR DISEÑO ---------- */
+  .principio{background:var(--papel)}
+  .puntos{margin-top:24px;display:grid;gap:14px}
+  .punto{
+    display:flex;gap:12px;align-items:flex-start;
+    background:var(--salvia);
+    border-radius:12px;
+    padding:14px 16px;
+  }
+  .punto .ico{
+    width:26px;height:26px;flex:none;
+    color:var(--oliva);font-weight:800;font-size:16px;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .punto p{font-size:14px;color:var(--bosque)}
+  .punto p b{color:var(--bosque)}
+
+  /* ---------- QUE NO ES ---------- */
+  .noes{background:var(--teal);color:var(--papel)}
+  .noes h2.kicker{color:#A8C36B}
+  .noes-grid{margin-top:24px;display:grid;gap:12px}
+  .noes-row{
+    display:grid;grid-template-columns:1fr 1fr;gap:10px;
+    font-size:13.5px;
+  }
+  .noes-row .no,.noes-row .si{
+    padding:12px 14px;border-radius:10px;
+  }
+  .noes-row .no{background:rgba(255,255,255,.06);color:#C7CFC5}
+  .noes-row .si{background:rgba(108,134,58,.22);color:#D3E2B7;border:1px solid rgba(168,195,107,.35)}
+  .noes-row .lab{font-size:10px;letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:4px;opacity:.7}
+
+  /* ---------- CIERRE ---------- */
+  .cierre{background:var(--salvia);text-align:center}
+  .cierre h2.title{margin-bottom:10px}
+  .cierre .lede{margin:0 auto 24px}
+  .cta{
+    display:inline-block;
+    background:var(--oliva);
+    color:var(--papel);
+    font-weight:700;
+    font-size:15px;
+    padding:14px 28px;
+    border-radius:999px;
+    text-decoration:none;
+  }
+  .foot{
+    text-align:center;
+    padding:24px;
+    font-size:11.5px;
+    color:var(--muted);
+  }
+
+  @media(max-width:420px){
+    .noes-row{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+
+  <div class="hero">
+    <span class="eyebrow">Cómo funciona Brokaza</span>
+    <h1>Tu próxima operación puede estar en la cartera de <em>otro</em> agente. Hoy no hay forma de saberlo.</h1>
+    <p>Brokaza los conecta automáticamente, sin que nadie tenga que mostrar su cartera a nadie.</p>
+  </div>
+
+  <section class="problema">
+    <h2 class="kicker">El problema hoy</h2>
+    <h2 class="title">Buscás en grupos de WhatsApp y esperás tener suerte</h2>
+    <p class="lede">Un cliente te pide algo puntual. Vos no lo tenés. En algún lado de Tucumán, otro agente sí — pero no hay manera de enterarte a tiempo.</p>
+    <div class="chat-mock">
+      <div class="bubble"><b>Agente A:</b> alguien tiene depto 2 dorm en Barrio Norte, hasta 120mil?</div>
+      <div class="bubble fade"><b>Agente B:</b> [no lo vio, estaba en otro grupo]</div>
+      <div class="bubble fade"><b>Agente C:</b> [tenía justo esa propiedad — nunca se enteró]</div>
+      <div class="chat-caption">La búsqueda se pierde entre mensajes. Nadie cruza los datos.</div>
+    </div>
+  </section>
+
+  <section class="pasos">
+    <h2 class="kicker">La solución</h2>
+    <h2 class="title">Tres pasos, sin cambiar cómo trabajás</h2>
+    <p class="lede">Brokaza no reemplaza tu forma de vender. Se suma como una capa liviana por arriba.</p>
+
+    <div class="paso">
+      <div class="num">1</div>
+      <div>
+        <h3>Cargás tu cartera</h3>
+        <p>Subís las propiedades que ya tenés en Excel o en la cabeza. Queda privada, es tuya.</p>
+      </div>
+    </div>
+    <div class="paso">
+      <div class="num">2</div>
+      <div>
+        <h3>Publicás lo que un cliente te pide</h3>
+        <p>"Depto 2 dorm en Barrio Norte, hasta 120mil." Queda activa 7 días buscando coincidencia.</p>
+      </div>
+    </div>
+    <div class="paso">
+      <div class="num">3</div>
+      <div>
+        <h3>El sistema cruza todo solo</h3>
+        <p>Apenas alguien carga o edita una propiedad que encaja, Brokaza lo detecta al instante — no espera, no revisa cada tanto.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="match-stage">
+    <div class="head">
+      <h2 class="kicker">El corazón de Brokaza</h2>
+      <h2 class="title">Match a ciegas</h2>
+      <p class="lede">Nadie navega la cartera de nadie. Solo se avisa cuando hay una coincidencia real — y solo a quien le sirve.</p>
+    </div>
+
+    <div class="match-board">
+      <div class="agent-card private">
+        <div class="tag">Agente A</div>
+        <div class="who">Búsqueda activa</div>
+        <div class="what">Depto 2 dorm · Barrio Norte</div>
+      </div>
+      <div class="agent-card private">
+        <div class="tag">Agente B</div>
+        <div class="who">Su cartera</div>
+        <div class="what">Depto 2 dorm · Barrio Norte</div>
+      </div>
+      <div class="connector">
+        <svg viewBox="0 0 400 64" preserveAspectRatio="none">
+          <line x1="0" y1="32" x2="400" y2="32" stroke="#6C863A" stroke-width="2" stroke-dasharray="6 6" class="pulse"/>
+          <circle cx="200" cy="32" r="7" fill="#6C863A" class="pulse"/>
+        </svg>
+      </div>
+    </div>
+
+    <div class="match-flag">
+      Match ✓ — se notifica solo al Agente B
+      <span>El Agente A nunca vio la cartera del B. El B nunca vio la búsqueda de otros.</span>
+    </div>
+  </div>
+
+  <section class="principio">
+    <h2 class="kicker">Por qué importa</h2>
+    <h2 class="title">Ciego por diseño, no por accidente</h2>
+    <div class="puntos">
+      <div class="punto">
+        <div class="ico">✓</div>
+        <p><b>Tu cartera nunca queda expuesta.</b> Nadie la puede "mirar" ni copiarte clientes.</p>
+      </div>
+      <div class="punto">
+        <div class="ico">✓</div>
+        <p><b>Solo te enterás de lo que te sirve.</b> Cero ruido, cero scroll infinito de propiedades ajenas.</p>
+      </div>
+      <div class="punto">
+        <div class="ico">✓</div>
+        <p><b>La búsqueda vence sola a los 7 días.</b> No queda dando vueltas ni generando notificaciones viejas.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="noes wide">
+    <h2 class="kicker">Para despejar dudas</h2>
+    <h2 class="title">Qué NO es Brokaza</h2>
+    <div class="noes-grid">
+      <div class="noes-row">
+        <div class="no"><span class="lab">No es</span>un CRM que te obliga a migrar todo</div>
+        <div class="si"><span class="lab">Es</span>una capa liviana sobre lo que ya usás</div>
+      </div>
+      <div class="noes-row">
+        <div class="no"><span class="lab">No es</span>un catálogo público de propiedades</div>
+        <div class="si"><span class="lab">Es</span>notificaciones privadas, agente a agente</div>
+      </div>
+      <div class="noes-row">
+        <div class="no"><span class="lab">No es</span>otro grupo de WhatsApp para revisar</div>
+        <div class="si"><span class="lab">Es</span>el sistema el que te avisa a vos</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="cierre">
+    <h2 class="kicker" style="color:var(--oliva)">En síntesis</h2>
+    <h2 class="title">Más operaciones cerradas, sin cambiar tu forma de trabajar</h2>
+    <p class="lede">Brokaza conecta agentes de Tucumán con las propiedades que otros ya tienen — en silencio, en segundos, sin exponer a nadie.</p>
+  </section>
+
+  <div class="foot">Brokaza · documento para presentación comercial</div>
+
+</body>
+</html>
