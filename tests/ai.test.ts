@@ -4,6 +4,7 @@ import {
   extractFromWhatsApp,
   extractFromTextInput,
   extractZoneIntent,
+  segmentSearchRequests,
   validateMatch,
   suggestExcelColumnMapping,
   normalizeAgent1,
@@ -126,6 +127,7 @@ const geminiInvocations: Array<{ label: string; call: (s: GeminiStrategy) => Pro
   { label: 'extractRealEstateRequest', call: (s) => s.extractRealEstateRequest('mensaje de prueba', 'instrucción') },
   { label: 'extractFromFreeText', call: (s) => s.extractFromFreeText('texto libre de prueba', 'instrucción') },
   { label: 'extractZoneIntent', call: (s) => s.extractZoneIntent('mensaje de prueba', 'instrucción', 'venta') },
+  { label: 'segmentSearchRequests', call: (s) => s.segmentSearchRequests('mensaje de prueba', 'instrucción') },
   { label: 'validateMatch', call: (s) => s.validateMatch('mensaje', {}, {}, 'instrucción') },
   { label: 'suggestExcelColumnMapping', call: (s) => s.suggestExcelColumnMapping(['domicilio', 'precio'], 'instrucción') }
 ];
@@ -157,6 +159,7 @@ const openaiInvocations: Array<{ label: string; call: (s: OpenAIStrategy) => Pro
   { label: 'extractRealEstateRequest', call: (s) => s.extractRealEstateRequest('mensaje de prueba', 'instrucción') },
   { label: 'extractFromFreeText', call: (s) => s.extractFromFreeText('texto libre de prueba', 'instrucción') },
   { label: 'extractZoneIntent', call: (s) => s.extractZoneIntent('mensaje de prueba', 'instrucción', 'venta') },
+  { label: 'segmentSearchRequests', call: (s) => s.segmentSearchRequests('mensaje de prueba', 'instrucción') },
   { label: 'validateMatch', call: (s) => s.validateMatch('mensaje', {}, {}, 'instrucción') },
   { label: 'suggestExcelColumnMapping', call: (s) => s.suggestExcelColumnMapping(['domicilio', 'precio'], 'instrucción') }
 ];
@@ -292,5 +295,86 @@ test('AI Service (KAN-84) - suggestExcelColumnMapping cae a la siguiente estrate
   } finally {
     GeminiStrategy.prototype.suggestExcelColumnMapping = originalGemini;
     OpenAIStrategy.prototype.suggestExcelColumnMapping = originalOpenAI;
+  }
+});
+
+// --- Estados de zona (2026-08-11): normalizeAgent2 / resolveZoneIntent / segmentSearchRequests ---
+
+test('AI Service (estados de zona) - extractZoneIntent: sin ubicaciones mencionadas, resuelve INDEFINIDA sin consultar zonesService', async () => {
+  const originalGemini = GeminiStrategy.prototype.extractZoneIntent;
+  GeminiStrategy.prototype.extractZoneIntent = async () => ({
+    ubicaciones: [],
+    dormitorios_min: 2,
+    caracteristicas_claves: ['pileta'],
+    operacion: 'ALQUILER'
+  });
+
+  try {
+    const result = await extractZoneIntent('busco depto 2 dorm con pileta');
+    assert.strictEqual(result.zone_status, 'INDEFINIDA');
+    assert.deepStrictEqual(result.zona_ids, []);
+    assert.deepStrictEqual(result.zona_nombres, []);
+    assert.strictEqual(result.dormitorios_min, 2);
+  } finally {
+    GeminiStrategy.prototype.extractZoneIntent = originalGemini;
+  }
+});
+
+test('AI Service (estados de zona) - extractZoneIntent: fallo total de todas las estrategias degrada a INDEFINIDA (no DESCONOCIDA)', async () => {
+  const originalGemini = GeminiStrategy.prototype.extractZoneIntent;
+  const originalOpenAI = OpenAIStrategy.prototype.extractZoneIntent;
+  GeminiStrategy.prototype.extractZoneIntent = async () => { throw new Error('Falla simulada de Gemini'); };
+  OpenAIStrategy.prototype.extractZoneIntent = async () => { throw new Error('Falla simulada de OpenAI'); };
+
+  try {
+    const result = await extractZoneIntent('busco algo');
+    assert.strictEqual(result.zone_status, 'INDEFINIDA', 'Un fallo total del LLM no es evidencia de que el usuario mencionó una zona real, así que no debe bloquear (DESCONOCIDA).');
+    assert.deepStrictEqual(result.zona_ids, []);
+  } finally {
+    GeminiStrategy.prototype.extractZoneIntent = originalGemini;
+    OpenAIStrategy.prototype.extractZoneIntent = originalOpenAI;
+  }
+});
+
+test('AI Service (segmentador) - segmentSearchRequests: devuelve los segmentos cuando la estrategia detecta 2+ búsquedas independientes', async () => {
+  const originalGemini = GeminiStrategy.prototype.segmentSearchRequests;
+  GeminiStrategy.prototype.segmentSearchRequests = async () => ({
+    segments: ['casa en barrio norte', 'departamento en barrio sur']
+  });
+
+  try {
+    const result = await segmentSearchRequests('casa en barrio norte. tambien depto en barrio sur');
+    assert.deepStrictEqual(result, ['casa en barrio norte', 'departamento en barrio sur']);
+  } finally {
+    GeminiStrategy.prototype.segmentSearchRequests = originalGemini;
+  }
+});
+
+test('AI Service (segmentador) - segmentSearchRequests: fail-soft a [mensaje completo] cuando la estrategia devuelve un solo segmento', async () => {
+  const originalGemini = GeminiStrategy.prototype.segmentSearchRequests;
+  const freeText = 'busco depto 2 dorm en yerba buena';
+  GeminiStrategy.prototype.segmentSearchRequests = async () => ({ segments: [freeText] });
+
+  try {
+    const result = await segmentSearchRequests(freeText);
+    assert.deepStrictEqual(result, [freeText]);
+  } finally {
+    GeminiStrategy.prototype.segmentSearchRequests = originalGemini;
+  }
+});
+
+test('AI Service (segmentador) - segmentSearchRequests: fail-soft a [mensaje completo] cuando todas las estrategias fallan (nunca lanza)', async () => {
+  const originalGemini = GeminiStrategy.prototype.segmentSearchRequests;
+  const originalOpenAI = OpenAIStrategy.prototype.segmentSearchRequests;
+  const freeText = 'busco depto 2 dorm en yerba buena';
+  GeminiStrategy.prototype.segmentSearchRequests = async () => { throw new Error('Falla simulada de Gemini'); };
+  OpenAIStrategy.prototype.segmentSearchRequests = async () => { throw new Error('Falla simulada de OpenAI'); };
+
+  try {
+    const result = await segmentSearchRequests(freeText);
+    assert.deepStrictEqual(result, [freeText], 'Nunca debe lanzar ni bloquear POST /api/search — degrada al mensaje completo como única búsqueda.');
+  } finally {
+    GeminiStrategy.prototype.segmentSearchRequests = originalGemini;
+    OpenAIStrategy.prototype.segmentSearchRequests = originalOpenAI;
   }
 });

@@ -79,20 +79,24 @@ test('Matcher - CountryMatchingStrategy: rechaza cuando se pide country y la pro
   assert.strictEqual(result.isMatch, false);
 });
 
-// --- 4. Zone (KAN-22) ---
-// Desde KAN-22, ZoneMatchingStrategy ya NO resuelve la zona de la propiedad por su cuenta (era un
-// heurístico de keywords hardcodeado, classifyPropertyZoneId, borrado en este ticket). Ahora es
-// puramente sync: compara zoneIntent.zona_id (UUID de neighborhoods.id, resuelto por PostGIS/alias
-// en zonesService.ts) contra property.neighborhood_id, que ya viene pre-estampado por
-// blindMatching.ts#findCrossTenantMatches ANTES de llegar acá. Estos tests simulan ese
-// pre-estampado seteando neighborhood_id directamente en la property, sin tocar Supabase.
+// --- 4. Zone (KAN-22 + estados de zona 2026-08-11) ---
+// ZoneMatchingStrategy es puramente sync: compara zoneIntent.zona_ids (UUIDs de neighborhoods.id,
+// resueltos por PostGIS/alias en zonesService.ts) contra property.neighborhood_id, que ya viene
+// pre-estampado por blindMatching.ts#findCrossTenantMatches ANTES de llegar acá. Estos tests
+// simulan ese pre-estampado seteando neighborhood_id directamente en la property, sin Supabase.
 const BARRIO_NORTE_ID = 'a1a1a1a1-0000-0000-0000-000000000001';
 const BARRIO_SUR_ID = 'b2b2b2b2-0000-0000-0000-000000000002';
+const TAFI_VIEJO_ID = 'c3c3c3c3-0000-0000-0000-000000000003';
 
-function zoneIntentFor(zonaId: string, zonaNombre?: string | null): ZoneIntentRequest {
+function zoneIntentFor(zonaIds: string | string[], zonaNombres?: string | (string | null)[] | null): ZoneIntentRequest {
+  const ids = Array.isArray(zonaIds) ? zonaIds : [zonaIds];
+  const nombres = zonaNombres === undefined || zonaNombres === null
+    ? []
+    : (Array.isArray(zonaNombres) ? zonaNombres.filter((n): n is string => !!n) : [zonaNombres]);
   return {
-    zona_id: zonaId,
-    zona_nombre: zonaNombre,
+    zone_status: 'DEFINIDA',
+    zona_ids: ids,
+    zona_nombres: nombres,
     texto_ubicacion_original: 'texto de prueba',
     dormitorios_min: null,
     caracteristicas_claves: [],
@@ -100,7 +104,31 @@ function zoneIntentFor(zonaId: string, zonaNombre?: string | null): ZoneIntentRe
   };
 }
 
-test('Matcher - ZoneMatchingStrategy: matchea cuando el neighborhood_id de la propiedad coincide con el del zoneIntent', () => {
+function desconocidaZoneIntent(texto: string = 'barrio inexistente'): ZoneIntentRequest {
+  return {
+    zone_status: 'DESCONOCIDA',
+    zona_ids: [],
+    zona_nombres: [],
+    texto_ubicacion_original: texto,
+    dormitorios_min: null,
+    caracteristicas_claves: [],
+    operacion: 'DESCONOCIDO'
+  };
+}
+
+function indefinidaZoneIntent(): ZoneIntentRequest {
+  return {
+    zone_status: 'INDEFINIDA',
+    zona_ids: [],
+    zona_nombres: [],
+    texto_ubicacion_original: '',
+    dormitorios_min: null,
+    caracteristicas_claves: [],
+    operacion: 'DESCONOCIDO'
+  };
+}
+
+test('Matcher - ZoneMatchingStrategy: matchea cuando el neighborhood_id de la propiedad coincide con el del zoneIntent (DEFINIDA)', () => {
   const strategy = new ZoneMatchingStrategy();
   const result = strategy.evaluate(
     baseRequest(),
@@ -131,6 +159,48 @@ test('Matcher - ZoneMatchingStrategy: rechaza cuando la propiedad no tiene zona 
   assert.strictEqual(result.isMatch, false);
 });
 
+// --- Estados de zona (2026-08-11): INDEFINIDA / DESCONOCIDA / DEFINIDA con OR de zonas ---
+
+test('Matcher - ZoneMatchingStrategy: zone_status DESCONOCIDA bloquea siempre, sin importar neighborhood_id de la propiedad', () => {
+  const strategy = new ZoneMatchingStrategy();
+  const result = strategy.evaluate(
+    baseRequest(),
+    baseProperty({ neighborhood_id: BARRIO_NORTE_ID }),
+    desconocidaZoneIntent('villa inexistente')
+  );
+  assert.strictEqual(result.isMatch, false, 'DESCONOCIDA debe ser un filtro duro: 0 matches hasta que se cure.');
+});
+
+test('Matcher - ZoneMatchingStrategy: zone_status INDEFINIDA no filtra por zona (cae al branch de request.zones vacío)', () => {
+  const strategy = new ZoneMatchingStrategy();
+  const result = strategy.evaluate(
+    baseRequest(), // request.zones vacío
+    baseProperty({ neighborhood_id: null }),
+    indefinidaZoneIntent()
+  );
+  assert.strictEqual(result.isMatch, true, 'Sin zona mencionada, cualquier zona de propiedad debe pasar el filtro.');
+});
+
+test('Matcher - ZoneMatchingStrategy: zone_status DEFINIDA con múltiples zona_ids matchea en OR (segunda zona alternativa)', () => {
+  const strategy = new ZoneMatchingStrategy();
+  const result = strategy.evaluate(
+    baseRequest(),
+    baseProperty({ neighborhood_id: TAFI_VIEJO_ID }),
+    zoneIntentFor([BARRIO_NORTE_ID, TAFI_VIEJO_ID], ['Barrio Norte', 'Tafí Viejo'])
+  );
+  assert.strictEqual(result.isMatch, true, 'Debe matchear con cualquiera de las zonas alternativas (OR), no solo la primera.');
+});
+
+test('Matcher - ZoneMatchingStrategy: zone_status DEFINIDA con múltiples zona_ids rechaza si la propiedad no está en ninguna', () => {
+  const strategy = new ZoneMatchingStrategy();
+  const result = strategy.evaluate(
+    baseRequest(),
+    baseProperty({ neighborhood_id: BARRIO_SUR_ID }),
+    zoneIntentFor([BARRIO_NORTE_ID, TAFI_VIEJO_ID], ['Barrio Norte', 'Tafí Viejo'])
+  );
+  assert.strictEqual(result.isMatch, false);
+});
+
 // --- KAN-92: el reason de un match por zona debe mostrar el nombre legible, nunca el UUID crudo ---
 
 test('Matcher - ZoneMatchingStrategy (KAN-92): el reason de un match usa el nombre legible de la zona, no el UUID', () => {
@@ -145,12 +215,12 @@ test('Matcher - ZoneMatchingStrategy (KAN-92): el reason de un match usa el nomb
   assert.ok(!result.reason?.includes(BARRIO_NORTE_ID), 'El reason no debe contener el UUID interno de la zona.');
 });
 
-test('Matcher - ZoneMatchingStrategy (KAN-92): si no se pudo resolver el nombre (zona_nombre ausente), degrada mostrando el id en vez de romper', () => {
+test('Matcher - ZoneMatchingStrategy (KAN-92): si no se pudo resolver el nombre (zona_nombres ausente), degrada mostrando el id en vez de romper', () => {
   const strategy = new ZoneMatchingStrategy();
   const result = strategy.evaluate(
     baseRequest(),
     baseProperty({ neighborhood_id: BARRIO_NORTE_ID }),
-    zoneIntentFor(BARRIO_NORTE_ID) // sin zona_nombre
+    zoneIntentFor(BARRIO_NORTE_ID) // sin zona_nombres
   );
   assert.strictEqual(result.isMatch, true);
   assert.strictEqual(result.reason, `Coincidencia de Zona Geográfica: ${BARRIO_NORTE_ID}`);

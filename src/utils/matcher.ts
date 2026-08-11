@@ -114,24 +114,38 @@ export class ZoneMatchingStrategy implements IMatchingStrategy {
     // zona real (PostGIS + alias, ver zonesService.resolvePropertyZoneId) se resuelve ANTES de
     // llegar acá — esta estrategia es sync/sin red por diseño (matchRequestAgainstProperties se
     // testea sin Supabase), así que solo compara el `neighborhood_id` ya estampado en la
-    // property (ver blindMatching.ts#findCrossTenantMatches) contra el del pedido.
-    if (zoneIntent && zoneIntent.zona_id !== 'DESCONOCIDO') {
-      const propZoneId = property.neighborhood_id ?? null;
-      // KAN-92: `zona_nombre` es el nombre legible de `neighborhoods.name`, resuelto por
-      // ai.ts#resolveZoneId junto con `zona_id` — nunca mostrarle el UUID crudo al usuario. Si por
-      // algún motivo no se pudo resolver (fallo de red/DB puntual, ver resolveZoneId), degrada
-      // mostrando el id en vez de romper el mensaje.
-      const zonaDisplay = zoneIntent.zona_nombre ?? zoneIntent.zona_id;
-      if (propZoneId !== zoneIntent.zona_id) {
+    // property (ver blindMatching.ts#findCrossTenantMatches) contra el/los del pedido.
+    if (zoneIntent) {
+      // Zona mencionada pero no resuelta tras reintentos: filtro duro. No hay base para decidir
+      // si esta propiedad corresponde o no, así que NO matchea (a diferencia de INDEFINIDA, que
+      // sí deja pasar sin filtrar por zona).
+      if (zoneIntent.zone_status === 'DESCONOCIDA') {
         return {
           isMatch: false,
           scoreDeduction: 0,
-          reason: propZoneId
-            ? `Zona de la propiedad no coincide con la zona del pedido (${zonaDisplay})`
-            : `No se pudo determinar la zona de la propiedad para compararla con la del pedido (${zonaDisplay})`
+          reason: `No se pudo determinar la zona solicitada ("${zoneIntent.texto_ubicacion_original}") contra el catálogo de zonas conocidas.`
         };
       }
-      return { isMatch: true, scoreDeduction: 0, reason: `Coincidencia de Zona Geográfica: ${zonaDisplay}` };
+
+      if (zoneIntent.zone_status === 'DEFINIDA' && zoneIntent.zona_ids.length > 0) {
+        const propZoneId = property.neighborhood_id ?? null;
+        // KAN-92: `zona_nombres` son los nombres legibles de `neighborhoods.name` — nunca
+        // mostrarle el UUID crudo al usuario. Match OR: alcanza con que la propiedad esté en
+        // CUALQUIERA de las zonas alternativas del pedido.
+        const zonasDisplay = (zoneIntent.zona_nombres.length > 0 ? zoneIntent.zona_nombres : zoneIntent.zona_ids).join(' o ');
+        if (!propZoneId || !zoneIntent.zona_ids.includes(propZoneId)) {
+          return {
+            isMatch: false,
+            scoreDeduction: 0,
+            reason: propZoneId
+              ? `Zona de la propiedad no coincide con ninguna de las zonas del pedido (${zonasDisplay})`
+              : `No se pudo determinar la zona de la propiedad para compararla con la del pedido (${zonasDisplay})`
+          };
+        }
+        return { isMatch: true, scoreDeduction: 0, reason: `Coincidencia de Zona Geográfica: ${zonasDisplay}` };
+      }
+
+      // zone_status === 'INDEFINIDA' (o DEFINIDA con array vacío, caso defensivo): cae al branch 2.
     }
 
     // 2. Zona de Ubicación General (Si no se usó el Agente 2 para geo-filtrado específico)
