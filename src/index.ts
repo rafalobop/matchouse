@@ -33,6 +33,8 @@ import { withTimeout } from './utils/withTimeout';
 import { createRateLimiter } from './utils/rateLimit';
 import { getClientIp } from './utils/clientIp';
 import { mountAdminRouter } from './adminRoutes';
+import { nodeEnvCheckMiddleware } from './utils/nodeEnvCheck';
+import { globalErrorHandler } from './utils/errorHandler';
 import {
   buildBlindMatchInsertRows,
   mapBlindMatchRowToDashboardShape,
@@ -59,6 +61,11 @@ process.on('unhandledRejection', (reason, promise) => {
 process.on('uncaughtException', (error) => {
   console.error('[PROCESO] Error no controlado (Uncaught Exception):', error);
 });
+
+// KAN-124: solo advierte (logger.warn, una vez por proceso) si NODE_ENV no es 'production' — no
+// bloquea el arranque, a diferencia de las credenciales de Supabase (KAN-122), porque en
+// desarrollo local es normal no tenerla seteada.
+app.use(nodeEnvCheckMiddleware);
 
 // KAN-69: nonce por request, consumido tanto por la CSP de Helmet como por el
 // script inyectado en el <head> del dashboard (ver ruta '/' más abajo).
@@ -1172,6 +1179,11 @@ app.post('/api/notifications/subscribe', tenantAuthMiddleware, async (req, res) 
     res.status(500).json({ error: error.message || 'Error interno al suscribir.' });
   }
 });
+
+// KAN-124: manejador de errores global — DEBE quedar como el último app.use(), después de
+// mountAdminRouter y de todas las rutas de tenant/API de arriba, para que también atrape errores
+// que suben desde adminRouter (AC4) y no solo del pipeline de tenants. Ver src/utils/errorHandler.ts.
+app.use(globalErrorHandler);
 
 // ==========================================
 // FUNCIÓN PRINCIPAL DE ARRANQUE (MAIN)
