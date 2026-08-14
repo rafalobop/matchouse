@@ -31,6 +31,8 @@ import { config } from './config/env';
 import { logger } from './services/logger';
 import { withTimeout } from './utils/withTimeout';
 import { createRateLimiter } from './utils/rateLimit';
+import { getClientIp } from './utils/clientIp';
+import { mountAdminRouter } from './adminRoutes';
 import {
   buildBlindMatchInsertRows,
   mapBlindMatchRowToDashboardShape,
@@ -70,13 +72,23 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-        'script-src': ["'self'", (_req, res) => `'nonce-${(res as express.Response).locals.cspNonce}'`]
+        'script-src': ["'self'", (_req, res) => `'nonce-${(res as express.Response).locals.cspNonce}'`],
+        // Tiles de OpenStreetMap para el mapa interactivo del panel admin (corrección de
+        // coordenadas de propiedades) — Leaflet en sí está vendorizado en src/admin-dashboard/vendor
+        // (sirve como 'self'), solo las imágenes de los tiles vienen de un host externo.
+        'img-src': ["'self'", 'data:', 'https://*.tile.openstreetmap.org']
       }
     }
   })
 );
 app.use(express.json());
 app.use(cookieParser());
+
+// Panel admin (app.admin.brokaza.com): se monta ANTES que el resto del pipeline de tenants
+// (access gate, dashboard estático, /api/*) para que, cuando el Host coincide, la request
+// quede completamente aislada en su propio router y nunca llegue a la lógica de tenants — y
+// viceversa, /admin nunca existe si se le pega desde el dominio normal.
+mountAdminRouter(app);
 
 // Servir archivos estáticos del dashboard (soportando dev y prod)
 const dashboardPath = fs.existsSync(path.join(__dirname, 'dashboard'))
@@ -130,26 +142,6 @@ app.get(['/', '/index.html'], (req, res) => {
 
 app.use(express.static(path.join(process.cwd(), 'public')));
 app.use(express.static(dashboardPath));
-
-/**
- * Utilidad para extraer de forma robusta la IP del cliente (considerando proxies como Railway)
- */
-function getClientIp(req: express.Request): string {
-  const forwarded = req.headers['x-forwarded-for'];
-  let ip = 'unknown';
-  if (forwarded) {
-    const list = typeof forwarded === 'string' ? forwarded.split(',') : forwarded;
-    ip = list[0].trim();
-  } else {
-    ip = req.socket.remoteAddress || 'unknown';
-  }
-
-  // Normalizar localhost (tanto IPv4, IPv6 y IPv4-mapped IPv6)
-  if (ip === '::1' || ip === '127.0.0.1' || ip === '::ffff:127.0.0.1') {
-    return '127.0.0.1';
-  }
-  return ip;
-}
 
 // Rate limiter en memoria para endpoints de auth (max 5 req/min por IP)
 const authRateLimitMap = new Map<string, { count: number; resetAt: number }>();
@@ -235,6 +227,14 @@ async function tenantAuthMiddleware(req: express.Request, res: express.Response,
     return res.status(503).json({ error: 'No pudimos conectar con el servidor de autenticación.' });
   }
 }
+
+// KAN-122: público y sin dependencia de Supabase a propósito — es justamente lo que el frontend
+// consulta para saber si Supabase está mal configurado (ALLOW_MISSING_SUPABASE_CREDENTIALS=true
+// en desarrollo) antes de intentar cualquier otra cosa. En el caso normal (todas las credenciales
+// presentes) devuelve una lista vacía y el dashboard sigue su flujo de siempre.
+app.get('/api/system/config-status', (req, res) => {
+  res.json({ missingSupabaseCredentials: config.missingSupabaseCredentials });
+});
 
 // ==========================================
 // ENDPOINTS DE AUTENTICACIÓN (PÚBLICOS)

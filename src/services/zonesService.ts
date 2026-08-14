@@ -245,6 +245,54 @@ export async function resolvePropertyZoneId(property: PropertyLocationFields, cl
   return resolveNeighborhoodIdByText(text, client);
 }
 
+export interface PropertyZoneInfo {
+  /** Zona resuelta a mostrar (por punto si hay match; si no, por texto; si no, null). */
+  zone: NeighborhoodTextMatch | null;
+  /** De dónde salió `zone`: PostGIS exacto/cercano, fallback de texto, o ninguna de las dos. */
+  source: 'point' | 'text' | 'none';
+  /**
+   * Zona que sugiere el texto (dirección/features/hoja), aunque el punto haya resuelto otra.
+   * Sirve para detectar "el excel dice una zona pero las coordenadas dicen otra" en el panel admin.
+   */
+  textSuggestedZone: NeighborhoodTextMatch | null;
+  /** true si `source === 'point'` pero el texto sugiere una zona distinta. */
+  hasDiscrepancy: boolean;
+}
+
+/**
+ * Igual que `resolvePropertyZoneId`, pero devuelve el detalle completo (zona + de dónde salió +
+ * si hay discrepancia punto/texto) en vez de solo el id. Pensado para el panel admin, donde el
+ * operador necesita ver esa señal para decidir si corregir las coordenadas de una propiedad.
+ * Consolida la lógica que antes vivía duplicada en scripts/check-zone-resolution.ts.
+ */
+export async function resolvePropertyZoneInfo(
+  property: PropertyLocationFields,
+  client: SupabaseClient = supabase
+): Promise<PropertyZoneInfo> {
+  const text = `${property.address} ${property.features ?? ''} ${property.sheet_name} ${property.zone_display_name ?? ''}`;
+  const textSuggestedZone = await resolveNeighborhoodByText(text, client);
+
+  const hasCoords =
+    property.latitude !== undefined && property.latitude !== null &&
+    property.longitude !== undefined && property.longitude !== null &&
+    property.latitude !== 0 && property.longitude !== 0;
+
+  if (hasCoords) {
+    const byPoint = await findNeighborhoodByPoint(property.latitude!, property.longitude!, client);
+    if (byPoint) {
+      const zone = { id: byPoint.id, name: byPoint.name };
+      const hasDiscrepancy = !!textSuggestedZone && textSuggestedZone.id !== byPoint.id;
+      return { zone, source: 'point', textSuggestedZone, hasDiscrepancy };
+    }
+  }
+
+  if (textSuggestedZone) {
+    return { zone: textSuggestedZone, source: 'text', textSuggestedZone, hasDiscrepancy: false };
+  }
+
+  return { zone: null, source: 'none', textSuggestedZone: null, hasDiscrepancy: false };
+}
+
 /** Solo para tests: fuerza a que la próxima resolución por texto vuelva a consultar la base. */
 export function __clearZoneKeywordCacheForTests(): void {
   zoneKeywordCache = null;
