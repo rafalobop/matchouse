@@ -156,7 +156,8 @@ function resetAuthCards() {
 
 function updateTenantSessionUI() {
   if (isUserAuthenticated && currentTenantInfo) {
-    tenantEmailText.innerText = currentTenantInfo.email || '';
+    const displayName = currentTenantInfo.full_name && currentTenantInfo.full_name.trim();
+    tenantEmailText.innerText = displayName || currentTenantInfo.email || '';
     tenantSession.classList.remove('hidden');
   } else {
     tenantSession.classList.add('hidden');
@@ -294,6 +295,8 @@ async function ensureProfileCompleted() {
     }
     const data = await res.json();
     if (data.profile && data.profile.profile_completed) {
+      if (currentTenantInfo) currentTenantInfo.full_name = data.profile.full_name;
+      updateTenantSessionUI();
       profileOverlay.classList.add('hidden');
       startDashboardPolling();
     } else {
@@ -344,6 +347,8 @@ if (profileForm) {
       const data = await res.json();
       if (res.ok) {
         console.log('[PERFIL] Perfil completado correctamente.');
+        if (currentTenantInfo) currentTenantInfo.full_name = data.profile.full_name;
+        updateTenantSessionUI();
         profileOverlay.classList.add('hidden');
         startDashboardPolling();
       } else {
@@ -1600,11 +1605,42 @@ if (btnPushSubscribe) {
   });
 }
 
+// KAN-122: si el backend arrancó con credenciales de Supabase faltantes (solo posible en
+// desarrollo, con ALLOW_MISSING_SUPABASE_CREDENTIALS=true — ver src/config/env.ts), este chequeo
+// corta el flujo de inicialización acá mismo con un modal explícito, antes de intentar login o
+// cualquier llamada que de todos modos va a fallar contra una base inexistente.
+async function checkSystemConfigStatus() {
+  try {
+    const res = await fetch('/api/system/config-status');
+    if (!res.ok) return false;
+    const data = await res.json();
+    const missing = data.missingSupabaseCredentials || [];
+    if (missing.length === 0) return false;
+
+    const list = document.getElementById('config-error-list');
+    list.innerHTML = '';
+    for (const name of missing) {
+      const li = document.createElement('li');
+      li.textContent = name;
+      list.appendChild(li);
+    }
+    document.getElementById('config-error-modal').classList.remove('hidden');
+    return true;
+  } catch (error) {
+    console.error('[CONFIG] Error al verificar el estado de configuración del servidor:', error);
+    return false;
+  }
+}
+
 // Inicialización: detectar magic link callback en URL o verificar sesión normal
-handleMagicLinkCallback().then(() => {
-  checkAuthSession().then(() => {
-    handleAuthErrorCallback();
-    initPushNotifications();
+checkSystemConfigStatus().then((configIsBroken) => {
+  if (configIsBroken) return;
+
+  handleMagicLinkCallback().then(() => {
+    checkAuthSession().then(() => {
+      handleAuthErrorCallback();
+      initPushNotifications();
+    });
   });
 });
 

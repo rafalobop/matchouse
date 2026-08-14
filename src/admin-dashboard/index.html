@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Brokaza — Panel Admin</title>
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <section id="login-view">
+    <h1>Panel Admin — Brokaza</h1>
+    <p>Ingresá tu email autorizado. Te vamos a mandar un link de acceso.</p>
+    <input type="email" id="login-email" placeholder="tu@email.com" autocomplete="email" />
+    <button id="login-btn">Enviar link de acceso</button>
+    <div id="login-message"></div>
+  </section>
+
+  <div id="app-view" class="hidden">
+    <header class="topbar">
+      <h1>Brokaza — Panel Admin</h1>
+      <div>
+        <span class="admin-email" id="admin-email-label"></span>
+        <button id="logout-btn">Salir</button>
+      </div>
+    </header>
+    <main>
+      <div class="metrics-grid" id="metrics-grid">
+        <div class="metric-card"><div class="label">Matches totales</div><div class="value" id="metric-matches">—</div></div>
+        <div class="metric-card"><div class="label">Usuarios registrados</div><div class="value" id="metric-registered">—</div></div>
+        <div class="metric-card"><div class="label" id="metric-active-label">Usuarios activos</div><div class="value" id="metric-active">—</div></div>
+        <div class="metric-card"><div class="label">Propiedades cargadas</div><div class="value" id="metric-properties">—</div></div>
+        <div class="metric-card placeholder"><div class="label">MRR</div><div class="value" id="metric-mrr">Pendiente</div></div>
+        <div class="metric-card placeholder"><div class="label">Churn</div><div class="value" id="metric-churn">Pendiente</div></div>
+      </div>
+
+      <div class="properties-toolbar">
+        <input type="search" id="property-search" placeholder="Buscar por dirección..." />
+      </div>
+
+      <table class="properties-table">
+        <thead>
+          <tr>
+            <th>Dirección</th>
+            <th>Zona resuelta</th>
+            <th>Lat / Lng</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="properties-tbody"></tbody>
+      </table>
+
+      <div class="pagination">
+        <button id="prev-page-btn">← Anterior</button>
+        <span id="page-label"></span>
+        <button id="next-page-btn">Siguiente →</button>
+      </div>
+    </main>
+  </div>
+
+  <div id="coord-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <h2 id="modal-address"></h2>
+      <div id="coord-map"></div>
+      <div class="coord-inputs">
+        <label>Latitud<input type="number" step="0.000001" id="modal-lat" /></label>
+        <label>Longitud<input type="number" step="0.000001" id="modal-lng" /></label>
+      </div>
+      <div id="modal-status"></div>
+      <div class="modal-actions">
+        <button class="cancel-btn" id="modal-cancel-btn">Cancelar</button>
+        <button class="save-btn" id="modal-save-btn">Guardar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/vendor/leaflet/leaflet.js" nonce="__CSP_NONCE__"></script>
+  <script src="/app.js" nonce="__CSP_NONCE__"></script>
+</body>
+</html>

@@ -31,6 +31,10 @@ export interface Config {
   uploadMaxFileSizeBytes: number;
   internalWebhookSecret: string;
   accessGateCode?: string;
+  adminHost?: string;
+  adminAppUrl?: string;
+  /** KAN-122: nombres de las variables de Supabase que faltan (vacío si están todas presentes). */
+  missingSupabaseCredentials: string[];
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -100,6 +104,43 @@ export function validateConfig(): Config {
   // detrás de una pantalla de "acceso privado" hasta que se visite /?access=<código>. Opcional
   // a propósito — sin esta variable la app funciona igual que siempre, sin gate.
   const accessGateCode = cleanEnvVar(process.env.ACCESS_GATE_CODE);
+  // Panel admin (app.admin.brokaza.com): mismo proceso Express que el resto de la app, pero
+  // solo se sirve el adminRouter cuando el Host de la request coincide con esta variable. Sin
+  // ADMIN_HOST seteada, el panel admin queda completamente deshabilitado (útil en local/dev).
+  const adminHost = cleanEnvVar(process.env.ADMIN_HOST);
+  // URL a la que redirige el magic link del panel admin. Opcional: si no se setea, se arma como
+  // `https://${ADMIN_HOST}` (correcto en producción, donde el dominio admin tiene TLS real — sea
+  // un custom domain o el dominio *.up.railway.app que Railway da gratis). En local, sin dominio
+  // propio ni certificado, hace falta setearla explícita a algo como http://localhost:3000 para
+  // poder probar el flujo de login completo en el navegador.
+  const adminAppUrl = cleanEnvVar(process.env.ADMIN_APP_URL);
+
+  // KAN-122: sin SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY la app queda inservible (todo el acceso a
+  // datos pasa por el cliente service-role de src/services/supabase.ts) — antes de este ticket
+  // arrancaba igual con un console.warn, y cada request recién fallaba en el primer intento real
+  // de pegarle a Supabase. Por default el arranque se aborta acá mismo, con un mensaje que lista
+  // exactamente qué variable falta. ALLOW_MISSING_SUPABASE_CREDENTIALS=true permite arrancar
+  // igual (solo pensado para desarrollo local sin Supabase todavía configurado) — hace falta
+  // habilitarlo explícito, no alcanza con NODE_ENV=development.
+  const allowMissingSupabaseCredentials = cleanEnvVar(process.env.ALLOW_MISSING_SUPABASE_CREDENTIALS) === 'true';
+  const missingSupabaseCredentials: string[] = [];
+  if (!supabaseUrl) missingSupabaseCredentials.push('SUPABASE_URL');
+  if (!supabaseServiceRoleKey) missingSupabaseCredentials.push('SUPABASE_SERVICE_ROLE_KEY');
+
+  if (missingSupabaseCredentials.length > 0 && !allowMissingSupabaseCredentials) {
+    throw new Error(
+      `Faltan las siguientes variables de entorno de Supabase: ${missingSupabaseCredentials.join(', ')}. ` +
+      'Configuralas en el archivo .env, o seteá ALLOW_MISSING_SUPABASE_CREDENTIALS=true para arrancar ' +
+      'igual en modo desarrollo (la app va a mostrar un aviso, pero cualquier función que dependa de ' +
+      'Supabase va a fallar).'
+    );
+  }
+  if (missingSupabaseCredentials.length > 0) {
+    console.warn(
+      `[CONFIG] Arrancando con credenciales de Supabase incompletas (${missingSupabaseCredentials.join(', ')}) ` +
+      'porque ALLOW_MISSING_SUPABASE_CREDENTIALS=true. Esto NO debe estar habilitado en producción.'
+    );
+  }
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
@@ -151,7 +192,10 @@ export function validateConfig(): Config {
     uploadRateLimitWindowMs,
     uploadMaxFileSizeBytes,
     internalWebhookSecret,
-    accessGateCode
+    accessGateCode,
+    adminHost,
+    adminAppUrl,
+    missingSupabaseCredentials
   };
 }
 
