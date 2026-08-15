@@ -8,7 +8,13 @@ import { withTimeout } from './utils/withTimeout';
 import { createDistributedRateLimiter } from './utils/rateLimit';
 import { getClientIp } from './utils/clientIp';
 import { isValidUUID } from './utils/idValidation';
-import { resolvePropertyZoneInfo } from './services/zonesService';
+import {
+  resolvePropertyZoneInfo,
+  resolvePropertiesZoneInfoBatch,
+  findNeighborhoodsForPoints,
+  PropertyForZoneBatch,
+  ZonePointInput
+} from './services/zonesService';
 import {
   ADMIN_SESSION_COOKIE,
   adminAuthMiddleware,
@@ -190,6 +196,14 @@ export function mountAdminRouter(app: express.Application): void {
     }
   });
 
+  // KAN-130: antes acá había un patrón N+1 — por cada propiedad de la página se llamaba
+  // resolvePropertyZoneInfo(), que a su vez podía disparar hasta 2 round-trips a Postgres. Con
+  // hasta 50 propiedades por página, eso eran ~100 llamadas a Supabase por carga. Ahora:
+  // 1) el SELECT trae el `zone_id` ya cacheado con un join embebido a `neighborhoods` (0 llamadas
+  //    extra), y 2) para las filas sin `zone_id` (propiedad nueva, sin corrección de coordenadas
+  //    todavía) se resuelven todas juntas con un único RPC batch (`neighborhoods_for_points`).
+  // Resultado: 1 (SELECT) + a lo sumo 1 (RPC batch) = 2 llamadas a la base por página, sea cual
+  // sea la cantidad de propiedades.
   adminRouter.get('/api/properties', adminAuthMiddleware, async (req, res) => {
     try {
       const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
@@ -199,7 +213,10 @@ export function mountAdminRouter(app: express.Application): void {
 
       let query = supabase
         .from('properties')
-        .select('id, address, sheet_name, features, latitude, longitude, tenant_id', { count: 'exact' })
+        .select(
+          'id, address, sheet_name, features, latitude, longitude, tenant_id, zone_id, neighborhoods!properties_zone_id_fkey(id, name, group_id)',
+          { count: 'exact' }
+        )
         .order('address', { ascending: true })
         .range(from, to);
 
@@ -214,14 +231,19 @@ export function mountAdminRouter(app: express.Application): void {
       }
 
       const rows = data ?? [];
-      const properties = await Promise.all(rows.map(async (p: any) => {
-        const zoneInfo = await resolvePropertyZoneInfo({
-          latitude: p.latitude,
-          longitude: p.longitude,
-          address: p.address,
-          features: p.features ?? undefined,
-          sheet_name: p.sheet_name
-        });
+      const propertiesForBatch: PropertyForZoneBatch[] = rows.map((p: any) => ({
+        latitude: p.latitude,
+        longitude: p.longitude,
+        address: p.address,
+        features: p.features ?? undefined,
+        sheet_name: p.sheet_name,
+        cachedZone: p.neighborhoods ? { id: p.neighborhoods.id, name: p.neighborhoods.name } : null
+      }));
+
+      const zoneInfos = await resolvePropertiesZoneInfoBatch(propertiesForBatch);
+
+      const properties = rows.map((p: any, idx: number) => {
+        const zoneInfo = zoneInfos[idx];
         return {
           id: p.id,
           address: p.address,
@@ -232,11 +254,51 @@ export function mountAdminRouter(app: express.Application): void {
           textSuggestedZone: zoneInfo.textSuggestedZone,
           hasDiscrepancy: zoneInfo.hasDiscrepancy
         };
-      }));
+      });
 
       res.json({ properties, page, pageSize: PROPERTIES_PAGE_SIZE, total: count ?? 0 });
     } catch (err: any) {
       logger.error({ err: err.message }, '[ADMIN] Error inesperado listando propiedades');
+      res.status(500).json({ error: 'Error interno.' });
+    }
+  });
+
+  // KAN-130: expone el RPC batch de resolución de zonas como endpoint propio — además de
+  // consumirlo internamente GET /api/properties, sirve para resolver zonas de un array de
+  // coordenadas de forma aislada/testeable (ej. previsualizar la zona de una propiedad antes de
+  // guardarla, o herramientas de diagnóstico del panel admin).
+  const MAX_ZONE_POINTS_PER_REQUEST = 500;
+
+  adminRouter.post('/api/zones', adminAuthMiddleware, async (req, res) => {
+    const points = (req.body ?? {}).points;
+
+    if (!Array.isArray(points) || points.length === 0) {
+      return res.status(400).json({ error: 'points debe ser un array no vacío de { lat, lon }.' });
+    }
+    if (points.length > MAX_ZONE_POINTS_PER_REQUEST) {
+      return res.status(400).json({ error: `No se pueden resolver más de ${MAX_ZONE_POINTS_PER_REQUEST} puntos por request.` });
+    }
+
+    const parsedPoints: ZonePointInput[] = [];
+    for (let idx = 0; idx < points.length; idx++) {
+      const p = points[idx];
+      if (!isFiniteInRange(p?.lat, -90, 90) || !isFiniteInRange(p?.lon, -180, 180)) {
+        return res.status(400).json({ error: `Punto inválido en la posición ${idx}: lat/lon deben ser números finitos dentro de rango.` });
+      }
+      parsedPoints.push({ idx, latitude: p.lat, longitude: p.lon });
+    }
+
+    try {
+      const resolved = await findNeighborhoodsForPoints(parsedPoints);
+      const zones = parsedPoints.map((p) => {
+        const match = resolved.get(p.idx);
+        return match
+          ? { zone: { id: match.id, name: match.name, group_id: match.group_id }, matchType: match.matchType }
+          : { zone: null, matchType: null };
+      });
+      res.json({ zones });
+    } catch (err: any) {
+      logger.error({ err: err.message }, '[ADMIN] Error resolviendo zonas en batch (POST /api/zones)');
       res.status(500).json({ error: 'Error interno.' });
     }
   });
@@ -301,6 +363,21 @@ export function mountAdminRouter(app: express.Application): void {
         features: existing.features ?? undefined,
         sheet_name: existing.sheet_name
       });
+
+      // KAN-130: las coordenadas cambiaron, así que el `zone_id` cacheado (si había uno) quedó
+      // desactualizado — se refresca acá mismo. Solo se persiste cuando la zona salió de PostGIS
+      // (source === 'point'); un match por texto es una sugerencia, no algo que corresponda cachear
+      // como "la zona real" de la propiedad (mismo criterio que usa resolvePropertiesZoneInfoBatch
+      // al decidir qué cuenta como `cachedZone`).
+      const { error: zoneIdUpdateError } = await supabase
+        .from('properties')
+        .update({ zone_id: zoneInfo.source === 'point' ? zoneInfo.zone!.id : null })
+        .eq('id', id);
+      if (zoneIdUpdateError) {
+        // No bloqueante: la corrección de coordenadas ya se guardó — esto es solo refrescar el
+        // caché de lectura, se puede recalcular en la próxima carga de GET /api/properties.
+        logger.error({ err: zoneIdUpdateError.message, id }, '[ADMIN] No se pudo refrescar zone_id tras corregir coordenadas');
+      }
 
       logger.info({ adminEmail: admin.email, propertyId: id, before, after }, '[ADMIN] Coordenadas de propiedad corregidas');
       res.json({ success: true, latitude, longitude, zone: zoneInfo.zone, zoneSource: zoneInfo.source });
