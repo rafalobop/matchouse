@@ -1,3 +1,16 @@
+// KAN-125: `xlsx` migrado desde el registro público de npm (parado en 0.18.5, con vulnerabilidades
+// conocidas — prototype pollution / ReDoS — que SheetJS nunca volvió a parchear ahí) al tarball
+// oficial parcheado servido desde su propio CDN (ver dependencia en package.json:
+// "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"). Superficie de API real usada en
+// todo el proyecto (documentada acá porque no hay otro lugar natural donde quede a la vista antes
+// de tocar la dependencia):
+//   - Lectura (este archivo, producción): `xlsx.read()` y `xlsx.utils.sheet_to_json()` únicamente.
+//     Nunca se genera un .xlsx desde el servidor (no hay `xlsx.write()` en código de producción).
+//   - Construcción de fixtures de test (`tests/excel.test.ts`): `xlsx.utils.book_new()`,
+//     `xlsx.utils.book_append_sheet()`, `xlsx.utils.aoa_to_sheet()` y `xlsx.write()`.
+// Misma API en 0.20.3 que en 0.18.5 para esta superficie acotada — sin cambios de código
+// necesarios en `excel.ts` ni en los tests. Confirmado con la suite completa en verde y un
+// smoke test manual end-to-end (buffer .xlsx real generado y parseado con la versión nueva).
 import * as xlsx from 'xlsx';
 import * as fs from 'fs';
 import * as path from 'path';

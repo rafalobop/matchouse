@@ -25,6 +25,7 @@ skills-lock.json
 # Archivos dinámicos de Tenants (Caché, Configuración y Sesiones)
 cache/
 sessions/
+auditoria.md
 
 # Proyectos de video generados con HyperFrames (outputs pesados, no versionar)
 videos/
