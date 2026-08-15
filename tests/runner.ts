@@ -9,6 +9,7 @@ import './dashboardMetrics.test';
 import './dashboardMetricsRoute.test';
 import './dolar.test';
 import './errorHandler.test';
+import './errorMessageLeak.test';
 import './excel.test';
 import './excelHeaderMatcher.test';
 import './excelMapping.test';
