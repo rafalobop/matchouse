@@ -5,7 +5,7 @@ import { supabase } from './services/supabase';
 import { config } from './config/env';
 import { logger } from './services/logger';
 import { withTimeout } from './utils/withTimeout';
-import { createRateLimiter } from './utils/rateLimit';
+import { createDistributedRateLimiter } from './utils/rateLimit';
 import { getClientIp } from './utils/clientIp';
 import { isValidUUID } from './utils/idValidation';
 import { resolvePropertyZoneInfo } from './services/zonesService';
@@ -21,7 +21,9 @@ const adminDashboardPath = fs.existsSync(path.join(__dirname, 'admin-dashboard')
   ? path.join(__dirname, 'admin-dashboard')
   : path.join(process.cwd(), 'src', 'admin-dashboard');
 
-const adminAuthRateLimiter = createRateLimiter(5, 60_000);
+// KAN-127: distribuido (Postgres) — el panel admin puede correr detrás de más de una instancia
+// igual que el resto de la app, ver src/utils/rateLimit.ts.
+const adminAuthRateLimiter = createDistributedRateLimiter('admin-auth', 5, 60_000);
 const PROPERTIES_PAGE_SIZE = 50;
 
 function isFiniteInRange(value: unknown, min: number, max: number): value is number {
@@ -51,7 +53,7 @@ export function mountAdminRouter(app: express.Application): void {
     const ip = getClientIp(req);
     const { email } = req.body ?? {};
 
-    if (!adminAuthRateLimiter.check(ip)) {
+    if (!(await adminAuthRateLimiter.check(ip))) {
       return res.status(429).json({ error: 'Demasiados intentos. Esperá un minuto e intentá de nuevo.' });
     }
     if (!email || typeof email !== 'string' || !email.includes('@')) {
