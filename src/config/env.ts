@@ -33,6 +33,8 @@ export interface Config {
   accessGateCode?: string;
   adminHost?: string;
   adminAppUrl?: string;
+  metricsRateLimitMax: number;
+  metricsRateLimitWindowMs: number;
   /** KAN-122: nombres de las variables de Supabase que faltan (vacío si están todas presentes). */
   missingSupabaseCredentials: string[];
 }
@@ -114,6 +116,14 @@ export function validateConfig(): Config {
   // propio ni certificado, hace falta setearla explícita a algo como http://localhost:3000 para
   // poder probar el flujo de login completo en el navegador.
   const adminAppUrl = cleanEnvVar(process.env.ADMIN_APP_URL);
+  // KAN-131: GET /api/metrics es autenticado (adminAuthMiddleware), pero eso solo prueba
+  // identidad — no evita que una sesión admin válida (o su cookie robada/filtrada) haga polling
+  // agresivo y dispare Promise.all con 4 counts contra Postgres en cada request. Mismo criterio
+  // que search/upload (KAN-71): rate limit por identidad estable (adminUserId), no por IP, porque
+  // el endpoint ya está detrás de auth. El dashboard admin pollea cada 7s (~8.6 req/min) — 30/min
+  // da margen para varias pestañas/instancias del mismo admin sin abrir la puerta a scraping.
+  const metricsRateLimitMax = parseInt(cleanEnvVar(process.env.METRICS_RATE_LIMIT_MAX) || '30', 10);
+  const metricsRateLimitWindowMs = parseInt(cleanEnvVar(process.env.METRICS_RATE_LIMIT_WINDOW_MS) || '60000', 10);
 
   // KAN-122: sin SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY la app queda inservible (todo el acceso a
   // datos pasa por el cliente service-role de src/services/supabase.ts) — antes de este ticket
@@ -195,6 +205,8 @@ export function validateConfig(): Config {
     accessGateCode,
     adminHost,
     adminAppUrl,
+    metricsRateLimitMax,
+    metricsRateLimitWindowMs,
     missingSupabaseCredentials
   };
 }
