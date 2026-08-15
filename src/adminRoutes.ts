@@ -30,6 +30,17 @@ const adminDashboardPath = fs.existsSync(path.join(__dirname, 'admin-dashboard')
 // KAN-127: distribuido (Postgres) — el panel admin puede correr detrás de más de una instancia
 // igual que el resto de la app, ver src/utils/rateLimit.ts.
 const adminAuthRateLimiter = createDistributedRateLimiter('admin-auth', 5, 60_000);
+// KAN-131: revisión de la infraestructura existente — createDistributedRateLimiter (KAN-127) ya
+// existía y se usaba en admin-auth (endpoint público, sin sesión, por IP), pero ningún endpoint
+// autenticado del panel admin (/api/metrics, /api/properties, /api/zones,
+// /api/properties/:id/coordinates) tenía rate limiting propio. Este ticket cubre puntualmente
+// GET /api/metrics (alcance de los acceptance criteria); por identidad (adminUserId) en vez de
+// IP, mismo criterio que search/upload en config/env.ts.
+const adminMetricsRateLimiter = createDistributedRateLimiter(
+  'admin-metrics',
+  config.metricsRateLimitMax,
+  config.metricsRateLimitWindowMs
+);
 const PROPERTIES_PAGE_SIZE = 50;
 
 function isFiniteInRange(value: unknown, min: number, max: number): value is number {
@@ -163,7 +174,13 @@ export function mountAdminRouter(app: express.Application): void {
 
   // --- API autenticada ---
 
-  adminRouter.get('/api/metrics', adminAuthMiddleware, async (_req, res) => {
+  adminRouter.get('/api/metrics', adminAuthMiddleware, async (req, res) => {
+    const admin = (req as any).admin as { adminUserId: string; email: string };
+
+    if (!(await adminMetricsRateLimiter.check(admin.adminUserId))) {
+      return res.status(429).json({ error: 'Demasiadas solicitudes de métricas. Esperá un minuto e intentá de nuevo.' });
+    }
+
     try {
       const [propertiesCount, profilesCount, matchesCount, activeSearches] = await Promise.all([
         supabase.from('properties').select('id', { count: 'exact', head: true }),

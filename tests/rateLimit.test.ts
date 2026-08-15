@@ -204,6 +204,74 @@ test('createDistributedRateLimiter - falla abierto (permite el request) si Postg
   assert.strictEqual(await limiter.check('tenant-a'), true, 'Ante un error de rate_limit_check, debe permitir el request (fail-open) en vez de bloquear.');
 });
 
+// --- KAN-131: rate limiting de GET /api/metrics (panel admin autenticado) ---
+// Mismo patrón que las pruebas "simulated handler" de KAN-71 más arriba: sin supertest/harness de
+// Express en este repo (ver tests/errorMessageLeak.test.ts), se replica el bloque real de
+// src/adminRoutes.ts (condición + status + body) contra la función real createDistributedRateLimiter,
+// para ejercitar la lógica real sin red ni servidor.
+
+function simulateMetricsRateLimitedHandler(
+  limiter: ReturnType<typeof createDistributedRateLimiter>,
+  adminUserId: string
+): Promise<SimulatedResponse> {
+  return (async () => {
+    if (!(await limiter.check(adminUserId))) {
+      return { statusCode: 429, body: { error: 'Demasiadas solicitudes de métricas. Esperá un minuto e intentá de nuevo.' } };
+    }
+    return { statusCode: 200, body: { success: true } };
+  })();
+}
+
+test('rateLimit (KAN-131) - GET /api/metrics responde 429 al superar el límite configurado (30/min) y 200 por debajo', async () => {
+  const client = makeMockRateLimitClient();
+  const limiter = createDistributedRateLimiter('admin-metrics', 30, 60_000, client as any);
+
+  const respuestas: SimulatedResponse[] = [];
+  for (let i = 0; i < 31; i++) {
+    respuestas.push(await simulateMetricsRateLimitedHandler(limiter, 'admin-1'));
+  }
+
+  const primeras30 = respuestas.slice(0, 30);
+  const trigesimaPrimera = respuestas[30];
+
+  assert.ok(primeras30.every((r) => r.statusCode === 200), 'Las primeras 30 solicitudes de métricas del admin deben pasar.');
+  assert.strictEqual(trigesimaPrimera.statusCode, 429, 'La solicitud número 31 dentro de la ventana debe ser rechazada.');
+  assert.match((trigesimaPrimera.body as { error: string }).error, /Demasiadas solicitudes de métricas/);
+});
+
+test('rateLimit (KAN-131) - el rate limit de /api/metrics es por adminUserId: un admin bloqueado no afecta a otro admin', async () => {
+  const client = makeMockRateLimitClient();
+  const limiter = createDistributedRateLimiter('admin-metrics', 3, 60_000, client as any);
+
+  for (let i = 0; i < 3; i++) await simulateMetricsRateLimitedHandler(limiter, 'admin-abusivo');
+
+  const bloqueado = await simulateMetricsRateLimitedHandler(limiter, 'admin-abusivo');
+  const otroAdmin = await simulateMetricsRateLimitedHandler(limiter, 'admin-legitimo');
+
+  assert.strictEqual(bloqueado.statusCode, 429);
+  assert.strictEqual(otroAdmin.statusCode, 200, 'Un admin distinto no debe verse afectado por el abuso de otro.');
+});
+
+test('rateLimit (KAN-131) - simula carga alta: ráfaga de 100 requests concurrentes de un mismo admin solo deja pasar el límite configurado', async () => {
+  // Prueba funcional bajo alta concurrencia: dispara las 100 solicitudes en paralelo (Promise.all)
+  // en vez de secuencialmente, para verificar que el conteo en Postgres (mockeado acá) sigue
+  // siendo correcto incluso cuando las requests no llegan en orden estrictamente serializado —
+  // el mock resuelve cada rpc() de forma síncrona internamente, así que no hay condición de
+  // carrera real, pero sí ejercita el mismo camino de código que vería una ráfaga real.
+  const client = makeMockRateLimitClient();
+  const limiter = createDistributedRateLimiter('admin-metrics', 30, 60_000, client as any);
+
+  const respuestas = await Promise.all(
+    Array.from({ length: 100 }, () => simulateMetricsRateLimitedHandler(limiter, 'admin-bajo-carga'))
+  );
+
+  const permitidas = respuestas.filter((r) => r.statusCode === 200).length;
+  const rechazadas = respuestas.filter((r) => r.statusCode === 429).length;
+
+  assert.strictEqual(permitidas, 30, 'De 100 requests en ráfaga, solo las primeras 30 (el límite real) deben permitirse.');
+  assert.strictEqual(rechazadas, 70, 'Las 70 restantes deben rechazarse con 429.');
+});
+
 test('createDistributedRateLimiter (KAN-127, AC1) - simula 3 instancias del proceso, sin estado en memoria compartido entre ellas, y el límite se respeta igual', async () => {
   // Cada "instancia" es un objeto RateLimiter completamente independiente (llamada separada a
   // createDistributedRateLimiter, sin compartir ningún Map local) — lo único que comparten es el
