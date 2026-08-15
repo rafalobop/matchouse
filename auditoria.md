@@ -1,127 +1,196 @@
 # Auditoría pre-producción — Brokaza
 
-Fecha: 2026-08-14. Alcance: `src/` completo (backend Express, dashboard tenant, panel admin nuevo, servicios de matching/zonas), configuración de entorno y dependencias. No incluye `src/graph/*` (tooling interno de desarrollo, fuera del producto).
+Fecha: 2026-08-15 (actualización de la auditoría del 2026-08-14). Alcance: `src/` completo (backend Express, dashboard tenant, panel admin, servicios de matching/zonas), configuración de entorno y dependencias. No incluye `src/graph/*` (tooling interno de desarrollo, fuera del producto). Esta versión agrega foco explícito en **fugas de información**, **escalabilidad para 500-1000 usuarios** y **mantenibilidad**, y verifica el estado de cada ítem de la auditoría anterior contra el código actual.
 
 Cada ítem tiene: **qué es el riesgo**, **por qué importa**, **dónde está** (archivo:línea) y **cómo mitigarlo**. Priorizado para que puedas resolver de arriba hacia abajo antes de salir a producción.
 
 ---
 
-## 🔴 CRÍTICO — bloqueante antes de producción
+## ✅ Resuelto desde la auditoría anterior (2026-08-14)
 
-### 1. La app arranca igual aunque falten las credenciales de Supabase
-`src/config/env.ts:10-11` declara `supabaseUrl` y `supabaseServiceRoleKey` como **opcionales**, y `src/services/supabase.ts:6-12` solo emite un `console.warn` si faltan — el cliente se crea igual con strings vacíos. La app arranca "sana" y **todas** las queries a la base fallan recién en el primer request real, con errores de bajo nivel del cliente HTTP en vez de un mensaje claro al desplegar.
+De los 18 ítems originales, **6 ya están resueltos** — los 4 críticos y 2 de los 5 altos:
 
-**Riesgo:** un despliegue con variable de entorno mal copiada/faltante pasa el health check y sale a producción rota, en vez de fallar el arranque (fail-fast).
+| # original | Ítem | Evidencia del fix |
+|---|---|---|
+| 1 | Fail-fast si faltan credenciales de Supabase | `src/config/env.ts:127-137` lanza error al arrancar salvo `ALLOW_MISSING_SUPABASE_CREDENTIALS=true`; `src/services/supabase.ts:18-30` usa un Proxy stub para que el error salte en el primer uso real. |
+| 2 | Rate limiters 100% en memoria de proceso | `src/utils/rateLimit.ts:68-94` — nuevo `createDistributedRateLimiter` respaldado por RPC de Postgres (`rate_limit_check`), usado en auth, `/api/search`, `/api/upload` y admin-auth. Ver ítem nuevo #7 más abajo: el WS hub de notificaciones **no** recibió el mismo tratamiento. |
+| 3 | Memory leak en `tenantClientsCache` | `src/services/supabase.ts:63-125` — TTL de 30 min + barrido periódico cada 5 min (`setInterval(...).unref()`). |
+| 4 | Fuga de stack traces sin `NODE_ENV` forzado | `src/utils/errorHandler.ts` (`globalErrorHandler`) devuelve siempre JSON genérico, montado al final de todas las rutas; `src/utils/nodeEnvCheck.ts` además avisa si `NODE_ENV` no es `production`. Ver ítem nuevo #2: hay una fuga *distinta* de mensajes de error que este handler no cubre. |
+| 5 | `xlsx` con vulnerabilidad sin parche en npm | `package.json:35` apunta al tarball oficial parcheado de SheetJS (`cdn.sheetjs.com`), no al registry de npm. |
+| 6 | Sentry captura bodies HTTP completos | `instrument.js` + `src/config/sentryDataCollection.ts` — `httpBodies: []`, deniega cookies de sesión y headers sensibles (`authorization`, `cookie`, `x-internal-secret`) en request y response. |
 
-**Fix:** mover `supabaseUrl` y `supabaseServiceRoleKey` a la sección de variables requeridas de `validateConfig()` (igual que ya hace con `supabaseJwtSecret`/`supabaseAnonKey`), lanzando `Error` si faltan.
+Los 12 ítems restantes de la auditoría original (#7 a #18) **siguen sin resolver y siguen siendo válidos tal como estaban descritos** — se re-listan más abajo con su numeración nueva, integrados con los hallazgos frescos de esta pasada.
 
-### 2. Rate limiters y cachés de sesión son 100% en memoria de proceso
-`src/utils/rateLimit.ts`, el `sessionCache`/`authRateLimitMap` de `src/index.ts:147-185`, y el `adminSessionCache`/`adminAuthRateLimiter` de `src/adminAuth.ts` y `src/adminRoutes.ts:24` viven en un `Map` del proceso Node. El propio comentario en `rateLimit.ts:14-19` documenta la decisión: *"válido mientras la app corra como un único proceso"*.
+---
 
-**Riesgo real hoy:** ninguno si el deploy es realmente 1 instancia. **Riesgo al escalar:** en cuanto haya 2+ instancias detrás de un load balancer (lo primero que se hace para manejar más tráfico), cada instancia lleva su propio contador → el rate limit de auth (5/min), de `/api/search` (10/min) y de `/api/upload` (5/min) se multiplica silenciosamente por el número de instancias, sin ningún error visible. Es una regresión de seguridad silenciosa el día que escales horizontalmente.
+## 🔴 CRÍTICO — bloqueante antes de producción (o antes de escalar a 500-1000 usuarios)
 
-**Fix (antes de agregar una segunda instancia, no necesariamente antes del primer deploy):** mover los limiters a Redis/Upstash (o a una tabla de Postgres con `UPSERT ... ON CONFLICT`) usando la misma interfaz `RateLimiter` que ya existe — el cambio queda contenido a `createRateLimiter()`.
+### 1. Polling del dashboard cada 2 segundos — no soporta 500-1000 usuarios concurrentes
+`src/dashboard/app.js:432-435` — cada pestaña de dashboard abierta corre **4 `setInterval` simultáneos**: `loadMatches` cada **2000ms**, `loadCatalogInfo` cada 5000ms, `loadActiveSearches` e `loadIncomingMatches` cada 10000ms cada uno. `src/admin-dashboard/app.js:117` agrega un quinto poll (`loadMetrics`) por cada pestaña de admin abierta.
 
-### 3. Fuga de memoria en la caché de clientes Supabase por tenant
-`src/services/supabase.ts:38,44-66` — `tenantClientsCache` es un `Map<token, SupabaseClient>` que **nunca se purga**. El comentario dice literalmente *"para evitar fugas de memoria"*, pero hace lo contrario: cada token de sesión que pasó alguna vez por `getTenantClient()` queda en memoria para siempre, incluso después de expirar (7 días) o de que el usuario cierre sesión. Con tráfico real y logins repetidos, esto crece sin límite hasta que el proceso se reinicia (o hasta OOM).
+**Riesgo:** con 500-1000 pestañas de dashboard abiertas simultáneamente, solo `loadMatches` genera **250-500 requests/segundo sostenidos** contra el proceso Node + Supabase; sumando los otros tres intervalos, el total ronda los **400-800 req/s** solo de polling, antes de contar tráfico real de búsquedas/uploads. Esto es, por lejos, el mayor riesgo de capacidad de toda la aplicación al llegar a la escala objetivo — dwarfa cualquier otro hallazgo de este documento.
 
-**Fix:** usar un TTL (mismo patrón que `sessionCache` en `index.ts`, con `expiresAt` y limpieza en `get`), o cambiar la clave a `tenantId` en vez de `token` (un cliente por tenant, no uno por token emitido), o correr una limpieza periódica (`setInterval`) que borre entradas vencidas.
+El WebSocket hub (`src/services/realtimeHub.ts`, KAN-88) ya empuja eventos en tiempo real, pero el propio código deja el polling como mecanismo primario, no como fallback (`src/dashboard/app.js:463-467`).
 
-### 4. `NODE_ENV` no se fuerza en producción → posible fuga de stack traces
-No hay ningún middleware de manejo de errores global (`app.use((err, req, res, next) => ...)`) en `src/index.ts` ni en `src/adminRoutes.ts`, y `package.json:7` (`"start": "node -r ./instrument.js dist/index.js"`) no setea `NODE_ENV=production`. Si esa variable no está seteada en el entorno de despliegue, el manejador de errores por defecto de Express incluye el stack trace en la respuesta HTTP ante cualquier excepción no capturada dentro de una ruta.
+**Fix:** invertir la relación — usar el push por WebSocket como señal primaria y el polling como fallback de baja frecuencia (2s → 15-30s como piso, no como default). Es el cambio de mayor impacto por esfuerzo de todo este documento.
 
-**Fix:**
-- Confirmar en Railway (u origen del deploy) que `NODE_ENV=production` esté seteado explícitamente, no asumido.
-- Agregar un error handler global al final de `src/index.ts` que loguee con `logger.error` y devuelva siempre un JSON genérico (`{ error: 'Error interno' }`), sin importar el entorno — no depender de que `NODE_ENV` esté bien seteado como única defensa.
+### 2. Mensajes de error internos (Postgres/Supabase) filtrados al cliente en 12 rutas de `src/index.ts`
+Patrón repetido: `res.status(500).json({ error: error.message || 'texto genérico' })`. Confirmado en `src/index.ts:395, 438, 532, 621, 829, 901, 962, 1016, 1042, 1069, 1129, 1171`. Como `error` suele ser el error crudo que devuelve Supabase/PostgREST (`throw error` unas líneas antes en cada caso), esto puede filtrar nombres de constraints, columnas o fragmentos de query directamente en el body de la respuesta HTTP — por ejemplo en `GET /api/searches` (901), `GET /api/matches` y `/api/matches/incoming` (1042/1069), `POST /api/matches/:id/feedback` (1129).
+
+**Esto es distinto del error handler global (ítem ya resuelto #4/antiguo #4):** ese handler solo atrapa excepciones verdaderamente no capturadas; estos son `catch` explícitos dentro de cada ruta que responden *antes* de llegar al handler global, así que el fix de KAN-124 no los cubre.
+
+Como contraste, `src/adminRoutes.ts` sí lo hace bien en sus 8 bloques `catch`: loguea `err.message` pero responde siempre con un string genérico al cliente.
+
+**Fix:** en los 12 sitios listados, sacar `error.message ||` de la respuesta JSON al cliente (dejar solo el string de fallback) y mantener `error.message` únicamente en el `logger.error(...)` que ya está bien hecho al lado. Es un cambio mecánico, ~20 minutos.
+
+### 3. Verificar que `APP_URL` en Supabase Vault no sea el placeholder de desarrollo
+Según `docs/evolucion_proyecto/schema_actual.sql`, el trigger `property_uploaded_trigger` usa `pg_net` para llamar a `POST /internal/property-match-check` usando la URL guardada en Supabase Vault bajo la clave `APP_URL`. Si esa entrada quedó con el valor de desarrollo (`http://localhost:3000`), el matching cartera→búsqueda (uno de los dos sentidos del matching) falla en silencio en producción — no hay error visible para el usuario ni para el operador, simplemente esa dirección de matching deja de generar resultados.
+
+**Fix:** antes de lanzar (y como chequeo en cada entorno nuevo), verificar en la consola de Supabase (Database → Vault) que `APP_URL` apunte al dominio público real de producción. Agregar este chequeo a la checklist de deploy — es fácil de olvidar porque no falla ningún build ni test.
 
 ---
 
 ## 🟠 ALTO — resolver antes o muy cerca del lanzamiento
 
-### 5. `xlsx` (SheetJS) — dependencia con vulnerabilidades conocidas sin parche en npm
-`package.json:35` usa `"xlsx": "^0.18.5"`, instalada desde el registro público de npm. Esa línea de paquete tiene advisories conocidos (prototype pollution / ReDoS) que SheetJS **no volvió a parchear en npm** — las versiones corregidas solo se publican en su propio CDN, no en el registry de npm. `POST /api/upload` (`src/index.ts:439`) alimenta esta librería directamente con el archivo subido por el usuario.
+### 4. Patrón N+1 en `GET /api/properties` del panel admin *(ítem original #7, no resuelto)*
+`src/adminRoutes.ts:217-235` — por cada una de las hasta 50 propiedades de una página, se llama `resolvePropertyZoneInfo()`, que dispara hasta 2 round-trips a Postgres por propiedad. Una sola carga de página puede disparar ~100 llamadas a Supabase en paralelo.
 
-**Fix:** migrar a la distribución oficial parcheada de SheetJS (`https://cdn.sheetjs.com/...`) según su guía de instalación, o evaluar `exceljs` como alternativa mantenida en npm.
+**Fix:** batchear con un RPC que reciba un array de `(lat, lon)` y devuelva todas las zonas en una sola llamada, o precalcular/cachear `zone_id` en la tabla `properties`.
 
-### 6. Sentry captura bodies HTTP completos por default
-`instrument.js` inicializa Sentry sin desactivar `httpBodies`/`userInfo` (las líneas están comentadas, no activas). Eso significa que cualquier excepción no capturada en una ruta que reciba `email`, `access_token`, o datos de perfil en el body puede terminar en Sentry en texto plano.
+### 5. El panel admin usa siempre la clave service-role, sin autorización granular *(ítem original #8, no resuelto)*
+Todas las rutas de `src/adminRoutes.ts` usan el cliente con **service-role**, que ignora RLS. Solo la corrección de coordenadas queda auditada en `admin_audit_log` (`:285-295`); las lecturas de `/api/metrics` y `/api/properties` no dejan rastro de quién miró qué, y no hay roles diferenciados (soporte vs. superadmin).
 
-**Fix:** activar las líneas comentadas en `instrument.js` (`httpBodies: []`, o al menos excluir rutas de auth) antes de recibir tráfico real. Revisar también que Sentry no capture el `access_token` en headers (`Authorization`/cookies).
+**Fix (progresivo):** loguear también los accesos de lectura, y planear roles diferenciados antes de sumar operadores admin adicionales.
 
-### 7. Patrón N+1 en `GET /api/properties` del panel admin
-`src/adminRoutes.ts:214-233` — por cada una de las hasta 50 propiedades de una página, se llama `resolvePropertyZoneInfo()` (`src/services/zonesService.ts:264`), que a su vez dispara **hasta 2 round-trips a Postgres por propiedad** (un RPC espacial `neighborhood_for_point` + una resolución de texto). Una sola carga de página puede disparar ~100 llamadas a Supabase en paralelo.
+### 6. Falta rate limiting en endpoints admin autenticados *(ítem original #9, no resuelto)*
+`GET /api/metrics`, `GET /api/properties` y `PATCH /api/properties/:id/coordinates` (`src/adminRoutes.ts:160,193,244`) no tienen rate limiter propio — solo el login (`adminAuthRateLimiter`) lo tiene. Una cuenta admin comprometida puede hacer scraping masivo del catálogo de todos los tenants sin fricción.
 
-**Riesgo:** funciona bien con pocos usuarios admin y catálogos chicos; con más propiedades y más operadores admin concurrentes, esto es el primer cuello de botella de latencia/costo (egress de Supabase) del panel admin.
+**Fix:** aplicar `createDistributedRateLimiter` (por `adminUserId`) a las rutas autenticadas del panel admin — la infraestructura para esto ya existe desde el fix del ítem #2 original.
 
-**Fix:** batchear — crear un RPC en Postgres que reciba un array de `(lat, lon)` y devuelva todas las zonas en una sola llamada (`unnest()` + join espacial), o precalcular/cachear `zone_id` en la tabla `properties` y solo recalcular bajo demanda (botón "recalcular zona") en vez de en cada listado.
+### 7. El hub de WebSocket de notificaciones es por-proceso — se rompe en silencio al escalar horizontalmente
+`src/services/realtimeHub.ts:16` — `tenantSockets` es un `Map` en memoria del proceso, con el mismo patrón que ya se identificó y corrigió para los rate limiters (ítem original #2). Si en algún momento corren 2+ instancias detrás de un load balancer, el socket de un tenant conecta a la instancia que le tocó, pero un match creado por un request servido en *otra* instancia nunca llega a ese socket — `broadcastMatchCountChanged` solo ve los sockets de su propio proceso.
 
-### 8. El panel admin usa siempre la clave service-role, sin autorización granular
-Todas las rutas de `src/adminRoutes.ts` (métricas, listado de propiedades, edición de coordenadas) usan el cliente `supabase` con **service-role**, que ignora RLS por completo. Cualquier cuenta en `admin_users` tiene acceso total de lectura/escritura a datos de **todos** los tenants, sin distinción de roles (soporte vs. superadmin) ni límite de alcance. Solo la corrección de coordenadas queda auditada (`admin_audit_log`); las lecturas de métricas y listado de propiedades no dejan rastro de quién miró qué.
+**Riesgo:** degrada con gracia (el polling de fallback del ítem #1 sigue funcionando), pero la UX de "tiempo real" deja de funcionar en silencio para una fracción de usuarios proporcional al número de instancias, sin ningún error visible.
 
-**Riesgo:** aceptable para una allowlist pequeña y de confianza (que es el modelo actual), pero es la superficie de mayor blast radius de todo el sistema — un solo `admin_users` comprometido = acceso total a datos de todos los tenants sin fricción.
+**Fix:** cuando se agregue una segunda instancia (el mismo trigger que el ítem #2 original), resolver junto con eso mediante un relay entre instancias — Postgres `LISTEN/NOTIFY` o Redis pub/sub.
 
-**Fix (progresivo, no bloqueante para un lanzamiento con equipo chico):** loguear también los accesos de lectura a `/api/metrics` y `/api/properties` en `admin_audit_log` (o un log dedicado), y planear roles diferenciados (solo-lectura vs. edición) antes de sumar operadores admin adicionales.
+### 8. Segmentos de búsqueda se procesan en serie, no en paralelo
+`src/index.ts:818-831` (`POST /api/search`) — cuando `segmentSearchRequests` divide una consulta en varios segmentos, cada uno se espera **secuencialmente** en un `for` loop, y cada segmento hace su propia llamada paga a IA más queries a la base. Una búsqueda de 3 segmentos tarda ~3x la latencia de un segmento en vez de correr en paralelo, manteniendo la conexión HTTP (y el presupuesto de rate limit del tenant) abierta proporcionalmente más tiempo.
 
-### 9. Falta rate limiting en endpoints admin autenticados
-`GET /api/metrics`, `GET /api/properties` y `PATCH /api/properties/:id/coordinates` (`src/adminRoutes.ts:158-309`) no tienen ningún rate limiter — solo el login (`adminAuthRateLimiter`, 5/min) lo tiene. Una cuenta admin comprometida (o un token de sesión admin filtrado) puede hacer scraping masivo del catálogo completo de todos los tenants sin fricción.
+**Fix:** `Promise.all`/`Promise.allSettled` sobre los segmentos en vez del loop `for...await` (el `catch` actual ya degrada por segmento individualmente, así que `allSettled` mantiene ese comportamiento).
 
-**Fix:** aplicar el mismo `createRateLimiter` (por `adminUserId`, no por IP) a las rutas autenticadas del panel admin.
+### 9. `findCrossTenantMatches` hace `select('*')` sin límite en cada búsqueda
+`src/services/blindMatching.ts:115-118` — `select('*').neq('tenant_id', tenantId)` trae **todas** las propiedades de todos los otros tenants en cada `POST /api/search`, y además una vez por cada búsqueda activa dentro de `GET /api/searches` (`src/index.ts:878`). No es una fuga de información (el filtro de tenant está bien aplicado), pero es una lectura de tabla completa + scan en memoria por request — el mismo patrón de raíz que el N+1 del ítem #4, pero en el camino caliente de cara al tenant, no en el panel admin.
+
+**Fix:** acotar con `.limit()` + paginación, o mover el filtrado geográfico/de criterios a un RPC que filtre en la base en vez de traer todo y filtrar en Node.
+
+### 10. No hay CI — build y tests no se validan antes de mergear
+No existe `.github/workflows`. `npm run build` (tsc) y `npm test` (39 archivos bajo `tests/`, corridos con un runner propio) nunca se ejecutan automáticamente sobre un PR — todo es manual. Con más tráfico y, presumiblemente, más gente tocando el código a medida que el producto crece, un build roto o un test que empieza a fallar puede mergearse sin que nadie lo note hasta que ya está en producción.
+
+**Fix:** agregar un workflow mínimo de GitHub Actions que corra `npm ci && npm run build && npm test` en cada PR. Es barato (horas, no días) y es el cambio de mantenibilidad de mayor apalancamiento disponible.
 
 ---
 
 ## 🟡 MEDIO — importante, no bloqueante
 
-### 10. Falta validación de tamaño/whitelist en el body JSON global
-`express.json()` (`src/index.ts:84`, `src/adminRoutes.ts:46`) se usa sin límite explícito de tamaño (`{ limit: ... }`). El default de Express es 100kb, que probablemente esté bien para los payloads actuales, pero no está declarado explícitamente — si en el futuro se agrega un campo más pesado, el límite cambia sin que nadie lo decida a propósito.
+### 11. Falta validación de tamaño/whitelist en el body JSON global *(ítem original #10, no resuelto)*
+`src/index.ts:91` y `src/adminRoutes.ts:48` siguen usando `express.json()` sin `{ limit: ... }` explícito.
 
-**Fix:** declarar `express.json({ limit: '256kb' })` (o el valor que corresponda) explícitamente, para que quede documentado y no dependa del default de la librería.
+**Fix:** declarar `express.json({ limit: '256kb' })` (o el valor que corresponda) explícitamente.
 
-### 11. PII en logs de texto plano sin redacción
-`logger.ts` no usa la opción `redact` de Pino. Múltiples rutas loguean `email` en texto plano (`src/index.ts:263,266,270,...`) y el número de teléfono/nombre de perfil circula por logs de error (`err.message`) en varios puntos. No es grave por sí solo, pero combinado con el punto 6 (Sentry) y con que los logs probablemente terminen en un servicio externo (Railway logs / Sentry breadcrumbs), es superficie de exposición de PII innecesaria.
+### 12. PII en logs de texto plano sin redacción *(ítem original #11, no resuelto)*
+`src/services/logger.ts:3-7` no tiene `redact`. `src/index.ts` sigue logueando `email` en texto plano en múltiples líneas (270, 273, 277, 293, 296, 299, 302, 343).
 
-**Fix:** usar `redact: ['email', '*.email']` en la config de Pino, o loguear un hash/prefijo del email en vez del valor completo en los logs de nivel `warn`/`info` de alto volumen (ej. cada request a `/api/auth/request-magic-link`).
+**Fix:** usar `redact: ['email', '*.email']` en la config de Pino, o loguear un hash/prefijo del email.
 
-### 12. Atributo `title` sin escapar en el panel admin (inyección de atributo HTML)
-`src/admin-dashboard/app.js:146` construye `title="Punto: ${property.zone.name} | Texto sugiere: ${property.textSuggestedZone.name}"` sin pasar `zone.name`/`textSuggestedZone.name` por `escapeHtml()` (a diferencia del resto del archivo, que sí escapa `address`). Si algún nombre de zona en la tabla `neighborhoods` alguna vez contiene una comilla doble, rompe el atributo y permite inyectar HTML/atributos arbitrarios dentro de la fila de la tabla.
+### 13. Atributo `title` sin escapar en el panel admin *(ítem original #12, no resuelto)*
+`src/admin-dashboard/app.js:146` sigue interpolando `zone.name`/`textSuggestedZone.name` sin `escapeHtml()`, a diferencia de `address` en la línea 188 que sí lo hace.
 
-**Riesgo bajo hoy** (los nombres de zona son datos de referencia cargados por el equipo, no input de usuario final), pero es inconsistente con el resto del archivo y es gratis de arreglar.
+**Fix:** pasar ambos valores por `escapeHtml()`.
 
-**Fix:** pasar ambos valores por `escapeHtml()` igual que `address`.
+### 14. CSP depende de tiles gratuitos de OpenStreetMap sin proxy propio *(ítem original #13, no resuelto)*
+`src/index.ts:86` sigue permitiendo `https://*.tile.openstreetmap.org` en `img-src` sin proxy/caché propio.
 
-### 13. CSP permite tiles de OpenStreetMap sin límite de uso — no hay proxy/caché propio
-`src/index.ts:79` agrega `https://*.tile.openstreetmap.org` a `img-src` para el mapa de Leaflet del panel admin. OSM tiene una [política de uso aceptable](https://operations.osmfoundation.org/policies/tiles/) estricta para tráfico de producción (no está pensada para apps comerciales con volumen) y puede bloquear el user-agent si se abusa.
+**Fix:** no urgente con pocos operadores admin; migrar a un proveedor con SLA antes de uso intensivo del mapa.
 
-**Fix:** no es urgente con pocos operadores admin, pero antes de un uso más intensivo del mapa conviene migrar a un proveedor de tiles con SLA (Mapbox, MapTiler, o self-hosted) en vez de depender del servicio gratuito de OSM.
+### 15. Excel de subida se procesa de forma síncrona en el event loop *(ítem original #14, no resuelto)*
+`src/index.ts:514,601` siguen llamando `processExcelBufferWithColumnMap` de forma síncrona dentro del handler. No se encontró uso de `worker_threads` en el repo.
 
-### 14. Excel de subida se procesa de forma síncrona en el event loop
-`processExcelBufferWithColumnMap` (invocado en `src/index.ts:507,594`) parsea el archivo completo en memoria, de forma síncrona, dentro del handler de la request. Con el límite actual de 10MB (`config.uploadMaxFileSizeBytes`) esto puede bloquear el event loop varios cientos de ms a segundos en archivos grandes con muchas filas/fórmulas, afectando la latencia de **todos los demás requests concurrentes** (Node es single-threaded).
+**Fix:** mover el parseo a un worker thread o job en background si el catálogo promedio crece.
 
-**Fix:** no es necesario un rediseño completo antes del lanzamiento (el rate limit de 5 uploads/min ya acota el peor caso), pero si el catálogo promedio crece, mover el parseo a un worker thread (`worker_threads`) o a un job en background evita que una subida grande degrade el dashboard de otros tenants en simultáneo.
+### 16. Sin test de carga ni métricas de latencia en producción *(ítem original #15, no resuelto)*
+No hay `k6`/`autocannon` ni APM de performance en el repo.
 
-### 15. Sin índice de test de carga / sin métricas de latencia en producción
-No hay ningún test de carga (`k6`, `autocannon`, etc.) en el repo, ni métricas de latencia expuestas (solo Sentry para errores, no APM de performance). Antes de anunciar el lanzamiento conviene tener al menos una corrida de carga básica sobre `/api/search` (el endpoint más caro: hace 1-2 llamadas a IA + varias queries) para confirmar cuántos tenants concurrentes soporta la instancia actual.
+**Fix:** al menos una corrida de carga básica sobre `/api/search` antes de anunciar el lanzamiento — y repetirla después de resolver el ítem #1 (polling), que es el que más va a mover la aguja de capacidad real.
+
+### 17. README describe una arquitectura que ya no existe
+`README.md:1-30` describe un modelo de "OTP con binding de IP", un `coordinator.ts` orquestador y un flujo multi-agente por WhatsApp — nada de eso existe hoy (no hay `coordinator.ts`; la auth actual es magic-link + sesión JWT vía `tenantAuthMiddleware`, `src/index.ts:186`). Además enlaza a rutas `file:///c:/Users/...` de otra máquina. Un desarrollador nuevo que lea el README hoy se forma un modelo mental incorrecto de cómo funciona el sistema.
+
+**Fix:** reescribir el README describiendo la auth actual, las rutas actuales, y cómo correr `npm run dev`/`npm test`/`npm run build`. Bajo esfuerzo, alto impacto en onboarding.
+
+### 18. Assets estáticos del dashboard sin cache-control ni CDN
+`src/index.ts:150-151` — `express.static` sirve `public/` y el bundle del dashboard desde el mismo proceso Node que atiende `/api/*`, sin headers `Cache-Control`/`immutable` visibles y sin CDN delante. A escala actual no es un problema; con 500-1000 usuarios cargando JS/CSS/imágenes en cada visita al dashboard, agrega carga evitable al mismo proceso que sirve la API.
+
+**Fix:** `express.static(..., { maxAge: '1y', immutable: true })` para assets con hash, o un CDN/reverse-proxy delante — no es prioritario si el ítem #1 (polling) ya reduce la carga total sobre el proceso.
+
+### 19. Alta densidad de `any` en archivos calientes
+Pese a `"strict": true` en `tsconfig.json`, hay uso concentrado de `any`: `src/index.ts` (38 ocurrencias), `src/services/ai.ts` (17), `src/adminRoutes.ts` (13), `src/services/blindMatching.ts` (9). Es justo donde los resultados de queries a Supabase y las respuestas de IA pierden tipado — el lugar donde una respuesta con forma inesperada puede producir un `undefined` silencioso en vez de un error de tipo detectado en build.
+
+**Fix:** no es necesario eliminarlo todo antes del lanzamiento; priorizar tipar los resultados de Supabase con `supabase gen types typescript`, que es la fuente de mayor densidad de `any` y toca directamente la forma de los datos de producción.
 
 ---
 
 ## 🟢 BAJO — mejoras, no bloqueantes
 
-### 16. Falta límite superior de paginación en `GET /api/matches` y `/api/matches/incoming`
-Ambos (`src/index.ts:1017-1064`) usan `.limit(50)` fijo, sin paginación real (`page`/`cursor`). Con historial largo, el tenant nunca ve matches viejos y no hay forma de pedir "la página siguiente". No es un problema de seguridad/rendimiento hoy, pero es deuda de producto que conviene resolver junto con cualquier trabajo futuro sobre estos endpoints.
+### 20. Falta límite superior de paginación en `GET /api/matches` y `/api/matches/incoming` *(ítem original #16, no resuelto)*
+`src/index.ts:1033,1060` siguen con `.limit(50)` fijo, sin paginación real.
 
-### 17. `console.log`/`console.error` mezclados con el logger estructurado (Pino)
-Varios puntos (`src/index.ts:524,613,1121`, `main()` en `src/index.ts:1173-1199`) usan `console.log`/`console.error` en vez de `logger`. Funciona, pero rompe el formato estructurado (JSON) del resto de los logs, dificultando búsquedas/alertas en el agregador de logs.
+### 21. `console.log`/`console.error` mezclados con el logger estructurado (Pino) *(ítem original #17, no resuelto)*
+Sigue presente en varios puntos de `src/index.ts` (58, 62, 531, 620, 1128, 1170, 1185, 1203-1205, 1211) — incluso en código relativamente nuevo: los handlers de `unhandledRejection`/`uncaughtException` (58/62) usan `console.error` crudo en vez de `logger`.
 
-### 18. No hay chequeo de salud (`/health` o `/status`) dedicado
-No se encontró un endpoint de healthcheck simple (sin autenticación, sin dependencias externas) para que la plataforma de hosting (Railway) verifique que el proceso está vivo, más allá de golpear `/`. Un `/health` liviano que no dependa de Supabase permite distinguir "el proceso está caído" de "Supabase está caído", crítico para debugging en incidentes.
+### 22. No hay chequeo de salud (`/health`) dedicado *(ítem original #18, no resuelto)*
+No se encontró un endpoint de healthcheck simple y sin autenticación. Solo existe `/api/status`, que es la verificación de sesión del tenant, no un liveness check de proceso.
+
+### 23. `src/index.ts` es un monolito de 1212 líneas con 22 rutas inline
+Routing, middleware de auth, validación y lógica de negocio conviven en un solo archivo (23 bloques `try/catch` inline). Comparar con `src/adminRoutes.ts` (342 líneas, 8 rutas), mucho más fácil de revisar en un PR. No es una crisis hoy — la mayoría de la lógica pesada ya está delegada a `src/services/*` — pero se vuelve más difícil de revisar de forma segura a medida que crece.
+
+**Fix (incremental, no una reescritura):** la próxima vez que se toque una ruta, extraerla a `src/routes/*.ts` agrupado por dominio (auth, upload, matches, search), siguiendo el modelo que ya da `adminRoutes.ts`.
+
+### 24. Dashboards de frontend son JS vanilla sin bundler ni módulos
+`src/dashboard/app.js` tiene 1679 líneas con ~80 variables globales de nivel superior conectadas directo a `document.getElementById`; `src/admin-dashboard/app.js` es más chico (314 líneas) y más sano. Sin build step, sin framework, sin límites de módulo — frágil de modificar sin generar regresiones (un id de DOM renombrado rompe en runtime, no en build).
+
+**Fix (no urgente):** no vale la pena migrar a un framework antes del lanzamiento, pero si el dashboard de tenant sigue creciendo, conviene partir `app.js` en unos pocos módulos (`auth.js`, `upload.js`, `matches.js`) cargados como ES modules.
+
+### 25. Un objeto `SupabaseClient` persistente por token de sesión — vigilar si se agrega `.channel()`
+`src/services/supabase.ts:85-103` (`getTenantClient`) ya está acotado con TTL de 30 min (fix del ítem original #3). Con 500-1000 tenants concurrentes, esto implica 500-1000 objetos `SupabaseClient` vivos en memoria simultáneamente, cada uno configurado con transporte `ws` para realtime. Se confirmó que hoy **ningún** código llama a `.channel()`/`.subscribe()` sobre estos clientes — si eso cambiara en el futuro, cada cliente abriría un WebSocket real hacia Supabase, multiplicando conexiones abiertas por cantidad de tenants. Hoy es solo overhead de memoria de objeto, aceptable a esta escala.
+
+**Fix:** ninguno necesario ahora; solo vigilar si se introduce uso de `.channel()` sobre `getTenantClient()`.
 
 ---
 
-## Resumen para arrancar
+## Verificaciones puntuales que salieron limpias (para que no haya que volver a mirarlas)
+
+- **Cookies de sesión**: `brokaza_session` y `brokaza_admin_session` tienen `httpOnly`, `sameSite` y `secure` bien configurados.
+- **CORS**: no hay middleware de CORS montado — correcto, porque el monolito sirve frontend y API desde el mismo origen.
+- **Enumeración de emails admin**: `POST /api/auth/request-magic-link` (admin) responde igual exista o no el email en la allowlist.
+- **Secreto de webhook interno**: comparado con `timingSafeEqual`, no vulnerable a timing attack.
+- **Inyección en queries**: `zonesService.ts` usa RPCs parametrizados y el query builder de Supabase en todos lados; el único valor interpolado directo (`blindMatching.ts:252-253`) son columnas `CHECK`-constrained (enums), nunca input libre de usuario.
+- **Secretos en el cliente**: no se encontraron API keys ni claves service-role en `src/dashboard/*.js` ni `src/admin-dashboard/*.js`.
+- **PII hacia proveedores de IA**: los prompts en `src/services/ai.ts` trabajan sobre texto de búsqueda/columnas de Excel, no se identificaron campos de email/teléfono siendo enviados a OpenAI/Gemini.
+- **Caché de zonas**: `zonesService.ts:121-154` ya cachea keywords de zonas en memoria con TTL — no hay hit a la base por request para datos de referencia.
+- **Timeouts salientes**: las llamadas a Supabase Auth en rutas de auth ya usan un wrapper `withTimeout` (`src/index.ts:205,247,284,312`).
+- **Dependencias**: `pnpm-lock.yaml` committeado, sin paquetes obviamente deprecados en `package.json`.
+- **Tests**: 39 archivos bajo `tests/`, cobertura razonable de parseo de Excel, matcher, rate limiting, notificaciones, zonas — corridos con un runner propio (`tests/runner.ts`), no un framework estándar; funciona pero no paraleliza.
+
+---
+
+## Resumen para arrancar — camino a 500-1000 usuarios
 
 Si tuvieras que elegir por dónde empezar hoy mismo, en este orden:
 
-1. **#1** (fail-fast en config) y **#3** (memory leak de `tenantClientsCache`) — son cambios chicos, aislados, y evitan las dos formas más tontas de romper producción sin darse cuenta.
-2. **#4** (confirmar `NODE_ENV=production` + error handler global) — 30 minutos de trabajo, cierra la fuga de stack traces.
-3. **#5** (migrar `xlsx`) y **#6** (Sentry sin bodies) — dependencias externas con exposición real, conviene resolverlas antes de tener usuarios reales subiendo archivos.
-4. **#2** (rate limiters distribuidos) — no es urgente si el lanzamiento es con una sola instancia, pero es lo primero que hay que resolver el día que agregues una segunda para manejar más carga.
-5. El resto (#7 en adelante) son mejoras de robustez que podés ir tomando en paralelo sin que bloqueen la salida a producción.
+1. **#1 (polling de 2s en el dashboard)** — es, con diferencia, el cambio de mayor impacto de todo el documento para la meta de 500-1000 usuarios. Sin este fix, ningún otro ítem de escalabilidad importa: el polling por sí solo puede saturar el proceso antes de llegar a esa escala.
+2. **#2 (mensajes de error crudos al cliente)** y **#3 (verificar `APP_URL` en Vault)** — ambos son de bajo esfuerzo (minutos a horas) y cierran fugas/riesgos operacionales reales antes de recibir tráfico real.
+3. **#10 (CI)** — barato, y evita que cualquier regresión de los puntos anteriores se cuele sin que nadie la note a medida que el equipo crece.
+4. **#7 (WS hub por-proceso) y #6 (rate limit en admin)** — resolver en el mismo momento en que se agregue una segunda instancia para escalar horizontalmente (mismo trigger que ya aplicaba al rate limiting general, ya resuelto).
+5. **#4, #5, #8, #9** — mejoras de robustez del panel admin y del camino de búsqueda que conviene ir tomando en paralelo, no bloquean el lanzamiento inicial.
+6. El resto (#11 en adelante) son mejoras de calidad/mantenibilidad que se pueden ir resolviendo de forma incremental sin bloquear la salida a producción ni el crecimiento a la escala objetivo.

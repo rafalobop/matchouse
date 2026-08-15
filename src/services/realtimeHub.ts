@@ -13,6 +13,16 @@ import { logger } from './logger';
 
 export type GetUserFn = (token: string) => Promise<{ data: { user: { id: string } | null }; error: any }>;
 
+// KAN-128: intervalo del heartbeat ping/pong. A la escala objetivo (500-1000 tenants con el
+// dashboard abierto) una conexión "medio caída" (el proceso remoto murió o el cable se cortó sin
+// un cierre TCP limpio) nunca dispara 'close'/'error' por sí sola — quedaría registrada para
+// siempre en `tenantSockets`, acumulando sockets muertos y, peor, haciendo que el cliente crea que
+// tiene un canal en vivo cuando en realidad no recibe nada (nunca reconecta porque nunca ve un
+// 'close'). El ping/pong estándar de WebSocket (RFC 6455, ambos navegadores y el cliente `ws` lo
+// responden automáticamente a nivel de protocolo, sin código en app.js) detecta esto de forma
+// activa en como mucho 2x este intervalo.
+export const HEARTBEAT_INTERVAL_MS = 25_000;
+
 const tenantSockets = new Map<string, Set<WebSocket>>();
 
 export function registerSocket(tenantId: string, socket: WebSocket): void {
@@ -62,6 +72,23 @@ export function broadcastMatchCountChanged(tenantIds: Iterable<string>): void {
   }
 }
 
+/**
+ * Barrido de heartbeat: marca "muerto" (y termina) cualquier socket que no contestó el ping
+ * anterior con un pong, y pinguea a todos los que siguen vivos para el próximo ciclo. Recibe los
+ * sockets como iterable en vez de tomar el `WebSocketServer` directamente para poder testearlo con
+ * sockets falsos sin depender de `wss.clients` (que solo se puebla con upgrades TCP reales).
+ */
+export function runHeartbeatSweep(sockets: Iterable<WebSocket>): void {
+  for (const socket of sockets as Iterable<WebSocket & { isAlive?: boolean; terminate?: () => void; ping?: () => void }>) {
+    if (socket.isAlive === false) {
+      socket.terminate?.();
+      continue;
+    }
+    socket.isAlive = false;
+    socket.ping?.();
+  }
+}
+
 function extractSessionToken(cookieHeader: string | undefined): string | null {
   if (!cookieHeader) return null;
   const found = cookieHeader
@@ -103,6 +130,10 @@ export function initRealtimeHub(server: HttpServer, getUser: GetUserFn = (token)
     }
 
     registerSocket(tenantId, socket);
+    (socket as any).isAlive = true;
+    socket.on('pong', () => {
+      (socket as any).isAlive = true;
+    });
 
     socket.on('close', () => {
       unregisterSocket(tenantId as string, socket);
@@ -112,6 +143,12 @@ export function initRealtimeHub(server: HttpServer, getUser: GetUserFn = (token)
       logger.error({ error: err.message || err, tenantId }, '[REALTIME] Error en un socket WS ya autenticado.');
     });
   });
+
+  const heartbeatInterval = setInterval(() => runHeartbeatSweep(wss.clients), HEARTBEAT_INTERVAL_MS);
+  // unref(): este timer no debe mantener vivo el proceso por sí solo (mismo criterio que el
+  // barrido periódico de tenantClientsCache en supabase.ts).
+  heartbeatInterval.unref?.();
+  wss.on('close', () => clearInterval(heartbeatInterval));
 
   return wss;
 }

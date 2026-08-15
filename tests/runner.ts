@@ -5,6 +5,8 @@ import './addressParser.test';
 import './ai.test';
 import './blindMatching.test';
 import './blindMatchPersistence.test';
+import './dashboardMetrics.test';
+import './dashboardMetricsRoute.test';
 import './dolar.test';
 import './errorHandler.test';
 import './excel.test';

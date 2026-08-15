@@ -116,11 +116,46 @@ let currentTenantInfo = null;
 // KAN-88: socket del contador de matches en tiempo real. La lógica pura (armado de la URL,
 // decisión de refetch por mensaje, cálculo del backoff) vive en realtimeMatches.js para poder
 // testearla con node:test sin DOM real (mismo patrón que ios-onboarding.js/KAN-47).
-const { buildMatchCountSocketUrl, shouldRefetchOnMessage, nextReconnectDelayMs, DEFAULT_INITIAL_DELAY_MS } = window.BrokazaRealtimeMatches;
+const {
+  buildMatchCountSocketUrl,
+  shouldRefetchOnMessage,
+  nextReconnectDelayMs,
+  randomIntervalMs,
+  DEFAULT_INITIAL_DELAY_MS,
+  FALLBACK_POLL_MIN_MS,
+  FALLBACK_POLL_MAX_MS
+} = window.BrokazaRealtimeMatches;
 let matchCountSocket = null;
 let matchCountSocketReconnectTimer = null;
 let matchCountSocketReconnectDelayMs = DEFAULT_INITIAL_DELAY_MS;
 let matchCountSocketShouldReconnect = false;
+
+// KAN-128: métricas de rendimiento/latencia del canal en tiempo real (ver metrics.js) — se
+// reportan al backend cada METRICS_REPORT_INTERVAL_MS mientras el dashboard está abierto, para
+// tener visibilidad de cómo se comporta el WS/polling en producción (ver POST
+// /api/dashboard-metrics en src/index.ts) sin necesidad de instrumentación de APM externa.
+const dashboardMetricsState = window.BrokazaDashboardMetrics.createState();
+const METRICS_REPORT_INTERVAL_MS = 60000;
+let metricsReportInterval = null;
+
+function isMatchCountSocketOpen() {
+  return !!matchCountSocket && matchCountSocket.readyState === WebSocket.OPEN;
+}
+
+async function reportDashboardMetrics() {
+  const snapshot = window.BrokazaDashboardMetrics.buildSnapshot(dashboardMetricsState);
+  window.BrokazaDashboardMetrics.resetWindow(dashboardMetricsState);
+  try {
+    await fetchWithTimeout('/api/dashboard-metrics', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(snapshot)
+    }, 5000, '[METRICS]');
+  } catch (error) {
+    // No es crítico: si un reporte de métricas se pierde, el próximo (60s después) lo compensa.
+    console.error('[METRICS] No se pudo reportar el snapshot de métricas del dashboard:', error.message);
+  }
+}
 
 // Interceptor Global de Fetch para desloguear ante error 401 (Sesión Única Estricta)
 const originalFetch = window.fetch;
@@ -421,6 +456,11 @@ function handleAuthErrorCallback() {
   return true;
 }
 
+// KAN-128: cada intervalo dispara con un período random independiente en [15s, 30s) — ya no es el
+// mecanismo primario de actualización (eso lo hace el push por WS más abajo), es la red de
+// seguridad para cuando el socket está caído o para pestañas que por algún motivo no pudieron
+// abrirlo. `recordPollTick` deja registro de si el tick ocurrió con el socket arriba o abajo, para
+// poder ver en las métricas si el fallback está disparando de más con el WS sano.
 function startDashboardPolling() {
   if (matchesInterval) return; // Ya está corriendo
 
@@ -429,10 +469,18 @@ function startDashboardPolling() {
   loadActiveSearches();
   loadIncomingMatches();
 
-  matchesInterval = setInterval(loadMatches, 2000);
-  catalogInterval = setInterval(loadCatalogInfo, 5000);
-  activeSearchesInterval = setInterval(loadActiveSearches, 10000);
-  incomingMatchesInterval = setInterval(loadIncomingMatches, 10000);
+  matchesInterval = setInterval(() => {
+    window.BrokazaDashboardMetrics.recordPollTick(dashboardMetricsState, isMatchCountSocketOpen());
+    loadMatches();
+  }, randomIntervalMs(FALLBACK_POLL_MIN_MS, FALLBACK_POLL_MAX_MS));
+  catalogInterval = setInterval(loadCatalogInfo, randomIntervalMs(FALLBACK_POLL_MIN_MS, FALLBACK_POLL_MAX_MS));
+  activeSearchesInterval = setInterval(() => {
+    window.BrokazaDashboardMetrics.recordPollTick(dashboardMetricsState, isMatchCountSocketOpen());
+    loadActiveSearches();
+  }, randomIntervalMs(FALLBACK_POLL_MIN_MS, FALLBACK_POLL_MAX_MS));
+  incomingMatchesInterval = setInterval(loadIncomingMatches, randomIntervalMs(FALLBACK_POLL_MIN_MS, FALLBACK_POLL_MAX_MS));
+
+  metricsReportInterval = setInterval(reportDashboardMetrics, METRICS_REPORT_INTERVAL_MS);
 
   connectMatchCountSocket();
 }
@@ -453,6 +501,10 @@ function stopDashboardPolling() {
   if (incomingMatchesInterval) {
     clearInterval(incomingMatchesInterval);
     incomingMatchesInterval = null;
+  }
+  if (metricsReportInterval) {
+    clearInterval(metricsReportInterval);
+    metricsReportInterval = null;
   }
 
   disconnectMatchCountSocket();
@@ -480,17 +532,25 @@ function connectMatchCountSocket() {
 
   socket.addEventListener('open', () => {
     matchCountSocketReconnectDelayMs = DEFAULT_INITIAL_DELAY_MS; // reset del backoff tras una conexión exitosa
+    window.BrokazaDashboardMetrics.recordSocketOpen(dashboardMetricsState);
   });
 
+  // KAN-128: loadMatches() se suma acá (antes solo refrescaban loadActiveSearches/
+  // loadIncomingMatches) — GET /api/matches también depende de blind_matches, así que quedaba
+  // desactualizado hasta el próximo tick del polling de fallback aunque el WS ya hubiera avisado.
   socket.addEventListener('message', (event) => {
-    if (shouldRefetchOnMessage(event.data)) {
-      loadActiveSearches();
-      loadIncomingMatches();
-    }
+    if (!shouldRefetchOnMessage(event.data)) return;
+
+    const startedAt = performance.now();
+    Promise.all([loadMatches(), loadActiveSearches(), loadIncomingMatches()])
+      .finally(() => {
+        window.BrokazaDashboardMetrics.recordRefetchDuration(dashboardMetricsState, performance.now() - startedAt);
+      });
   });
 
   socket.addEventListener('close', () => {
     if (matchCountSocket === socket) matchCountSocket = null;
+    window.BrokazaDashboardMetrics.recordSocketClose(dashboardMetricsState);
     scheduleMatchCountSocketReconnect();
   });
 
@@ -504,7 +564,10 @@ function scheduleMatchCountSocketReconnect() {
 
   matchCountSocketReconnectTimer = setTimeout(() => {
     matchCountSocketReconnectTimer = null;
-    if (matchCountSocketShouldReconnect) connectMatchCountSocket();
+    if (matchCountSocketShouldReconnect) {
+      window.BrokazaDashboardMetrics.recordReconnectAttempt(dashboardMetricsState);
+      connectMatchCountSocket();
+    }
   }, matchCountSocketReconnectDelayMs);
 
   matchCountSocketReconnectDelayMs = nextReconnectDelayMs(matchCountSocketReconnectDelayMs);
