@@ -30,7 +30,7 @@ import { startSearchExpirationService } from './services/searchExpiration';
 import { config } from './config/env';
 import { logger } from './services/logger';
 import { withTimeout } from './utils/withTimeout';
-import { createRateLimiter } from './utils/rateLimit';
+import { createDistributedRateLimiter } from './utils/rateLimit';
 import { getClientIp } from './utils/clientIp';
 import { mountAdminRouter } from './adminRoutes';
 import { nodeEnvCheckMiddleware } from './utils/nodeEnvCheck';
@@ -150,25 +150,17 @@ app.get(['/', '/index.html'], (req, res) => {
 app.use(express.static(path.join(process.cwd(), 'public')));
 app.use(express.static(dashboardPath));
 
-// Rate limiter en memoria para endpoints de auth (max 5 req/min por IP)
-const authRateLimitMap = new Map<string, { count: number; resetAt: number }>();
-function checkAuthRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const entry = authRateLimitMap.get(ip);
-  if (!entry || now > entry.resetAt) {
-    authRateLimitMap.set(ip, { count: 1, resetAt: now + 60_000 });
-    return true;
-  }
-  if (entry.count >= 5) return false;
-  entry.count++;
-  return true;
-}
+// KAN-127: rate limiter distribuido (backend Postgres, ver src/utils/rateLimit.ts) para el
+// endpoint de auth (max 5 req/min por IP) — antes vivía en memoria del proceso acá mismo, lo que
+// multiplicaba el límite efectivo por instancia detrás de un balanceador de carga.
+const authRateLimiter = createDistributedRateLimiter('auth', 5, 60_000);
 
-// KAN-71: rate limit por tenantId (no por IP) para POST /api/search y POST /api/upload — ambos
-// ya están detrás de tenantAuthMiddleware, así que la identidad estable a limitar es el tenant,
-// no la IP. Ver src/utils/rateLimit.ts y src/config/env.ts para los límites/ventanas.
-const searchRateLimiter = createRateLimiter(config.searchRateLimitMax, config.searchRateLimitWindowMs);
-const uploadRateLimiter = createRateLimiter(config.uploadRateLimitMax, config.uploadRateLimitWindowMs);
+// KAN-71/KAN-127: rate limit por tenantId (no por IP) para POST /api/search y POST /api/upload —
+// ambos ya están detrás de tenantAuthMiddleware, así que la identidad estable a limitar es el
+// tenant, no la IP. Distribuido (Postgres) desde KAN-127 — ver src/utils/rateLimit.ts y
+// src/config/env.ts para los límites/ventanas.
+const searchRateLimiter = createDistributedRateLimiter('search', config.searchRateLimitMax, config.searchRateLimitWindowMs);
+const uploadRateLimiter = createDistributedRateLimiter('upload', config.uploadRateLimitMax, config.uploadRateLimitWindowMs);
 
 // Cache en memoria de sesiones ya validadas contra Supabase. El dashboard pollea /api/status,
 // /api/matches y /api/catalog cada 1.5-5s; sin este cache, cada poll disparaba una llamada de red
@@ -277,7 +269,7 @@ app.post('/api/auth/request-magic-link', async (req, res) => {
   const { email } = req.body;
   logger.info({ ip, email }, '[AUTH] Solicitud de magic link recibida');
 
-  if (!checkAuthRateLimit(ip)) {
+  if (!(await authRateLimiter.check(ip))) {
     logger.warn({ ip, email }, '[AUTH] Rate limit excedido en solicitud de magic link');
     return res.status(429).json({ error: 'Demasiados intentos. Esperá un minuto e intentá de nuevo.' });
   }
@@ -451,10 +443,10 @@ app.post('/api/profile', tenantAuthMiddleware, async (req, res) => {
 // ENDPOINTS DE API PROTEGIDOS POR IP (TENANT)
 // ==========================================
 
-app.post('/api/upload', tenantAuthMiddleware, (req, res, next) => {
+app.post('/api/upload', tenantAuthMiddleware, async (req, res, next) => {
   // KAN-71: rate limit por tenant antes de invertir tiempo/memoria en parsear el archivo.
   const tenantId = (req as any).tenantId;
-  if (!uploadRateLimiter.check(tenantId)) {
+  if (!(await uploadRateLimiter.check(tenantId))) {
     logger.warn({ tenantId }, '[UPLOAD] Rate limit excedido en POST /api/upload');
     return res.status(429).json({ error: 'Demasiadas subidas de archivo. Esperá un minuto e intentá de nuevo.' });
   }
@@ -547,9 +539,9 @@ app.post('/api/upload', tenantAuthMiddleware, (req, res, next) => {
 // | null } }`, una entrada por cada hoja pendiente) y, si el mapeo confirmado resuelve los campos
 // requeridos de cada hoja, persiste el mapeo como confirmado y procesa el archivo completo en la
 // misma request — no hace falta un tercer round-trip.
-app.post('/api/upload/confirm-mapping', tenantAuthMiddleware, (req, res, next) => {
+app.post('/api/upload/confirm-mapping', tenantAuthMiddleware, async (req, res, next) => {
   const tenantId = (req as any).tenantId;
-  if (!uploadRateLimiter.check(tenantId)) {
+  if (!(await uploadRateLimiter.check(tenantId))) {
     logger.warn({ tenantId }, '[UPLOAD] Rate limit excedido en POST /api/upload/confirm-mapping');
     return res.status(429).json({ error: 'Demasiadas subidas de archivo. Esperá un minuto e intentá de nuevo.' });
   }
@@ -792,7 +784,7 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
   // KAN-71: rate limit por tenant — este endpoint dispara llamadas pagas a Gemini/OpenAI por
   // request (extractFromTextInput, y ahora también segmentSearchRequests), así que abuso acá
   // tiene costo real, no solo carga de CPU.
-  if (!searchRateLimiter.check(tenantId)) {
+  if (!(await searchRateLimiter.check(tenantId))) {
     logger.warn({ tenantId }, '[BUSQUEDA] Rate limit excedido en POST /api/search');
     return res.status(429).json({ error: 'Demasiadas búsquedas. Esperá un minuto e intentá de nuevo.' });
   }
