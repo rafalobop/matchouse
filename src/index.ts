@@ -399,7 +399,7 @@ app.get('/api/profile', tenantAuthMiddleware, async (req, res) => {
     res.json({ profile });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[PERFIL] Error al obtener el perfil del tenant');
-    res.status(500).json({ error: error.message || 'Error interno al obtener el perfil.' });
+    res.status(500).json({ error: 'Error interno al obtener el perfil.' });
   }
 });
 
@@ -442,7 +442,7 @@ app.post('/api/profile', tenantAuthMiddleware, async (req, res) => {
     res.json({ success: true, profile });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[PERFIL] Error al actualizar el perfil del tenant');
-    res.status(500).json({ error: error.message || 'Error interno al actualizar el perfil.' });
+    res.status(500).json({ error: 'Error interno al actualizar el perfil.' });
   }
 });
 
@@ -536,7 +536,7 @@ app.post('/api/upload', tenantAuthMiddleware, async (req, res, next) => {
     res.json({ success: true, count: catalog.length, priceParseErrors });
   } catch (error: any) {
     console.error('Error al procesar subida de Excel:', error);
-    res.status(500).json({ error: error.message || 'Error interno al procesar el archivo.' });
+    res.status(500).json({ error: 'Error interno al procesar el archivo.' });
   }
 });
 
@@ -625,7 +625,7 @@ app.post('/api/upload/confirm-mapping', tenantAuthMiddleware, async (req, res, n
       return res.status(400).json({ error: error.message });
     }
     console.error('Error al confirmar mapeo de columnas y procesar Excel:', error);
-    res.status(500).json({ error: error.message || 'Error interno al procesar el archivo.' });
+    res.status(500).json({ error: 'Error interno al procesar el archivo.' });
   }
 });
 
@@ -833,7 +833,7 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
         continue; // seguir con los demás segmentos, no abortar todo el lote por un timeout puntual
       }
       logger.error({ error: error.message || error, tenantId, segmentText }, '[BUSQUEDA] Error al procesar un segmento de búsqueda.');
-      results.push({ success: false, raw_text: segmentText, error: error.message || 'Error interno al procesar este segmento.' });
+      results.push({ success: false, raw_text: segmentText, error: 'Error interno al procesar este segmento.' });
     }
   }
 
@@ -905,7 +905,7 @@ app.get('/api/searches', tenantAuthMiddleware, async (req, res) => {
     res.json({ searches: results });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[BUSQUEDAS] Error al listar búsquedas activas');
-    res.status(500).json({ error: error.message || 'Error interno al listar las búsquedas.' });
+    res.status(500).json({ error: 'Error interno al listar las búsquedas.' });
   }
 });
 
@@ -966,7 +966,7 @@ app.delete('/api/searches/:id', tenantAuthMiddleware, async (req, res) => {
     res.json({ success: true });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId, searchId: id }, '[BUSQUEDAS] Error al archivar la búsqueda');
-    res.status(500).json({ error: error.message || 'Error interno al archivar la búsqueda.' });
+    res.status(500).json({ error: 'Error interno al archivar la búsqueda.' });
   }
 });
 
@@ -1020,7 +1020,7 @@ app.post('/api/searches/:id/reactivate', tenantAuthMiddleware, async (req, res) 
     res.json({ success: true, expires_at: updated.expires_at });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId, searchId: id }, '[BUSQUEDAS] Error al reactivar la búsqueda');
-    res.status(500).json({ error: error.message || 'Error interno al reactivar la búsqueda.' });
+    res.status(500).json({ error: 'Error interno al reactivar la búsqueda.' });
   }
 });
 
@@ -1046,7 +1046,7 @@ app.get('/api/matches', tenantAuthMiddleware, async (req, res) => {
     res.json({ matches: mappedMatches });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[MATCHES] Error al recuperar matches de blind_matches');
-    res.status(500).json({ error: error.message || 'Error interno al recuperar matches.' });
+    res.status(500).json({ error: 'Error interno al recuperar matches.' });
   }
 });
 
@@ -1073,7 +1073,7 @@ app.get('/api/matches/incoming', tenantAuthMiddleware, async (req, res) => {
     res.json({ matches: mappedMatches });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[MATCHES] Error al recuperar matches entrantes de blind_matches');
-    res.status(500).json({ error: error.message || 'Error interno al recuperar matches entrantes.' });
+    res.status(500).json({ error: 'Error interno al recuperar matches entrantes.' });
   }
 });
 
@@ -1164,7 +1164,7 @@ app.post('/api/matches/:id/feedback', tenantAuthMiddleware, async (req, res) => 
     res.json({ success: true });
   } catch (error: any) {
     console.error('Error al actualizar el feedback de match:', error);
-    res.status(500).json({ error: error.message || 'Error interno al guardar feedback.' });
+    res.status(500).json({ error: 'Error interno al guardar feedback.' });
   }
 });
 
@@ -1206,7 +1206,7 @@ app.post('/api/notifications/subscribe', tenantAuthMiddleware, async (req, res) 
     res.json({ success: true });
   } catch (error: any) {
     console.error('Error al registrar suscripción web push:', error);
-    res.status(500).json({ error: error.message || 'Error interno al suscribir.' });
+    res.status(500).json({ error: 'Error interno al suscribir.' });
   }
 });
 
