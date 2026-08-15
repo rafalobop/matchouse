@@ -9,7 +9,8 @@
     "test-pipeline": "ts-node src/test-pipeline.ts",
     "build": "tsc",
     "test": "ts-node tests/runner.ts",
-    "graph:run": "ts-node src/graph/run.ts"
+    "graph:run": "ts-node src/graph/run.ts",
+    "load-test:dashboard": "ts-node scripts/load-test-dashboard.ts"
   },
   "keywords": [],
   "author": "",

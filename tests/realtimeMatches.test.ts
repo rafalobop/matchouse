@@ -4,8 +4,16 @@ import * as path from 'path';
 
 // realtimeMatches.js es un script de browser plano (sin tipos ni allowJs habilitado en tsconfig),
 // se carga con require() en vez de import por el mismo motivo que ios-onboarding.js (ver ese test).
-const { buildMatchCountSocketUrl, shouldRefetchOnMessage, nextReconnectDelayMs, DEFAULT_INITIAL_DELAY_MS, DEFAULT_MAX_DELAY_MS } =
-  require(path.join('..', 'src', 'dashboard', 'realtimeMatches'));
+const {
+  buildMatchCountSocketUrl,
+  shouldRefetchOnMessage,
+  nextReconnectDelayMs,
+  randomIntervalMs,
+  DEFAULT_INITIAL_DELAY_MS,
+  DEFAULT_MAX_DELAY_MS,
+  FALLBACK_POLL_MIN_MS,
+  FALLBACK_POLL_MAX_MS
+} = require(path.join('..', 'src', 'dashboard', 'realtimeMatches'));
 
 test('buildMatchCountSocketUrl (KAN-88) - usa wss:// cuando la página está en https', () => {
   const url = buildMatchCountSocketUrl({ protocol: 'https:', host: 'app.matchouse.com' });
@@ -56,4 +64,25 @@ test('nextReconnectDelayMs (KAN-88) - respeta un tope custom si se pasa explíci
 
 test('DEFAULT_INITIAL_DELAY_MS (KAN-88) - arranca en 1s', () => {
   assert.strictEqual(DEFAULT_INITIAL_DELAY_MS, 1000);
+});
+
+test('FALLBACK_POLL_MIN_MS/MAX_MS (KAN-128) - el piso de polling de fallback es 15-30s', () => {
+  assert.strictEqual(FALLBACK_POLL_MIN_MS, 15000);
+  assert.strictEqual(FALLBACK_POLL_MAX_MS, 30000);
+});
+
+test('randomIntervalMs (KAN-128) - siempre cae dentro de [min, max)', () => {
+  for (let i = 0; i < 200; i++) {
+    const value = randomIntervalMs(FALLBACK_POLL_MIN_MS, FALLBACK_POLL_MAX_MS);
+    assert.ok(value >= FALLBACK_POLL_MIN_MS, `${value} debe ser >= ${FALLBACK_POLL_MIN_MS}`);
+    assert.ok(value < FALLBACK_POLL_MAX_MS, `${value} debe ser < ${FALLBACK_POLL_MAX_MS}`);
+  }
+});
+
+test('randomIntervalMs (KAN-128) - produce valores distintos entre llamadas (jitter real, no un valor fijo)', () => {
+  const values = new Set();
+  for (let i = 0; i < 20; i++) {
+    values.add(randomIntervalMs(FALLBACK_POLL_MIN_MS, FALLBACK_POLL_MAX_MS));
+  }
+  assert.ok(values.size > 1, 'randomIntervalMs no debe devolver siempre el mismo valor.');
 });

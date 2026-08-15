@@ -6,7 +6,8 @@ import {
   unregisterSocket,
   broadcastMatchCountChanged,
   connectedTenantCount,
-  initRealtimeHub
+  initRealtimeHub,
+  runHeartbeatSweep
 } from '../src/services/realtimeHub';
 
 function makeFakeSocket() {
@@ -19,6 +20,18 @@ function makeFakeSocket() {
     send: (payload: string) => { sent.push(payload); },
     close: (code?: number, reason?: string) => { emitter.emit('close', code, reason); }
   }) as any;
+}
+
+// KAN-128: mismo fake que makeFakeSocket, con ping()/terminate() instrumentados para poder
+// aserter el barrido de heartbeat sin depender de sockets TCP reales.
+function makeFakeHeartbeatSocket(isAlive: boolean) {
+  const socket = makeFakeSocket();
+  socket.isAlive = isAlive;
+  socket.pingCalls = 0;
+  socket.terminateCalls = 0;
+  socket.ping = () => { socket.pingCalls++; };
+  socket.terminate = () => { socket.terminateCalls++; socket.emit('close'); };
+  return socket;
 }
 
 // initRealtimeHub monta un WebSocketServer real (necesita un http.Server válido), pero los tests
@@ -135,4 +148,44 @@ test('initRealtimeHub (KAN-88) - rechaza la conexión con una sesión inválida/
 
   assert.deepStrictEqual(closeArgs, [4401, 'Sesión inválida o expirada.']);
   assert.strictEqual(connectedTenantCount(), before, 'No debe registrarse un tenant para una sesión rechazada.');
+});
+
+test('initRealtimeHub (KAN-128) - marca isAlive=true al conectar y lo revalida al recibir un pong', async () => {
+  const wss = initRealtimeHub(fakeHttpServer(), async () => ({ data: { user: { id: 'tenant-heartbeat' } }, error: null }));
+  const socket = makeFakeSocket();
+
+  wss.emit('connection', socket, fakeIncomingMessage('brokaza_session=token-valido'));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.strictEqual(socket.isAlive, true, 'Un socket recién conectado debe arrancar vivo.');
+
+  socket.isAlive = false; // simula que un barrido de heartbeat ya lo marcó como pendiente de respuesta
+  socket.emit('pong');
+  assert.strictEqual(socket.isAlive, true, 'Un pong entrante debe revalidar el socket como vivo.');
+
+  socket.emit('close');
+});
+
+test('runHeartbeatSweep (KAN-128) - termina los sockets que no contestaron el ping anterior', () => {
+  const deadSocket = makeFakeHeartbeatSocket(false);
+  const aliveSocket = makeFakeHeartbeatSocket(true);
+
+  runHeartbeatSweep([deadSocket, aliveSocket]);
+
+  assert.strictEqual(deadSocket.terminateCalls, 1, 'Un socket con isAlive=false debe terminarse.');
+  assert.strictEqual(deadSocket.pingCalls, 0, 'No tiene sentido pinguear un socket que ya se está terminando.');
+});
+
+test('runHeartbeatSweep (KAN-128) - pinguea y marca isAlive=false a los sockets que siguen vivos', () => {
+  const aliveSocket = makeFakeHeartbeatSocket(true);
+
+  runHeartbeatSweep([aliveSocket]);
+
+  assert.strictEqual(aliveSocket.pingCalls, 1, 'Un socket vivo debe recibir un ping en cada barrido.');
+  assert.strictEqual(aliveSocket.terminateCalls, 0);
+  assert.strictEqual(aliveSocket.isAlive, false, 'Se marca como no confirmado hasta el próximo pong.');
+});
+
+test('runHeartbeatSweep (KAN-128) - no rompe con una lista vacía', () => {
+  assert.doesNotThrow(() => runHeartbeatSweep([]));
 });
