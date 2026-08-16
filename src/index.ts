@@ -819,23 +819,31 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
     segments = [text];
   }
 
-  const results: SearchSegmentResult[] = [];
+  // KAN-132: los segmentos de un mismo mensaje son independientes entre sí (cada uno arma su
+  // propia fila de active_searches y su propio matching) — antes se procesaban uno por uno con
+  // await secuencial, así que la latencia total escalaba linealmente con la cantidad de
+  // pedidos detectados por el Agente 0. Promise.all los corre en paralelo (cada elemento del
+  // map atrapa su propio error y siempre resuelve, nunca rechaza, para que un segmento fallido
+  // no aborte el resto del lote — mismo comportamiento del try/catch por segmento que había en
+  // el loop secuencial). El único rate limit del endpoint (searchRateLimiter, por tenant) ya se
+  // chequea una única vez más arriba, antes de segmentar — procesar los segmentos en paralelo no
+  // agrega chequeos adicionales ni puede superar ese límite.
   let anyAITimeout = false;
 
-  for (const segmentText of segments) {
-    try {
-      const result = await processSingleSearchSegment(tenantId, tenantSupabase, segmentText);
-      results.push(result);
-    } catch (error: any) {
-      if (error instanceof AITimeoutError) {
-        anyAITimeout = true;
-        results.push({ success: false, raw_text: segmentText, error: error.message, code: 'AI_TIMEOUT' });
-        continue; // seguir con los demás segmentos, no abortar todo el lote por un timeout puntual
+  const results: SearchSegmentResult[] = await Promise.all(
+    segments.map(async (segmentText): Promise<SearchSegmentResult> => {
+      try {
+        return await processSingleSearchSegment(tenantId, tenantSupabase, segmentText);
+      } catch (error: any) {
+        if (error instanceof AITimeoutError) {
+          anyAITimeout = true;
+          return { success: false, raw_text: segmentText, error: error.message, code: 'AI_TIMEOUT' };
+        }
+        logger.error({ error: error.message || error, tenantId, segmentText }, '[BUSQUEDA] Error al procesar un segmento de búsqueda.');
+        return { success: false, raw_text: segmentText, error: 'Error interno al procesar este segmento.' };
       }
-      logger.error({ error: error.message || error, tenantId, segmentText }, '[BUSQUEDA] Error al procesar un segmento de búsqueda.');
-      results.push({ success: false, raw_text: segmentText, error: 'Error interno al procesar este segmento.' });
-    }
-  }
+    })
+  );
 
   const allFailed = results.every(r => !r.success);
   const httpStatus = allFailed ? (anyAITimeout ? 504 : 500) : 200;

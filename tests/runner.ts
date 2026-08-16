@@ -36,6 +36,7 @@ import './rateLimit.test';
 import './realtimeHub.test';
 import './realtimeMatches.test';
 import './searchExpiration.test';
+import './searchSegmentsParallel.test';
 import './searchValidation.test';
 import './sentryDataCollection.test';
 import './supabase.test';
