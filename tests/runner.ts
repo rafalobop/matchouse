@@ -25,6 +25,7 @@ import './graph-pm.test';
 import './graph-po.test';
 import './graph-taskcreation.test';
 import './graph-techlead.test';
+import './health.test';
 import './htmlSanitize.test';
 import './idValidation.test';
 import './iosOnboarding.test';

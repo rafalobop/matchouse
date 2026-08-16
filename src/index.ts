@@ -30,6 +30,7 @@ import { startDolarService } from './services/dolar';
 import { startSearchExpirationService } from './services/searchExpiration';
 import { config } from './config/env';
 import { logger } from './services/logger';
+import { buildHealthPayload } from './utils/health';
 import { withTimeout } from './utils/withTimeout';
 import { createDistributedRateLimiter } from './utils/rateLimit';
 import { getClientIp } from './utils/clientIp';
@@ -97,6 +98,15 @@ app.use(
 app.use(express.json({ limit: JSON_BODY_SIZE_LIMIT }));
 app.use(jsonBodyParseErrorHandler);
 app.use(cookieParser());
+
+// KAN-141: liveness/health check para monitoreo de infraestructura (load balancer, orquestador).
+// Registrado ANTES del access gate a propósito — un chequeo de infraestructura no debe depender
+// de la cookie de acceso privado ni de auth de tenant, o el sistema de monitoreo quedaría ciego
+// mientras el gate esté activo. Sin dependencias externas (Supabase, etc.) para no arrastrar su
+// latencia/disponibilidad a un simple chequeo de que el proceso está vivo.
+app.get('/health', (req, res) => {
+  res.status(200).json(buildHealthPayload());
+});
 
 // Panel admin (app.admin.brokaza.com): se monta ANTES que el resto del pipeline de tenants
 // (access gate, dashboard estático, /api/*) para que, cuando el Host coincide, la request
