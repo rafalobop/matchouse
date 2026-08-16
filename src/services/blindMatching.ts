@@ -69,7 +69,43 @@ export function matchRequestAgainstProperties(
   return matches.sort((a, b) => b.score - a.score);
 }
 
-const MAX_CROSS_TENANT_MATCHES = 50;
+// Exportadas para poder testear la paginación de findCrossTenantMatches (ver
+// tests/blindMatching.test.ts) sin duplicar los valores como literales mágicos en el test.
+export const MAX_CROSS_TENANT_MATCHES = 50;
+
+// KAN-133: tope duro de filas leídas de `properties` en la query cross-tenant, ANTES de
+// filtrar/rankear en memoria vía checkMatch. Es independiente del límite de paginación de
+// resultados (MAX_CROSS_TENANT_MATCHES/pagination.limit) — protege contra traer la cartera
+// completa de todos los demás tenants en una sola query sin límite (el filtrado real de
+// zona/presupuesto/dormitorios/características ocurre después, en memoria, así que no se puede
+// reemplazar por un LIMIT ajustado al tamaño de página pedido).
+export const MAX_QUERY_ROWS = 500;
+
+// KAN-133: tope duro de tamaño de página, independiente de qué límite pida el caller — evita que
+// un `limit` desmedido (accidental o abusivo) fuerce a devolver de una todo lo que trajo la query.
+export const MAX_PAGE_SIZE = 200;
+
+export interface CrossTenantMatchesPagination {
+  limit?: number;
+  offset?: number;
+}
+
+// KAN-133: normaliza limit/offset de forma tolerante a parámetros inválidos (undefined, negativos,
+// no numéricos, decimales, NaN) — cualquier valor fuera de rango cae a su default en vez de
+// propagar un error o un slice() sin sentido (offset negativo, limit <= 0, etc.).
+function normalizePagination(pagination?: CrossTenantMatchesPagination): { limit: number; offset: number } {
+  const rawLimit = pagination?.limit;
+  const limit = Number.isInteger(rawLimit) && (rawLimit as number) > 0
+    ? Math.min(rawLimit as number, MAX_PAGE_SIZE)
+    : MAX_CROSS_TENANT_MATCHES;
+
+  const rawOffset = pagination?.offset;
+  const offset = Number.isInteger(rawOffset) && (rawOffset as number) >= 0
+    ? (rawOffset as number)
+    : 0;
+
+  return { limit, offset };
+}
 
 /**
  * KAN-22: resuelve en paralelo el `neighborhood_id` (PostGIS + alias, ver
@@ -105,17 +141,24 @@ async function stampNeighborhoodIds(candidates: TenantScopedProperty[]): Promise
  * "Tenant Context" (KAN-63): ese cliente aplica RLS `tenant_id = auth.uid()`, lo que bloquearía
  * por diseño la lectura cross-tenant que el matching ciego necesita. La exclusión de la cartera
  * propia se hace explícita en la query (`.neq('tenant_id', tenantId)`), no vía RLS.
+ *
+ * KAN-133: `pagination` controla la página de resultados devuelta (post-ranking, ver más abajo);
+ * `MAX_QUERY_ROWS` acota independientemente cuántas filas se leen de `properties` por consulta.
  */
 export async function findCrossTenantMatches(
   tenantId: string,
   request: ExtractedRealEstateRequest,
   zoneIntent?: ZoneIntentRequest,
-  client: SupabaseClient = serviceRoleSupabase
+  client: SupabaseClient = serviceRoleSupabase,
+  pagination?: CrossTenantMatchesPagination
 ): Promise<CrossTenantMatch[]> {
+  const { limit, offset } = normalizePagination(pagination);
+
   let query = client
     .from('properties')
     .select('*')
-    .neq('tenant_id', tenantId);
+    .neq('tenant_id', tenantId)
+    .limit(MAX_QUERY_ROWS);
 
   if (request.operation !== 'desconocido') {
     query = query.eq('operation', request.operation);
@@ -146,7 +189,11 @@ export async function findCrossTenantMatches(
     await stampNeighborhoodIds(candidates);
   }
 
-  return matchRequestAgainstProperties(request, candidates, zoneIntent).slice(0, MAX_CROSS_TENANT_MATCHES);
+  // KAN-133: paginación aplicada DESPUÉS del ranking (no en SQL) — el orden por score depende del
+  // resultado de checkMatch, calculado en memoria, así que "página 2" siempre significa "los
+  // siguientes N matches ya rankeados", no una porción arbitraria de la query cruda.
+  const rankedMatches = matchRequestAgainstProperties(request, candidates, zoneIntent);
+  return rankedMatches.slice(offset, offset + limit);
 }
 
 export interface ActiveSearchCandidate {

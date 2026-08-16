@@ -6,7 +6,9 @@ import {
   matchActiveSearchesAgainstProperty,
   findCrossTenantMatches,
   findMatchingActiveSearchesForProperty,
-  ActiveSearchCandidate
+  ActiveSearchCandidate,
+  MAX_CROSS_TENANT_MATCHES,
+  MAX_QUERY_ROWS
 } from '../src/services/blindMatching';
 import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../src/services/ai';
 import { Property } from '../src/services/excel';
@@ -224,6 +226,7 @@ function makePropertiesOnlyMockClient(options: { rows?: any[]; error?: any } = {
     select: (...args: any[]) => { calls.push({ method: 'select', args }); return builder; },
     neq: (...args: any[]) => { calls.push({ method: 'neq', args }); return builder; },
     eq: (...args: any[]) => { calls.push({ method: 'eq', args }); return builder; },
+    limit: (...args: any[]) => { calls.push({ method: 'limit', args }); return builder; },
     then: (resolve: any, reject: any) =>
       Promise.resolve({ data: options.rows ?? [], error: options.error ?? null }).then(resolve, reject)
   };
@@ -251,6 +254,108 @@ test('BlindMatching (KAN-79 AC1) - findCrossTenantMatches NO filtra property_typ
 
   const eqCalls = mockClient.calls.filter(c => c.method === 'eq');
   assert.deepStrictEqual(eqCalls.map(c => c.args), [['operation', 'venta']]);
+});
+
+// --- Paginación cross-tenant (KAN-133) ---
+
+// Genera N filas de `properties` que matchean la baseRequest por defecto (venta/departamento),
+// cada una con su propio tenant_id/address para poder distinguirlas en las aserciones de página.
+function makeMatchingRows(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    tenant_id: `tenant-${i}`,
+    address: `Propiedad ${i}`,
+    price: 150000,
+    currency: 'ARS',
+    bedrooms: 2,
+    features: '',
+    contact_info: '',
+    operation: 'venta',
+    property_type: 'departamento',
+    sheet_name: 'Ventas',
+    latitude: 0,
+    longitude: 0
+  }));
+}
+
+test('BlindMatching (KAN-133) - findCrossTenantMatches acota la query SQL con .limit(MAX_QUERY_ROWS), independiente de la paginación de resultados', async () => {
+  const mockClient = makePropertiesOnlyMockClient({ rows: [] });
+
+  await findCrossTenantMatches('tenant-a', baseRequest(), undefined, mockClient as any);
+
+  const limitCall = mockClient.calls.find(c => c.method === 'limit');
+  assert.ok(limitCall, 'La query cross-tenant debe tener un .limit() explícito.');
+  assert.deepStrictEqual(limitCall!.args, [MAX_QUERY_ROWS]);
+});
+
+test('BlindMatching (KAN-133, regresión) - sin pagination explícita, devuelve como máximo MAX_CROSS_TENANT_MATCHES resultados (comportamiento previo a KAN-133)', async () => {
+  const mockClient = makePropertiesOnlyMockClient({ rows: makeMatchingRows(MAX_CROSS_TENANT_MATCHES + 20) });
+
+  const result = await findCrossTenantMatches('tenant-a', baseRequest(), undefined, mockClient as any);
+
+  assert.strictEqual(result.length, MAX_CROSS_TENANT_MATCHES, 'El tamaño de página por defecto no debe cambiar respecto al límite previo.');
+});
+
+test('BlindMatching (KAN-133) - un limit explícito devuelve como máximo N resultados', async () => {
+  const mockClient = makePropertiesOnlyMockClient({ rows: makeMatchingRows(30) });
+
+  const result = await findCrossTenantMatches('tenant-a', baseRequest(), undefined, mockClient as any, { limit: 10 });
+
+  assert.strictEqual(result.length, 10);
+});
+
+test('BlindMatching (KAN-133) - offset + limit permiten transitar entre páginas sin solapamiento ni errores', async () => {
+  const mockClient = makePropertiesOnlyMockClient({ rows: makeMatchingRows(25) });
+
+  const page1 = await findCrossTenantMatches('tenant-a', baseRequest(), undefined, mockClient as any, { limit: 10, offset: 0 });
+  const page2 = await findCrossTenantMatches('tenant-a', baseRequest(), undefined, mockClient as any, { limit: 10, offset: 10 });
+  const page3 = await findCrossTenantMatches('tenant-a', baseRequest(), undefined, mockClient as any, { limit: 10, offset: 20 });
+
+  assert.strictEqual(page1.length, 10);
+  assert.strictEqual(page2.length, 10);
+  assert.strictEqual(page3.length, 5, 'La última página trae solo lo que queda (25 - 20).');
+
+  const seenTenants = new Set([...page1, ...page2, ...page3].map(m => m.tenant_id));
+  assert.strictEqual(seenTenants.size, 25, 'Ninguna propiedad debe repetirse ni faltar entre las tres páginas.');
+});
+
+test('BlindMatching (KAN-133) - un offset más allá del total de resultados devuelve una página vacía sin error', async () => {
+  const mockClient = makePropertiesOnlyMockClient({ rows: makeMatchingRows(5) });
+
+  const result = await findCrossTenantMatches('tenant-a', baseRequest(), undefined, mockClient as any, { limit: 10, offset: 100 });
+
+  assert.deepStrictEqual(result, []);
+});
+
+test('BlindMatching (KAN-133) - sin candidatos que matcheen, cualquier página es un array vacío sin error', async () => {
+  const mockClient = makePropertiesOnlyMockClient({ rows: [] });
+
+  const result = await findCrossTenantMatches('tenant-a', baseRequest(), undefined, mockClient as any, { limit: 10, offset: 0 });
+
+  assert.deepStrictEqual(result, []);
+});
+
+test('BlindMatching (KAN-133) - parámetros de paginación inválidos (negativos, cero, no enteros) caen a los valores por defecto en vez de tirar error', async () => {
+  const mockClient = makePropertiesOnlyMockClient({ rows: makeMatchingRows(60) });
+
+  const negativeLimit = await findCrossTenantMatches('tenant-a', baseRequest(), undefined, mockClient as any, { limit: -5, offset: 0 });
+  const zeroLimit = await findCrossTenantMatches('tenant-a', baseRequest(), undefined, mockClient as any, { limit: 0, offset: 0 });
+  const decimalLimit = await findCrossTenantMatches('tenant-a', baseRequest(), undefined, mockClient as any, { limit: 3.5, offset: 0 });
+  const negativeOffset = await findCrossTenantMatches('tenant-a', baseRequest(), undefined, mockClient as any, { limit: 10, offset: -1 });
+  const nanLimit = await findCrossTenantMatches('tenant-a', baseRequest(), undefined, mockClient as any, { limit: NaN, offset: NaN });
+
+  assert.strictEqual(negativeLimit.length, MAX_CROSS_TENANT_MATCHES, 'limit negativo debe caer al default.');
+  assert.strictEqual(zeroLimit.length, MAX_CROSS_TENANT_MATCHES, 'limit en 0 debe caer al default.');
+  assert.strictEqual(decimalLimit.length, MAX_CROSS_TENANT_MATCHES, 'limit no entero debe caer al default.');
+  assert.strictEqual(negativeOffset.length, 10, 'offset negativo debe caer a 0, no filtrar el resultado.');
+  assert.strictEqual(nanLimit.length, MAX_CROSS_TENANT_MATCHES, 'NaN debe caer al default tanto en limit como en offset.');
+});
+
+test('BlindMatching (KAN-133) - un limit por encima del tope duro (MAX_PAGE_SIZE) se acota, no se ignora', async () => {
+  const mockClient = makePropertiesOnlyMockClient({ rows: makeMatchingRows(300) });
+
+  const result = await findCrossTenantMatches('tenant-a', baseRequest(), undefined, mockClient as any, { limit: 10000 });
+
+  assert.ok(result.length <= 200, 'Un limit desmedido no debe devolver más de MAX_PAGE_SIZE resultados.');
 });
 
 test('BlindMatching (KAN-79) - matchActiveSearchesAgainstProperty: descarta candidatos que no matchean', () => {
