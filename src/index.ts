@@ -9,7 +9,8 @@ import cookieParser from 'cookie-parser';
 import multer from 'multer';
 import * as path from 'path';
 import * as fs from 'fs';
-import { Property, processExcelBufferWithColumnMap, peekExcelHeaders, syncPropertiesToDatabase } from './services/excel';
+import { Property, syncPropertiesToDatabase } from './services/excel';
+import { initExcelParsePool, peekExcelHeadersInWorker, parseExcelWithColumnMapInWorker } from './services/excelParsePool';
 import { resolveColumnMapping, confirmColumnMapping, toColumnMapRecord, ExcelMappingServiceError } from './services/excelMapping';
 import { ExcelMappingField } from './utils/excelHeaderMatcher';
 import { extractFromTextInput, extractZoneIntent, segmentSearchRequests, ZoneIntentRequest, AITimeoutError } from './services/ai';
@@ -24,7 +25,7 @@ import { sendWebPushToTenant, buildMatchFoundPushPayload, buildIncomingMatchPush
 import { sendBlindMatchEmailFallback, sendIncomingMatchEmailFallback } from './services/notifier-email';
 import { notifyMatchFound } from './services/notifications';
 import { processPropertyUploaded } from './services/propertyMatchWebhook';
-import { initRealtimeHub, broadcastMatchCountChanged } from './services/realtimeHub';
+import { initRealtimeHub, broadcastMatchCountChanged, broadcastUploadStatus } from './services/realtimeHub';
 import { startDolarService } from './services/dolar';
 import { startSearchExpirationService } from './services/searchExpiration';
 import { config } from './config/env';
@@ -493,15 +494,20 @@ app.post('/api/upload', tenantAuthMiddleware, async (req, res, next) => {
   }
 
   try {
+    // KAN-137: peekExcelHeaders/processExcelBufferWithColumnMap (xlsx.read + resolución de
+    // columnas) corren en un worker thread — trabajo CPU-bound síncrono que, para un Excel
+    // grande, podía notarse como una pausa del event loop afectando a otros tenants concurrentes.
+    broadcastUploadStatus(tenantId, 'parsing_headers');
     // KAN-84: antes de parsear el archivo completo, resolvemos el mapeo de columnas de cada hoja
     // (mapeo confirmado ya guardado -> heurística de keywords -> IA como re-detección) — si
     // alguna hoja no llega a confianza suficiente, no se procesa nada todavía: se le devuelve al
     // frontend la propuesta de mapeo para que el agente la confirme o corrija (AC4).
-    const sheetsHeaders = peekExcelHeaders(req.file.buffer);
+    const sheetsHeaders = await peekExcelHeadersInWorker(req.file.buffer);
     if (sheetsHeaders.length === 0) {
       return res.status(400).json({ error: 'El archivo Excel no contiene propiedades legibles.' });
     }
 
+    broadcastUploadStatus(tenantId, 'resolving_column_mapping');
     const mappingsBySignature = new Map<string, Partial<Record<ExcelMappingField, string | null>>>();
     const pendingConfirmations: any[] = [];
 
@@ -530,11 +536,13 @@ app.post('/api/upload', tenantAuthMiddleware, async (req, res, next) => {
       return res.status(200).json({ requiresMappingConfirmation: true, sheets: pendingConfirmations });
     }
 
-    const { properties: catalog, priceParseErrors } = processExcelBufferWithColumnMap(req.file.buffer, mappingsBySignature);
+    broadcastUploadStatus(tenantId, 'parsing_rows');
+    const { properties: catalog, priceParseErrors } = await parseExcelWithColumnMapInWorker(req.file.buffer, mappingsBySignature);
     if (catalog.length === 0) {
       return res.status(400).json({ error: 'El archivo Excel no contiene propiedades legibles.' });
     }
 
+    broadcastUploadStatus(tenantId, 'syncing_database');
     // Aislamiento por tenant
     await syncPropertiesToDatabase(catalog, tenantId, tenantSupabase);
 
@@ -545,9 +553,14 @@ app.post('/api/upload', tenantAuthMiddleware, async (req, res, next) => {
       );
     }
 
+    broadcastUploadStatus(tenantId, 'done');
     res.json({ success: true, count: catalog.length, priceParseErrors });
   } catch (error: any) {
     console.error('Error al procesar subida de Excel:', error);
+    // KAN-137: un error del worker (archivo malformado, timeout, worker caído) llega acá como
+    // cualquier otro error de la promesa — el pool ya se auto-recupera (ver excelParsePool.ts),
+    // así que este catch no necesita distinguir su origen.
+    broadcastUploadStatus(tenantId, 'error');
     res.status(500).json({ error: 'Error interno al procesar el archivo.' });
   }
 });
@@ -592,9 +605,11 @@ app.post('/api/upload/confirm-mapping', tenantAuthMiddleware, async (req, res, n
   }
 
   try {
-    const sheetsHeaders = peekExcelHeaders(req.file.buffer);
+    broadcastUploadStatus(tenantId, 'parsing_headers');
+    const sheetsHeaders = await peekExcelHeadersInWorker(req.file.buffer);
     const mappingsBySignature = new Map<string, Partial<Record<ExcelMappingField, string | null>>>();
 
+    broadcastUploadStatus(tenantId, 'resolving_column_mapping');
     for (const { sheetName, headers } of sheetsHeaders) {
       const fieldMap = mappingsBySheet[sheetName];
       if (fieldMap) {
@@ -617,11 +632,13 @@ app.post('/api/upload/confirm-mapping', tenantAuthMiddleware, async (req, res, n
       mappingsBySignature.set(resolution.headerSignature, toColumnMapRecord(resolution.fields));
     }
 
-    const { properties: catalog, priceParseErrors } = processExcelBufferWithColumnMap(req.file.buffer, mappingsBySignature);
+    broadcastUploadStatus(tenantId, 'parsing_rows');
+    const { properties: catalog, priceParseErrors } = await parseExcelWithColumnMapInWorker(req.file.buffer, mappingsBySignature);
     if (catalog.length === 0) {
       return res.status(400).json({ error: 'El archivo Excel no contiene propiedades legibles.' });
     }
 
+    broadcastUploadStatus(tenantId, 'syncing_database');
     await syncPropertiesToDatabase(catalog, tenantId, tenantSupabase);
 
     if (priceParseErrors.length > 0) {
@@ -631,12 +648,14 @@ app.post('/api/upload/confirm-mapping', tenantAuthMiddleware, async (req, res, n
       );
     }
 
+    broadcastUploadStatus(tenantId, 'done');
     res.json({ success: true, count: catalog.length, priceParseErrors });
   } catch (error: any) {
     if (error instanceof ExcelMappingServiceError) {
       return res.status(400).json({ error: error.message });
     }
     console.error('Error al confirmar mapeo de columnas y procesar Excel:', error);
+    broadcastUploadStatus(tenantId, 'error');
     res.status(500).json({ error: 'Error interno al procesar el archivo.' });
   }
 });
@@ -1265,6 +1284,11 @@ async function main() {
 
   // Iniciar servicio de vencimiento de búsquedas sin match a los 7 días (KAN-41)
   startSearchExpirationService();
+
+  // KAN-137: pool de worker threads para el parseo de Excels subidos — se arranca acá (en vez de
+  // lazy en el primer POST /api/upload) para que los workers ya estén levantados y no sumar la
+  // latencia de arranque de worker_threads a la primera subida real.
+  initExcelParsePool();
 
   // KAN-78: el notificador consolidado por email (startEmailNotificationService) se eliminó junto
   // con match_queue — corría cada NOTIFICATION_INTERVAL_MINUTES sin hacer nada desde el pivot a

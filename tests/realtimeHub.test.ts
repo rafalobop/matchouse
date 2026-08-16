@@ -5,6 +5,7 @@ import {
   registerSocket,
   unregisterSocket,
   broadcastMatchCountChanged,
+  broadcastUploadStatus,
   connectedTenantCount,
   initRealtimeHub,
   runHeartbeatSweep
@@ -92,6 +93,44 @@ test('broadcastMatchCountChanged (KAN-88) - ignora sockets que no están OPEN', 
 
 test('broadcastMatchCountChanged (KAN-88) - un tenant sin sockets registrados no rompe el broadcast', () => {
   assert.doesNotThrow(() => broadcastMatchCountChanged(['tenant-sin-sockets']));
+});
+
+test('broadcastUploadStatus (KAN-137) - manda la etapa solo a los sockets del tenant indicado', () => {
+  const socketA = makeFakeSocket();
+  const socketB = makeFakeSocket();
+  registerSocket('tenant-upload-a', socketA);
+  registerSocket('tenant-upload-b', socketB);
+
+  try {
+    broadcastUploadStatus('tenant-upload-a', 'parsing_headers');
+
+    assert.strictEqual(socketA.sent.length, 1);
+    assert.deepStrictEqual(JSON.parse(socketA.sent[0]), { type: 'upload_status', stage: 'parsing_headers' });
+    assert.strictEqual(socketB.sent.length, 0, 'No debe notificar a un tenant que no subió el archivo.');
+  } finally {
+    unregisterSocket('tenant-upload-a', socketA);
+    unregisterSocket('tenant-upload-b', socketB);
+  }
+});
+
+test('broadcastUploadStatus (KAN-137) - incluye los campos extra pasados junto a la etapa', () => {
+  const socket = makeFakeSocket();
+  registerSocket('tenant-upload-c', socket);
+
+  try {
+    broadcastUploadStatus('tenant-upload-c', 'error', { message: 'Archivo corrupto' });
+    assert.deepStrictEqual(JSON.parse(socket.sent[0]), { type: 'upload_status', stage: 'error', message: 'Archivo corrupto' });
+  } finally {
+    unregisterSocket('tenant-upload-c', socket);
+  }
+});
+
+test('broadcastUploadStatus (KAN-137) - un tenant sin sockets registrados no rompe el broadcast', () => {
+  assert.doesNotThrow(() => broadcastUploadStatus('tenant-sin-sockets', 'done'));
+});
+
+test('broadcastUploadStatus (KAN-137) - un tenantId vacío no rompe el broadcast', () => {
+  assert.doesNotThrow(() => broadcastUploadStatus('', 'done'));
 });
 
 test('unregisterSocket (KAN-88) - saca el tenant del registro cuando se cierra su último socket', () => {

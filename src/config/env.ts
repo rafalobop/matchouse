@@ -35,6 +35,8 @@ export interface Config {
   adminAppUrl?: string;
   metricsRateLimitMax: number;
   metricsRateLimitWindowMs: number;
+  excelParsePoolSize: number;
+  excelParseTimeoutMs: number;
   /** KAN-122: nombres de las variables de Supabase que faltan (vacío si están todas presentes). */
   missingSupabaseCredentials: string[];
 }
@@ -124,6 +126,16 @@ export function validateConfig(): Config {
   // da margen para varias pestañas/instancias del mismo admin sin abrir la puerta a scraping.
   const metricsRateLimitMax = parseInt(cleanEnvVar(process.env.METRICS_RATE_LIMIT_MAX) || '30', 10);
   const metricsRateLimitWindowMs = parseInt(cleanEnvVar(process.env.METRICS_RATE_LIMIT_WINDOW_MS) || '60000', 10);
+  // KAN-137: cantidad de worker threads persistentes que parsean Excels subidos (xlsx.read +
+  // resolución de columnas, ver excelParsePool.ts) sin bloquear el event loop del proceso
+  // principal. Default 2: la instancia real de Railway tiene 2 vCPU / 1GB de RAM compartidos con
+  // el resto del proceso (WS hub, notifier-email, search expiration, etc.) — un pool sin límite
+  // podría agotar CPU/RAM ante uploads concurrentes de varios tenants.
+  const excelParsePoolSize = parseInt(cleanEnvVar(process.env.EXCEL_PARSE_POOL_SIZE) || '2', 10);
+  // Límite de tiempo por tarea de parseo en el worker — protege contra un archivo malformado (o
+  // un bug de xlsx) que deje un worker colgado indefinidamente, sacando ese slot del pool para
+  // siempre. 30s es generoso para un Excel de hasta uploadMaxFileSizeBytes (10MB default).
+  const excelParseTimeoutMs = parseInt(cleanEnvVar(process.env.EXCEL_PARSE_TIMEOUT_MS) || '30000', 10);
 
   // KAN-122: sin SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY la app queda inservible (todo el acceso a
   // datos pasa por el cliente service-role de src/services/supabase.ts) — antes de este ticket
@@ -207,6 +219,8 @@ export function validateConfig(): Config {
     adminAppUrl,
     metricsRateLimitMax,
     metricsRateLimitWindowMs,
+    excelParsePoolSize,
+    excelParseTimeoutMs,
     missingSupabaseCredentials
   };
 }

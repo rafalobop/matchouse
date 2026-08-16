@@ -45,6 +45,21 @@ export function connectedTenantCount(): number {
   return tenantSockets.size;
 }
 
+/** Envía `payload` (ya serializado) a todos los sockets abiertos de un único tenant. */
+function sendToTenantSockets(tenantId: string, payload: string): void {
+  const sockets = tenantSockets.get(tenantId);
+  if (!sockets || sockets.size === 0) return;
+
+  for (const socket of sockets) {
+    if (socket.readyState !== socket.OPEN) continue;
+    try {
+      socket.send(payload);
+    } catch (err: any) {
+      logger.error({ error: err.message || err, tenantId }, '[REALTIME] Error al enviar evento WS a un socket.');
+    }
+  }
+}
+
 /**
  * Avisa a todos los sockets abiertos de cada tenant en `tenantIds` que el conteo de matches
  * pudo haber cambiado. Dedupea tenants repetidos (un property upload puede generar varios
@@ -57,19 +72,34 @@ export function broadcastMatchCountChanged(tenantIds: Iterable<string>): void {
   for (const tenantId of tenantIds) {
     if (!tenantId || seen.has(tenantId)) continue;
     seen.add(tenantId);
-
-    const sockets = tenantSockets.get(tenantId);
-    if (!sockets || sockets.size === 0) continue;
-
-    for (const socket of sockets) {
-      if (socket.readyState !== socket.OPEN) continue;
-      try {
-        socket.send(payload);
-      } catch (err: any) {
-        logger.error({ error: err.message || err, tenantId }, '[REALTIME] Error al enviar evento WS a un socket.');
-      }
-    }
+    sendToTenantSockets(tenantId, payload);
   }
+}
+
+// KAN-137: etapas del pipeline real de POST /api/upload (ver src/index.ts) — cada una se notifica
+// en el momento en que arranca, así el agente ve avance real durante la subida en vez de un
+// spinner ciego. No es un porcentaje sintético fila-por-fila (el parseo de hasta
+// uploadMaxFileSizeBytes tarda bien menos de un segundo en el worker, KAN-137) — el tramo largo
+// real es el geocoding secuencial (~1 req/seg contra Nominatim) dentro de "syncing_database".
+export type UploadStatusStage =
+  | 'parsing_headers'
+  | 'resolving_column_mapping'
+  | 'parsing_rows'
+  | 'syncing_database'
+  | 'done'
+  | 'error';
+
+/**
+ * Notifica a un único tenant el estado de su propia subida de Excel en curso (KAN-137). A
+ * diferencia de `broadcastMatchCountChanged` (evento liviano sin datos de negocio, dispara un
+ * refetch), este mensaje sí lleva la etapa — el frontend puede usarlo para mostrar progreso real
+ * sin tener que inferirlo. `POST /api/upload` sigue siendo síncrono (el resultado final viaja en
+ * la respuesta HTTP, no acá) — este canal es solo para que el usuario vea que algo está pasando
+ * mientras espera.
+ */
+export function broadcastUploadStatus(tenantId: string, stage: UploadStatusStage, extra?: Record<string, unknown>): void {
+  if (!tenantId) return;
+  sendToTenantSockets(tenantId, JSON.stringify({ type: 'upload_status', stage, ...extra }));
 }
 
 /**

@@ -14,6 +14,8 @@ import './errorMessageLeak.test';
 import './excel.test';
 import './excelHeaderMatcher.test';
 import './excelMapping.test';
+import './excelParsePool.test';
+import './excelParseWorker.test';
 import './geocoding.test';
 import './graph-em.test';
 import './graph-integration.test';
