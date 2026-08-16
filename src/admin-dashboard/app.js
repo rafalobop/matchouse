@@ -141,24 +141,9 @@ async function loadMetrics() {
 
 // --- Propiedades ---
 
-function zoneBadge(property) {
-  if (property.hasDiscrepancy) {
-    return `<span class="badge discrepancy" title="Punto: ${property.zone.name} | Texto sugiere: ${property.textSuggestedZone.name}">⚠ ${escapeHtml(property.zone.name)}</span>`;
-  }
-  if (property.zoneSource === 'none') {
-    return '<span class="badge none">Sin zona resuelta</span>';
-  }
-  if (property.zoneSource === 'text') {
-    return `<span class="badge text">${escapeHtml(property.zone.name)} (por texto)</span>`;
-  }
-  return `<span class="badge point">${escapeHtml(property.zone.name)}</span>`;
-}
-
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str ?? '';
-  return div.innerHTML;
-}
+// KAN-136: `escapeHtml`/`zoneBadge` viven en htmlSanitize.js (cargado antes que este script en
+// index.html) para poder testearlas con node:test sin un DOM real.
+const { escapeHtml, zoneBadge } = window.BrokazaHtmlSanitize;
 
 async function loadProperties() {
   const params = new URLSearchParams({ page: String(state.page) });
@@ -176,6 +161,25 @@ async function loadProperties() {
   }
 }
 
+// KAN-136 — Auditoría de interpolación de HTML/atributos en este archivo (único consumidor de
+// `innerHTML` con datos dinámicos en el panel admin, ver `renderProperties`/`zoneBadge` arriba):
+// - `p.address` (texto de `<td>`) y `zone.name`/`textSuggestedZone.name` (texto y atributo `title`
+//   de `zoneBadge`): datos de usuario libres (cargados por otro tenant vía Excel/geocoding) — ya
+//   pasaban por `escapeHtml` en el nodo de texto; el bug de este ticket era el atributo `title` sin
+//   escapear. Corregido arriba.
+// - `p.id` (atributo `data-id` del botón "Corregir"): UUID generado por Postgres (columna `id` de
+//   `properties`), nunca texto libre de usuario — riesgo real bajo, pero se envuelve en `escapeHtml`
+//   igual por consistencia y defensa en profundidad (no hay downside: un UUID no contiene ninguno de
+//   los 5 caracteres que escapa la función).
+// - `coordsText` (latitud/longitud): `Number.prototype.toFixed()` sobre columnas `numeric` de la
+//   propiedad — no puede contener HTML, no necesita escape.
+// - `el('modal-address').textContent = property.address` (openCoordModal): asignación directa a
+//   `textContent`, no a `innerHTML` — el DOM nunca interpreta el string como markup, seguro por
+//   construcción sin necesidad de `escapeHtml`.
+// - `el('metric-active-label').title = m.activeUsersDefinition`: mismo caso — asignación directa a
+//   la propiedad `.title` del elemento (no a un template de `innerHTML`), y el valor viene de
+//   `GET /api/metrics` (texto fijo del backend, no de un tenant). Seguro por construcción.
+// No se encontraron más puntos de interpolación de HTML/atributos en este archivo.
 function renderProperties(properties) {
   const tbody = el('properties-tbody');
   tbody.innerHTML = '';
@@ -188,7 +192,7 @@ function renderProperties(properties) {
       <td>${escapeHtml(p.address)}</td>
       <td>${zoneBadge(p)}</td>
       <td>${coordsText}</td>
-      <td><button class="edit-btn" data-id="${p.id}">Corregir</button></td>
+      <td><button class="edit-btn" data-id="${escapeHtml(p.id)}">Corregir</button></td>
     `;
     tr.querySelector('.edit-btn').addEventListener('click', () => openCoordModal(p));
     tbody.appendChild(tr);
