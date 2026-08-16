@@ -5,6 +5,7 @@ import './addressParser.test';
 import './ai.test';
 import './blindMatching.test';
 import './blindMatchPersistence.test';
+import './bodyWhitelist.test';
 import './dashboardMetrics.test';
 import './dashboardMetricsRoute.test';
 import './dolar.test';

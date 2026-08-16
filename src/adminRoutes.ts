@@ -8,6 +8,7 @@ import { withTimeout } from './utils/withTimeout';
 import { createDistributedRateLimiter } from './utils/rateLimit';
 import { getClientIp } from './utils/clientIp';
 import { isValidUUID } from './utils/idValidation';
+import { JSON_BODY_SIZE_LIMIT, jsonBodyParseErrorHandler, validateBodyWhitelist } from './utils/bodyWhitelist';
 import {
   resolvePropertyZoneInfo,
   resolvePropertiesZoneInfoBatch,
@@ -62,7 +63,10 @@ export function mountAdminRouter(app: express.Application): void {
 
   const adminRouter = express.Router();
 
-  adminRouter.use(express.json());
+  // KAN-134: mismo límite explícito + traducción de errores de body-parser que el pipeline
+  // principal de tenants (src/index.ts) — ver src/utils/bodyWhitelist.ts.
+  adminRouter.use(express.json({ limit: JSON_BODY_SIZE_LIMIT }));
+  adminRouter.use(jsonBodyParseErrorHandler);
 
   // --- Auth (públicos, dentro del propio host admin) ---
 
@@ -287,6 +291,12 @@ export function mountAdminRouter(app: express.Application): void {
   const MAX_ZONE_POINTS_PER_REQUEST = 500;
 
   adminRouter.post('/api/zones', adminAuthMiddleware, async (req, res) => {
+    // KAN-134: whitelist de campos del body.
+    const bodyWhitelistError = validateBodyWhitelist(req.body, ['points']);
+    if (bodyWhitelistError) {
+      return res.status(400).json({ error: bodyWhitelistError });
+    }
+
     const points = (req.body ?? {}).points;
 
     if (!Array.isArray(points) || points.length === 0) {
@@ -328,6 +338,13 @@ export function mountAdminRouter(app: express.Application): void {
     if (!isValidUUID(id)) {
       return res.status(400).json({ error: 'Id de propiedad inválido.' });
     }
+
+    // KAN-134: whitelist de campos del body.
+    const bodyWhitelistError = validateBodyWhitelist(req.body, ['latitude', 'longitude']);
+    if (bodyWhitelistError) {
+      return res.status(400).json({ error: bodyWhitelistError });
+    }
+
     if (!isFiniteInRange(latitude, -90, 90) || !isFiniteInRange(longitude, -180, 180)) {
       return res.status(400).json({ error: 'Latitud/longitud inválidas.' });
     }
