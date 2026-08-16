@@ -3,15 +3,28 @@ import assert from 'node:assert';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// KAN-129: regression test — las 12 rutas de src/index.ts que antes hacían
-// `error.message || 'fallback'` en la respuesta JSON al cliente (filtrando mensajes crudos de
-// Postgres/Supabase, ver auditoria.md) ahora solo devuelven el string de fallback genérico. El
-// `error.message` real sigue logueado vía `logger.error`/`console.error` unas líneas antes de cada
-// uno de estos — eso está bien y no se toca. No hay un harness de Express/supertest en este repo
-// (src/index.ts no exporta `app` para testear rutas end-to-end), así que este test valida el mismo
-// contrato a nivel de código fuente: si alguien reintroduce `error.message ||` delante de
-// cualquiera de estos fallbacks, el test falla de inmediato.
-const indexSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.ts'), 'utf-8');
+// KAN-129: regression test — las 12 rutas que antes hacían `error.message || 'fallback'` en la
+// respuesta JSON al cliente (filtrando mensajes crudos de Postgres/Supabase, ver auditoria.md)
+// ahora solo devuelven el string de fallback genérico. El `error.message` real sigue logueado vía
+// `logger.error`/`console.error` unas líneas antes de cada uno de estos — eso está bien y no se
+// toca. No hay un harness de Express/supertest en este repo para testear rutas end-to-end, así que
+// este test valida el mismo contrato a nivel de código fuente: si alguien reintroduce
+// `error.message ||` delante de cualquiera de estos fallbacks, el test falla de inmediato.
+// KAN-142: las 12 rutas se repartieron entre src/index.ts y src/routes/*.ts al partir el
+// monolito — se concatenan todas las fuentes relevantes para no perder cobertura tras la mudanza.
+const ROUTE_SOURCE_FILES = [
+  ['src', 'index.ts'],
+  ['src', 'routes', 'auth.ts'],
+  ['src', 'routes', 'profile.ts'],
+  ['src', 'routes', 'upload.ts'],
+  ['src', 'routes', 'search.ts'],
+  ['src', 'routes', 'matches.ts'],
+  ['src', 'routes', 'notifications.ts'],
+  ['src', 'routes', 'system.ts']
+];
+const indexSource = ROUTE_SOURCE_FILES
+  .map((segments) => fs.readFileSync(path.join(__dirname, '..', ...segments), 'utf-8'))
+  .join('\n');
 
 // Uno por cada una de las 12 rutas — el fragmento de fallback identifica la línea exacta a revisar.
 const CLIENT_FACING_FALLBACKS = [

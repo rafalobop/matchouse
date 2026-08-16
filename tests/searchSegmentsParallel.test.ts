@@ -68,9 +68,10 @@ function delayedSuccess(ms: number, raw_text: string): Promise<SearchSegmentResu
 // --- AC1: usa Promise.all para procesar los segmentos en paralelo ---
 
 test('KAN-132 (AC1) - POST /api/search usa Promise.all para procesar los segmentos, no un loop secuencial con await', () => {
-  const indexSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.ts'), 'utf-8');
-  const searchRouteIdx = indexSource.indexOf("app.post('/api/search'");
-  assert.ok(searchRouteIdx >= 0, 'No se encontró la ruta POST /api/search en src/index.ts — el test quedó desactualizado.');
+  // KAN-142: la ruta se movió de src/index.ts a src/routes/search.ts al partir el monolito.
+  const indexSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'search.ts'), 'utf-8');
+  const searchRouteIdx = indexSource.indexOf("router.post('/api/search'");
+  assert.ok(searchRouteIdx >= 0, 'No se encontró la ruta POST /api/search en src/routes/search.ts — el test quedó desactualizado.');
 
   const routeBlock = indexSource.slice(searchRouteIdx, searchRouteIdx + 3000);
   assert.match(routeBlock, /segments\.map\(/, 'El procesamiento de segmentos debe mapear el array (paralelo), no iterarlo con un for.');
