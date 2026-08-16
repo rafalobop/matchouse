@@ -36,6 +36,7 @@ import { sanitizeMetricNumber } from './utils/dashboardMetrics';
 import { mountAdminRouter } from './adminRoutes';
 import { nodeEnvCheckMiddleware } from './utils/nodeEnvCheck';
 import { globalErrorHandler } from './utils/errorHandler';
+import { JSON_BODY_SIZE_LIMIT, jsonBodyParseErrorHandler, validateBodyWhitelist } from './utils/bodyWhitelist';
 import {
   buildBlindMatchInsertRows,
   mapBlindMatchRowToDashboardShape,
@@ -89,7 +90,11 @@ app.use(
     }
   })
 );
-app.use(express.json());
+// KAN-134: límite explícito (antes quedaba en el default de 100kb de body-parser, nunca
+// declarado a propósito) + traducción de los errores de body-parser (payload de más, JSON
+// malformado) a una respuesta clara — ver src/utils/bodyWhitelist.ts.
+app.use(express.json({ limit: JSON_BODY_SIZE_LIMIT }));
+app.use(jsonBodyParseErrorHandler);
 app.use(cookieParser());
 
 // Panel admin (app.admin.brokaza.com): se monta ANTES que el resto del pipeline de tenants
@@ -415,6 +420,13 @@ app.post('/api/profile', tenantAuthMiddleware, async (req, res) => {
   // así que se hardcodea acá en vez de confiar en lo que mande el body (defensa en profundidad,
   // ni un payload manipulado puede setear otro país).
   const { first_name, last_name, phone_number, agency_name, city } = req.body;
+
+  // KAN-134: whitelist de campos del body — rechaza cualquier key inesperada antes de validar
+  // el contenido de las esperadas.
+  const bodyWhitelistError = validateBodyWhitelist(req.body, ['first_name', 'last_name', 'phone_number', 'agency_name', 'city']);
+  if (bodyWhitelistError) {
+    return res.status(400).json({ error: bodyWhitelistError });
+  }
 
   const validationError = validateProfileInput({ first_name, last_name, phone_number, agency_name, city });
   if (validationError) {
@@ -788,6 +800,12 @@ app.post('/api/search', tenantAuthMiddleware, async (req, res) => {
   const tenantSupabase = (req as any).supabaseClient;
   const { text } = req.body;
 
+  // KAN-134: whitelist de campos del body.
+  const bodyWhitelistError = validateBodyWhitelist(req.body, ['text']);
+  if (bodyWhitelistError) {
+    return res.status(400).json({ error: bodyWhitelistError });
+  }
+
   // KAN-71: rate limit por tenant — este endpoint dispara llamadas pagas a Gemini/OpenAI por
   // request (extractFromTextInput, y ahora también segmentSearchRequests), así que abuso acá
   // tiene costo real, no solo carga de CPU.
@@ -1148,6 +1166,12 @@ app.post('/api/matches/:id/feedback', tenantAuthMiddleware, async (req, res) => 
   const { status, reason } = req.body;
   const supabase = (req as any).supabaseClient;
 
+  // KAN-134: whitelist de campos del body.
+  const bodyWhitelistError = validateBodyWhitelist(req.body, ['status', 'reason']);
+  if (bodyWhitelistError) {
+    return res.status(400).json({ error: bodyWhitelistError });
+  }
+
   if (!status || !['ACCEPTED', 'REJECTED'].includes(status)) {
     return res.status(400).json({ error: 'El estado debe ser ACCEPTED o REJECTED' });
   }
@@ -1185,6 +1209,12 @@ app.post('/api/notifications/subscribe', tenantAuthMiddleware, async (req, res) 
   const tenantId = (req as any).tenantId;
   const { subscription } = req.body;
   const supabase = (req as any).supabaseClient;
+
+  // KAN-134: whitelist de campos del body.
+  const bodyWhitelistError = validateBodyWhitelist(req.body, ['subscription']);
+  if (bodyWhitelistError) {
+    return res.status(400).json({ error: bodyWhitelistError });
+  }
 
   if (!subscription || !subscription.endpoint) {
     return res.status(400).json({ error: 'Suscripción inválida' });
