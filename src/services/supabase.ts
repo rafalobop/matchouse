@@ -2,6 +2,14 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { config } from '../config/env';
 import ws from 'ws';
 import jwt from 'jsonwebtoken';
+import type { Database } from '../types/database.types';
+
+// KAN-139: `SupabaseClient<Database>` en vez del genérico sin tipar — con esto, cada
+// `.from('tabla')` de cualquier caller que reciba un cliente creado acá (directo o vía
+// `getTenantClient`) tipa `select`/`insert`/`update`/`delete` contra el schema real (columnas,
+// nullability, FKs) en vez de `any` implícito. `Database` vive en `src/types/database.types.ts`,
+// generado desde el schema real de Supabase (no escrito a mano).
+export type TypedSupabaseClient = SupabaseClient<Database>;
 
 // KAN-122: la validación real (fail-fast salvo ALLOW_MISSING_SUPABASE_CREDENTIALS=true) vive en
 // src/config/env.ts#validateConfig. Fix QA (2026-08-14): `createClient('', ...)` no es un cliente
@@ -15,7 +23,7 @@ import jwt from 'jsonwebtoken';
 // Fix: si faltan credenciales, `supabase` es un Proxy que solo tira al primer uso real (cualquier
 // función que dependa de la base sigue fallando, como debe ser), no al importar el módulo — el
 // arranque del servidor no depende de que Supabase esté configurado.
-function createMissingCredentialsStub(): SupabaseClient {
+function createMissingCredentialsStub(): TypedSupabaseClient {
   return new Proxy({}, {
     get(): never {
       throw new Error(
@@ -23,12 +31,12 @@ function createMissingCredentialsStub(): SupabaseClient {
         'Configuralas en el archivo .env.'
       );
     }
-  }) as unknown as SupabaseClient;
+  }) as unknown as TypedSupabaseClient;
 }
 
-export const supabase: SupabaseClient = config.missingSupabaseCredentials.length > 0
+export const supabase: TypedSupabaseClient = config.missingSupabaseCredentials.length > 0
   ? createMissingCredentialsStub()
-  : createClient(
+  : createClient<Database>(
       config.supabaseUrl!,
       config.supabaseServiceRoleKey!,
       {
@@ -61,7 +69,7 @@ export function generateTenantToken(tenantId: string, sessionToken: string): str
 // siempre, sin importar que el token real expire a los 7 días (ver generateTenantToken). Con
 // tráfico real y logins repetidos, el proceso crecía sin límite hasta el próximo reinicio.
 interface TenantClientCacheEntry {
-  client: SupabaseClient;
+  client: TypedSupabaseClient;
   expiresAt: number;
 }
 
@@ -74,7 +82,7 @@ const tenantClientsCache = new Map<string, TenantClientCacheEntry>();
  * Retorna un cliente de Supabase configurado con la clave Anon y el JWT del Tenant.
  * Esto obliga a PostgREST a aplicar RLS en base al tenant.
  */
-export function getTenantClient(token: string): SupabaseClient {
+export function getTenantClient(token: string): TypedSupabaseClient {
   const cached = tenantClientsCache.get(token);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.client;
@@ -83,7 +91,7 @@ export function getTenantClient(token: string): SupabaseClient {
   // Lectura + escritura sincrónicas dentro del mismo tick de JS: no hay ninguna operación async
   // en el medio que permita que dos llamadas concurrentes con el mismo token pisen entradas entre
   // sí (nada de condiciones de carrera posibles acá, a diferencia de un cache respaldado por I/O).
-  const client = createClient(
+  const client = createClient<Database>(
     config.supabaseUrl || '',
     config.supabaseAnonKey || '',
     {

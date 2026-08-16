@@ -4,16 +4,34 @@ import jwt from 'jsonwebtoken';
 import {
   generateTenantToken,
   getTenantClient,
+  supabase,
   TENANT_CLIENT_CACHE_TTL_MS,
+  TypedSupabaseClient,
   __getTenantClientCacheSizeForTests,
   __expireTenantClientForTests,
   __sweepTenantClientsCacheForTests
 } from '../src/services/supabase';
 import { config } from '../src/config/env';
 
+// KAN-139: guard de compilación (nunca se invoca en runtime) — si alguien rompe el wiring de
+// `TypedSupabaseClient`/`Database` (ej. cambia `supabase.ts` para volver a un cliente sin tipar),
+// esta función deja de tipar y `tsc --noEmit` falla acá, sin depender de que un test en runtime
+// lo detecte (los tipos se borran al compilar, no hay forma de "assertear" esto con node:test).
+function _typeCheckOnly_typedSupabaseClientSelectsRealColumns(client: TypedSupabaseClient) {
+  return client.from('properties').select('address, price, tenant_id');
+}
+void _typeCheckOnly_typedSupabaseClientSelectsRealColumns;
+
 test('Supabase Service - Debería exportar funciones de generación de JWT y cliente', () => {
   assert.strictEqual(typeof generateTenantToken, 'function', 'generateTenantToken debe ser una función.');
   assert.strictEqual(typeof getTenantClient, 'function', 'getTenantClient debe ser una función.');
+});
+
+test('Supabase Service (KAN-139) - supabase/getTenantClient siguen exponiendo la API real del SDK (from/select) tras tipar con Database', () => {
+  assert.strictEqual(typeof supabase.from, 'function', 'El cliente tipado debe seguir exponiendo .from() en runtime (los tipos no cambian el JS emitido).');
+  const token = generateTenantToken('77777777-7777-7777-7777-777777777777', 'session-typed');
+  const tenantClient = getTenantClient(token);
+  assert.strictEqual(typeof tenantClient.from, 'function');
 });
 
 test('Supabase Service - generateTenantToken (KAN-63) firma un JWT válido para RLS con role=authenticated y sub=tenantId', () => {
