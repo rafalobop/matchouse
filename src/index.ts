@@ -58,11 +58,11 @@ const upload = multer({
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('[PROCESO] Promesa no capturada (Unhandled Rejection):', reason);
+  logger.error({ reason }, '[PROCESO] Promesa no capturada (Unhandled Rejection)');
 });
 
 process.on('uncaughtException', (error) => {
-  console.error('[PROCESO] Error no controlado (Uncaught Exception):', error);
+  logger.error({ error }, '[PROCESO] Error no controlado (Uncaught Exception)');
 });
 
 // KAN-124: solo advierte (logger.warn, una vez por proceso) si NODE_ENV no es 'production' — no
@@ -556,7 +556,7 @@ app.post('/api/upload', tenantAuthMiddleware, async (req, res, next) => {
     broadcastUploadStatus(tenantId, 'done');
     res.json({ success: true, count: catalog.length, priceParseErrors });
   } catch (error: any) {
-    console.error('Error al procesar subida de Excel:', error);
+    logger.error({ error }, 'Error al procesar subida de Excel');
     // KAN-137: un error del worker (archivo malformado, timeout, worker caído) llega acá como
     // cualquier otro error de la promesa — el pool ya se auto-recupera (ver excelParsePool.ts),
     // así que este catch no necesita distinguir su origen.
@@ -654,7 +654,7 @@ app.post('/api/upload/confirm-mapping', tenantAuthMiddleware, async (req, res, n
     if (error instanceof ExcelMappingServiceError) {
       return res.status(400).json({ error: error.message });
     }
-    console.error('Error al confirmar mapeo de columnas y procesar Excel:', error);
+    logger.error({ error }, 'Error al confirmar mapeo de columnas y procesar Excel');
     broadcastUploadStatus(tenantId, 'error');
     res.status(500).json({ error: 'Error interno al procesar el archivo.' });
   }
@@ -1214,7 +1214,7 @@ app.post('/api/matches/:id/feedback', tenantAuthMiddleware, async (req, res) => 
 
     res.json({ success: true });
   } catch (error: any) {
-    console.error('Error al actualizar el feedback de match:', error);
+    logger.error({ error }, 'Error al actualizar el feedback de match');
     res.status(500).json({ error: 'Error interno al guardar feedback.' });
   }
 });
@@ -1262,7 +1262,7 @@ app.post('/api/notifications/subscribe', tenantAuthMiddleware, async (req, res) 
 
     res.json({ success: true });
   } catch (error: any) {
-    console.error('Error al registrar suscripción web push:', error);
+    logger.error({ error }, 'Error al registrar suscripción web push');
     res.status(500).json({ error: 'Error interno al suscribir.' });
   }
 });
@@ -1277,7 +1277,7 @@ app.use(globalErrorHandler);
 // ==========================================
 
 async function main() {
-  console.log('Iniciando Brokaza MVP Multi-Tenant con Dashboard...');
+  logger.info('Iniciando Brokaza MVP Multi-Tenant con Dashboard...');
 
   // Iniciar servicio de cotización de Dólar Blue (dinámico y horaria)
   startDolarService();
@@ -1300,13 +1300,11 @@ async function main() {
   initRealtimeHub(server);
 
   server.listen(PORT, () => {
-    console.log(`\n=========================================`);
-    console.log(`DASHBOARD DISPONIBLE EN: http://localhost:${PORT}`);
-    console.log(`=========================================\n`);
+    logger.info({ port: PORT }, `DASHBOARD DISPONIBLE EN: http://localhost:${PORT}`);
   });
 }
 
 // Iniciar aplicación
 main().catch((error) => {
-  console.error('Fallo crítico al iniciar la aplicación:', error);
+  logger.error({ error }, 'Fallo crítico al iniciar la aplicación');
 });
