@@ -97,13 +97,13 @@ export function buildEmailHtml(groupName: string, originalText: string, sender: 
 </html>`;
 }
 
-// KAN-48: email como canal de respaldo permanente para el evento "match encontrado" del matching
-// ciego (POST /api/search, KAN-44/45/46) — plantilla nueva porque el match ahí tiene otra forma
-// (`domicilio`/`precio`/`moneda`/etc., ver mapeo en src/index.ts) que el `match_queue` legacy de
-// WhatsApp que usa buildEmailHtml/buildPropertyRowHtml de más arriba. A diferencia del push (que
-// por privacidad viaja genérico, sin datos de la propiedad), acá sí se incluye el detalle completo
-// porque el email es un canal privado 1:1 con el tenant dueño de la búsqueda, mismo nivel de
-// acceso que ya tenía la respuesta HTTP original de POST /api/search.
+// KAN-48: fila de propiedad para los emails del matching ciego (`domicilio`/`precio`/`moneda`/
+// etc., ver mapeo en src/index.ts — otra forma que el `match_queue` legacy de WhatsApp que usa
+// buildEmailHtml/buildPropertyRowHtml de más arriba). Compartida entre los dos emails de este
+// dominio — hoy solo la usa `buildIncomingMatchEmailHtml` (aviso al dueño de la propiedad
+// matcheada); el email equivalente al buscador (`buildBlindMatchEmailHtml`/
+// `sendBlindMatchEmailFallback`) se retiró por decisión de producto (2026-08-21) — el buscador ya
+// no se notifica de los matches de su propia búsqueda, ver `src/routes/search.ts`.
 export function buildBlindMatchPropertyRowHtml(match: any): string {
   const prop = match.property;
   const direccion = prop.pisoLote ? `${prop.domicilio} (${prop.pisoLote})` : prop.domicilio;
@@ -118,66 +118,9 @@ export function buildBlindMatchPropertyRowHtml(match: any): string {
     </tr>`;
 }
 
-export function buildBlindMatchEmailHtml(searchText: string, matches: any[]): string {
-  const truncatedText = searchText.length > 150 ? `${searchText.substring(0, 150)}...` : searchText;
-  const rows = matches.map(buildBlindMatchPropertyRowHtml).join('\n');
-
-  return `<!DOCTYPE html>
-<html>
-<body style="font-family:Arial,Helvetica,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px;margin:0;">
-  <div style="max-width:600px;margin:0 auto;">
-    <h2 style="color:#ffffff;">🏠 Brokaza — Nuevos matches para tu búsqueda</h2>
-    <p style="color:#94a3b8;">Tu búsqueda: "${truncatedText}"</p>
-    <table style="width:100%;border-collapse:collapse;background:#1e293b;border-radius:8px;overflow:hidden;">
-      ${rows}
-    </table>
-    <p style="color:#64748b;font-size:12px;margin-top:16px;">Entrá a tu Dashboard de Brokaza para ver el detalle completo y gestionar tus búsquedas.</p>
-  </div>
-</body>
-</html>`;
-}
-
-export async function sendBlindMatchEmailFallback(tenantId: string, searchText: string, matches: any[], client = supabase): Promise<boolean> {
-  if (!matches || matches.length === 0) return false;
-
-  const { data: profile, error: profileError } = await client
-    .from('profiles')
-    .select('email')
-    .eq('id', tenantId)
-    .single();
-
-  if (profileError || !profile?.email) {
-    logger.warn({ tenantId }, '[NOTIFIER-EMAIL] Tenant sin email registrado en profiles. Omitiendo fallback de matching ciego.');
-    return false;
-  }
-
-  const html = buildBlindMatchEmailHtml(searchText, matches);
-
-  try {
-    const resend = getResendClient();
-    const result = await resend.emails.send({
-      from: FROM_ADDRESS,
-      to: profile.email,
-      subject: `🏠 Brokaza: ${matches.length} match(es) nuevo(s) para tu búsqueda`,
-      html
-    });
-
-    if (result.error) {
-      logger.error({ error: result.error, tenantId }, '[NOTIFIER-EMAIL] Resend devolvió un error al enviar el fallback de matching ciego.');
-      return false;
-    }
-
-    logger.info({ tenantId, matchCount: matches.length, emailId: result.data?.id }, '[NOTIFIER-EMAIL] Email de respaldo (matching ciego) enviado con éxito.');
-    return true;
-  } catch (sendErr: any) {
-    logger.error({ error: sendErr.message || sendErr, tenantId }, '[NOTIFIER-EMAIL] Error al despachar el email de respaldo de matching ciego.');
-    return false;
-  }
-}
-
-// KAN-78: aviso al dueño de la propiedad matcheada de que un agente la buscó — dirección
-// recíproca a sendBlindMatchEmailFallback (que avisa al buscador). A diferencia del push
-// (genérico por privacidad, ver buildIncomingMatchPushPayload en webPush.ts), el email SÍ incluye
+// KAN-78: aviso al dueño de la propiedad matcheada de que un agente la buscó — único lado que se
+// notifica (ver comentario de `buildBlindMatchPropertyRowHtml` de más arriba). A diferencia del
+// push (genérico por privacidad, ver buildIncomingMatchPushPayload en webPush.ts), el email SÍ incluye
 // el contacto completo del buscador (nombre/teléfono/inmobiliaria) porque es un canal privado 1:1
 // con el dueño de la propiedad — sin este dato, el dueño no tiene forma de contactar al
 // interesado si no revisa el dashboard a tiempo (gap identificado en KAN-78).
