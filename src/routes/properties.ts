@@ -2,6 +2,11 @@ import express from 'express';
 import { logger } from '../services/logger';
 import { validateBodyWhitelist } from '../utils/bodyWhitelist';
 import { tenantAuthMiddleware } from '../middleware/tenantAuth';
+import {
+  resolvePropertiesZoneInfoBatch,
+  resolvePropertyZoneInfo,
+  type PropertyForZoneBatch
+} from '../services/zonesService';
 
 // KAN-273: CRUD de propiedades para la tabla interactiva del dashboard (visualización, edición,
 // filtros/orden, alta y baja desde la UI, sin depender de un re-upload del Excel). Todas las rutas
@@ -27,16 +32,52 @@ type SortableField = typeof SORTABLE_FIELDS[number];
 
 const CREATE_FIELDS = [
   'address', 'floor', 'unit', 'block', 'lot', 'price', 'currency', 'maintenance_fees',
-  'bedrooms', 'features', 'contact_info', 'operation', 'property_type'
+  'bedrooms', 'features', 'contact_info', 'operation', 'property_type', 'latitude', 'longitude'
 ] as const;
 const UPDATE_FIELDS = [...CREATE_FIELDS, 'expectedUpdatedAt'] as const;
 
 const PROPERTY_SELECT = 'id, address, floor, unit, block, lot, price, currency, maintenance_fees, ' +
   'bedrooms, features, contact_info, operation, property_type, sheet_name, latitude, longitude, ' +
-  'created_at, updated_at';
+  'zone_id, neighborhoods!properties_zone_id_fkey(id, name, group_id), created_at, updated_at';
 
 interface ValidationResult {
   error?: string;
+}
+
+/** Aplana el join embebido `neighborhoods!properties_zone_id_fkey` de `PROPERTY_SELECT` a un
+ * campo `zone` limpio — mismo shape que ya devuelve `GET /api/catalog/properties`. */
+function toPropertyResponse(row: any) {
+  const { neighborhoods, zone_id, ...rest } = row;
+  return { ...rest, zone: neighborhoods ? { id: neighborhoods.id, name: neighborhoods.name } : null };
+}
+
+/** Igual criterio que `PATCH /admin/api/properties/:id/coordinates` (KAN-130): cuando lat/lng
+ * cambian, el `zone_id` cacheado quedó desactualizado — se recalcula acá y solo se persiste si
+ * salió de PostGIS (match por punto), no si es una sugerencia por texto. */
+async function refreshZoneId(
+  supabase: any,
+  id: string,
+  latitude: number | null,
+  longitude: number | null,
+  address: string,
+  features: string | null | undefined,
+  sheetName: string
+): Promise<void> {
+  if (latitude === null || longitude === null) {
+    await supabase.from('properties').update({ zone_id: null }).eq('id', id);
+    return;
+  }
+  const zoneInfo = await resolvePropertyZoneInfo({
+    latitude,
+    longitude,
+    address,
+    features: features ?? undefined,
+    sheet_name: sheetName
+  });
+  await supabase
+    .from('properties')
+    .update({ zone_id: zoneInfo.source === 'point' ? zoneInfo.zone!.id : null })
+    .eq('id', id);
 }
 
 // Validación compartida por POST (todos los campos requeridos) y PATCH (solo los presentes).
@@ -79,6 +120,16 @@ function validateFields(body: any, requireAll: boolean): ValidationResult {
   for (const field of ['floor', 'unit', 'block', 'lot', 'features', 'contact_info'] as const) {
     if (body[field] !== undefined && body[field] !== null && typeof body[field] !== 'string') {
       return { error: `El campo "${field}" debe ser un texto.` };
+    }
+  }
+  if (body.latitude !== undefined && body.latitude !== null) {
+    if (typeof body.latitude !== 'number' || !Number.isFinite(body.latitude) || body.latitude < -90 || body.latitude > 90) {
+      return { error: 'El campo "latitude" debe ser un número entre -90 y 90.' };
+    }
+  }
+  if (body.longitude !== undefined && body.longitude !== null) {
+    if (typeof body.longitude !== 'number' || !Number.isFinite(body.longitude) || body.longitude < -180 || body.longitude > 180) {
+      return { error: 'El campo "longitude" debe ser un número entre -180 y 180.' };
     }
   }
   return {};
@@ -141,7 +192,26 @@ router.get('/api/catalog/properties', tenantAuthMiddleware, async (req, res) => 
     const { data, error, count } = await query;
     if (error) throw error;
 
-    res.json({ properties: data || [], total: count || 0 });
+    // Mismo patrón que GET /api/properties del panel admin (KAN-130): `zone_id` ya cacheado se usa
+    // tal cual (0 llamadas extra vía el join embebido de arriba), y las filas sin caché se resuelven
+    // juntas con un único RPC batch en vez de 1 round-trip por propiedad.
+    const rows = data || [];
+    const propertiesForBatch: PropertyForZoneBatch[] = rows.map((p: any) => ({
+      latitude: p.latitude,
+      longitude: p.longitude,
+      address: p.address,
+      features: p.features ?? undefined,
+      sheet_name: p.sheet_name,
+      cachedZone: p.neighborhoods ? { id: p.neighborhoods.id, name: p.neighborhoods.name } : null
+    }));
+    const zoneInfos = await resolvePropertiesZoneInfoBatch(propertiesForBatch);
+
+    const properties = rows.map((p: any, idx: number) => {
+      const { neighborhoods, zone_id, ...rest } = p;
+      return { ...rest, zone: zoneInfos[idx].zone };
+    });
+
+    res.json({ properties, total: count || 0 });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[PROPERTIES] Error al listar propiedades');
     res.status(500).json({ error: 'Error interno al listar propiedades.' });
@@ -178,6 +248,8 @@ router.post('/api/catalog/properties', tenantAuthMiddleware, async (req, res) =>
       contact_info: req.body.contact_info || null,
       operation: req.body.operation,
       property_type: req.body.property_type,
+      latitude: req.body.latitude ?? null,
+      longitude: req.body.longitude ?? null,
       // KAN-273: alta manual, no viene de una hoja de Excel — se documenta el origen para no
       // confundirla con una fila sincronizada, que sí tiene sheet_name real.
       sheet_name: 'Alta manual',
@@ -192,7 +264,17 @@ router.post('/api/catalog/properties', tenantAuthMiddleware, async (req, res) =>
 
     if (error) throw error;
 
-    res.status(201).json({ property: data });
+    if (data.latitude !== null && data.longitude !== null) {
+      try {
+        await refreshZoneId(supabase, data.id, data.latitude, data.longitude, data.address, data.features, data.sheet_name);
+        const { data: refreshed } = await supabase.from('properties').select(PROPERTY_SELECT).eq('id', data.id).single();
+        if (refreshed) return res.status(201).json({ property: toPropertyResponse(refreshed) });
+      } catch (zoneError: any) {
+        logger.error({ err: zoneError.message, propertyId: data.id }, '[PROPERTIES] No se pudo resolver la zona al crear la propiedad');
+      }
+    }
+
+    res.status(201).json({ property: toPropertyResponse(data) });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[PROPERTIES] Error al crear propiedad');
     res.status(500).json({ error: 'Error interno al crear la propiedad.' });
@@ -207,7 +289,7 @@ router.post('/api/catalog/properties', tenantAuthMiddleware, async (req, res) =>
 // frontend pueda mostrarlo y el usuario decida cómo reconciliar.
 router.patch('/api/catalog/properties/:id', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
-  const { id } = req.params;
+  const id = req.params.id as string;
   const supabase = (req as any).supabaseClient;
 
   const bodyWhitelistError = validateBodyWhitelist(req.body, UPDATE_FIELDS);
@@ -265,11 +347,22 @@ router.patch('/api/catalog/properties/:id', tenantAuthMiddleware, async (req, re
       }
       return res.status(409).json({
         error: 'La propiedad fue modificada por otra persona desde que la cargaste. Volvé a intentar con los datos actuales.',
-        property: current
+        property: toPropertyResponse(current)
       });
     }
 
-    res.json({ property: data[0] });
+    const updated = data[0];
+    if ('latitude' in fields || 'longitude' in fields) {
+      try {
+        await refreshZoneId(supabase, id, updated.latitude, updated.longitude, updated.address, updated.features, updated.sheet_name);
+        const { data: refreshed } = await supabase.from('properties').select(PROPERTY_SELECT).eq('id', id).single();
+        if (refreshed) return res.json({ property: toPropertyResponse(refreshed) });
+      } catch (zoneError: any) {
+        logger.error({ err: zoneError.message, propertyId: id }, '[PROPERTIES] No se pudo refrescar la zona al actualizar coordenadas');
+      }
+    }
+
+    res.json({ property: toPropertyResponse(updated) });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId, propertyId: id }, '[PROPERTIES] Error al actualizar propiedad');
     res.status(500).json({ error: 'Error interno al actualizar la propiedad.' });

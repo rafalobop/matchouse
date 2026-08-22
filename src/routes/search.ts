@@ -249,7 +249,9 @@ router.post('/api/search', tenantAuthMiddleware, async (req, res) => {
 // tabla que relacione active_searches con propiedades de otro tenant) — no hay un contador
 // guardado del que leer, y recalcularlo es lo que garantiza que quede "consistente con la base".
 // Incluye 'expired' además de 'active' (antes solo traía 'active') para que el dashboard pueda
-// ofrecer "Reactivar" sobre búsquedas vencidas — 'matched'/'cancelled' (archivadas) quedan afuera.
+// ofrecer "Reactivar" sobre búsquedas vencidas. También trae 'matched'/'cancelled' (KAN-273
+// follow-up, filtro de "Archivadas" del dashboard) — antes quedaban afuera por completo y no había
+// forma de listar el historial archivado desde la UI.
 router.get('/api/searches', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
   const tenantSupabase = (req as any).supabaseClient;
@@ -259,14 +261,16 @@ router.get('/api/searches', tenantAuthMiddleware, async (req, res) => {
       .from('active_searches')
       .select('id, raw_text, criteria, status, zone_status, zone_ids, zone_names, zone_text_original, created_at, expires_at')
       .eq('tenant_id', tenantId)
-      .in('status', ['active', 'expired'])
+      .in('status', ['active', 'expired', 'matched', 'cancelled'])
       .order('created_at', { ascending: false });
 
     if (error) throw error;
 
     const results = await Promise.all((searches || []).map(async (search: any) => {
       let matchesCount = 0;
-      try {
+      // Archivadas ('matched'/'cancelled'): no están "en curso", recalcular su cruce contra la
+      // cartera en cada carga del historial es trabajo desperdiciado (no se van a re-matchear).
+      if (search.status === 'active' || search.status === 'expired') try {
         // Reconstruye el zoneIntent persistido para que el recálculo en vivo respete el estado de
         // zona real de la búsqueda (antes de este cambio se ignoraba por completo acá).
         const zoneIntent: ZoneIntentRequest = {
