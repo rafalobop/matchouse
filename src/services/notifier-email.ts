@@ -5,6 +5,57 @@ import { config } from '../config/env';
 
 const FROM_ADDRESS = 'Brokaza <hola@brokaza.com>';
 
+// Brokaza Visual Brain v1.0 — mismos tokens que `brokaza-frontend/src/app/globals.css` (paleta
+// forest/olive/slate/sage/paper). Los emails no pueden usar CSS variables ni el tema oscuro (cada
+// cliente de correo lo renderiza distinto y muchos ignoran `prefers-color-scheme`), así que se
+// hardcodean los valores del tema claro directo en los estilos inline de cada template.
+const BRAND = {
+  forest: '#36461E',
+  olive: '#6C863A',
+  oliveHover: '#56702E',
+  slate: '#617990',
+  sage: '#DEE2DC',
+  paper: '#F7F8F4',
+  white: '#FFFFFF'
+};
+
+// El logo vive en `brokaza-frontend/public/logo_brokaza.png` — `config.appUrl` apunta al frontend
+// desplegado (Site URL de Supabase, ver SPEC-0013), así que esta URL resuelve al mismo asset que
+// ya usan el sidebar/login/loader/404 del dashboard. En local (`APP_URL` sin setear, default
+// `http://localhost:3000`) el logo no va a cargar en la preview del email — es esperable, no un
+// bug: ningún cliente de correo real puede alcanzar `localhost`.
+function brandLogoUrl(): string {
+  return `${config.appUrl}/logo_brokaza.png`;
+}
+
+/**
+ * Shell compartido por los emails "de marca" (magic link ×3, aviso de interesado) — header con
+ * logo circular + título, card clara sobre fondo sage, footer chico. Separado de
+ * `buildEmailHtml`/`buildBlindMatchPropertyRowHtml` de más abajo (tema oscuro, sin logo) porque
+ * esos son el canal legacy de WhatsApp, dormido (SPEC-0014) y fuera de este rediseño.
+ */
+function buildBrandedEmailShell(title: string, bodyHtml: string, footerNote?: string): string {
+  return `<!DOCTYPE html>
+<html>
+<body style="font-family:Arial,Helvetica,sans-serif;background:${BRAND.sage};color:${BRAND.forest};padding:32px 16px;margin:0;">
+  <div style="max-width:460px;margin:0 auto;background:${BRAND.paper};border-radius:16px;padding:36px 28px;box-shadow:0 8px 24px rgba(42,54,56,0.12);">
+    <div style="text-align:center;margin-bottom:20px;">
+      <img src="${brandLogoUrl()}" width="56" height="56" alt="Brokaza" style="border-radius:50%;display:inline-block;" />
+    </div>
+    <h1 style="text-align:center;color:${BRAND.forest};font-size:20px;margin:0 0 16px;">${title}</h1>
+    ${bodyHtml}
+    <p style="text-align:center;color:${BRAND.slate};font-size:12px;margin-top:28px;">${footerNote ?? 'Brokaza — matching inmobiliario para agentes en Tucumán.'}</p>
+  </div>
+</body>
+</html>`;
+}
+
+function buildEmailCtaButton(link: string, label: string): string {
+  return `<div style="text-align:center;margin:28px 0;">
+    <a href="${link}" style="display:inline-block;background:${BRAND.olive};color:${BRAND.white};text-decoration:none;padding:13px 32px;border-radius:8px;font-weight:700;font-size:15px;">${label}</a>
+  </div>`;
+}
+
 let resendClient: Resend | null = null;
 
 function getResendClient(): Resend {
@@ -110,10 +161,10 @@ export function buildBlindMatchPropertyRowHtml(match: any): string {
 
   return `
     <tr>
-      <td style="padding:16px;border-bottom:1px solid #2d3b53;">
-        <strong style="color:#f1f5f9;">${direccion}</strong><br/>
-        <span style="color:#94a3b8;font-size:13px;">${prop.tipo_propiedad} · ${prop.operacion} · ${prop.dormitorios} dorm.</span><br/>
-        <span style="color:#f1f5f9;font-weight:600;">${prop.moneda} ${prop.precio}</span>
+      <td style="padding:16px;border-bottom:1px solid rgba(42,54,56,0.1);">
+        <strong style="color:${BRAND.forest};">${direccion}</strong><br/>
+        <span style="color:${BRAND.slate};font-size:13px;">${prop.tipo_propiedad} · ${prop.operacion} · ${prop.dormitorios} dorm.</span><br/>
+        <span style="color:${BRAND.olive};font-weight:700;">${prop.moneda} ${prop.precio}</span>
       </td>
     </tr>`;
 }
@@ -131,20 +182,18 @@ export function buildIncomingMatchEmailHtml(searcherSnapshot: { full_name: strin
     .filter(Boolean)
     .join(' · ');
 
-  return `<!DOCTYPE html>
-<html>
-<body style="font-family:Arial,Helvetica,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px;margin:0;">
-  <div style="max-width:600px;margin:0 auto;">
-    <h2 style="color:#ffffff;">🏠 Brokaza — Un agente busca una propiedad como una de las tuyas</h2>
-    <p style="color:#94a3b8;">Búsqueda: "${truncatedText}"</p>
-    <p style="color:#f1f5f9;font-weight:600;">Contacto: ${contactoLinea || 'Sin datos de contacto disponibles'}</p>
-    <table style="width:100%;border-collapse:collapse;background:#1e293b;border-radius:8px;overflow:hidden;">
+  const body = `
+    <p style="text-align:center;color:${BRAND.slate};font-size:14px;margin:0 0 4px;">Búsqueda: "${truncatedText}"</p>
+    <p style="text-align:center;color:${BRAND.forest};font-weight:700;font-size:15px;margin:0 0 24px;">Contacto: ${contactoLinea || 'Sin datos de contacto disponibles'}</p>
+    <table style="width:100%;border-collapse:collapse;background:${BRAND.white};border-radius:12px;overflow:hidden;border:1px solid rgba(42,54,56,0.12);">
       ${rows}
-    </table>
-    <p style="color:#64748b;font-size:12px;margin-top:16px;">Entrá a tu Dashboard de Brokaza para ver el detalle completo.</p>
-  </div>
-</body>
-</html>`;
+    </table>`;
+
+  return buildBrandedEmailShell(
+    'Un agente busca una propiedad como una de las tuyas',
+    body,
+    'Entrá a tu Dashboard de Brokaza para ver el detalle completo.'
+  );
 }
 
 export async function sendIncomingMatchEmailFallback(matchedTenantId: string, searcherSnapshot: { full_name: string | null; phone_number: string | null; agency_name: string | null }, searchText: string, matches: any[], client = supabase): Promise<boolean> {
@@ -181,6 +230,101 @@ export async function sendIncomingMatchEmailFallback(matchedTenantId: string, se
     return true;
   } catch (sendErr: any) {
     logger.error({ error: sendErr.message || sendErr, matchedTenantId }, '[NOTIFIER-EMAIL] Error al despachar el email de aviso entrante.');
+    return false;
+  }
+}
+
+// Magic link (2026-08-22) — antes lo mandaba Supabase directo (`signInWithOtp`), con un único
+// template global (dashboard de Supabase) sin forma de diferenciar tenant/admin ni primera
+// vez/ya registrado. Ahora `src/routes/auth.ts`/`src/adminRoutes.ts` generan el link con
+// `supabase.auth.admin.generateLink()` (no manda ningún email por sí solo) y lo insertan acá en
+// nuestro propio HTML de marca, mandado por Resend — mismo mecanismo que ya usaba
+// `sendIncomingMatchEmailFallback`. El `action_link` que devuelve `generateLink()` apunta al
+// verify endpoint de Supabase y termina redirigiendo a `APP_URL` con el `#access_token=...` en el
+// hash — el frontend (`consumeAuthCallbackHash`) no necesita ningún cambio, es el mismo shape que
+// ya procesaba viniendo del email nativo de Supabase.
+
+export function buildMagicLinkFirstTimeEmailHtml(link: string): string {
+  const body = `
+    <p style="text-align:center;color:${BRAND.slate};font-size:14px;line-height:1.5;">
+      Activá tu cuenta para empezar a cargar tu cartera y cruzarla automáticamente con pedidos de otros agentes.
+    </p>
+    ${buildEmailCtaButton(link, 'Activar mi cuenta')}
+    <p style="text-align:center;color:${BRAND.slate};font-size:12px;">
+      Si vos no pediste este acceso, podés ignorar este email.
+    </p>`;
+
+  return buildBrandedEmailShell('¡Bienvenido a Brokaza!', body);
+}
+
+export function buildMagicLinkReturningEmailHtml(link: string): string {
+  const body = `
+    <p style="text-align:center;color:${BRAND.slate};font-size:14px;line-height:1.5;">
+      Tocá el botón para entrar a tu dashboard — vas a ver tus búsquedas activas, matches e interesados en tu cartera.
+    </p>
+    ${buildEmailCtaButton(link, 'Ingresar a Brokaza')}
+    <p style="text-align:center;color:${BRAND.slate};font-size:12px;">
+      Si vos no pediste este acceso, podés ignorar este email.
+    </p>`;
+
+  return buildBrandedEmailShell('¡Hola de nuevo!', body);
+}
+
+export function buildAdminMagicLinkEmailHtml(link: string): string {
+  const body = `
+    <p style="text-align:center;color:${BRAND.slate};font-size:14px;line-height:1.5;">
+      Ingresá para ver cómo viene el uso de Brokaza — propiedades cargadas, usuarios registrados y activos, y matches totales de la plataforma.
+    </p>
+    ${buildEmailCtaButton(link, 'Ir al panel admin')}
+    <p style="text-align:center;color:${BRAND.slate};font-size:12px;">
+      Si vos no pediste este acceso, podés ignorar este email.
+    </p>`;
+
+  return buildBrandedEmailShell('Hola, administrador', body);
+}
+
+export async function sendMagicLinkEmail(email: string, link: string, isFirstTime: boolean): Promise<boolean> {
+  const html = isFirstTime ? buildMagicLinkFirstTimeEmailHtml(link) : buildMagicLinkReturningEmailHtml(link);
+  const subject = isFirstTime ? 'Bienvenido a Brokaza — activá tu cuenta' : 'Tu acceso a Brokaza';
+
+  try {
+    const resend = getResendClient();
+    const result = await resend.emails.send({ from: FROM_ADDRESS, to: email, subject, html });
+
+    if (result.error) {
+      logger.error({ error: result.error, isFirstTime }, '[NOTIFIER-EMAIL] Resend devolvió un error al enviar el magic link.');
+      return false;
+    }
+
+    logger.info({ isFirstTime, emailId: result.data?.id }, '[NOTIFIER-EMAIL] Magic link enviado con éxito.');
+    return true;
+  } catch (sendErr: any) {
+    logger.error({ error: sendErr.message || sendErr, isFirstTime }, '[NOTIFIER-EMAIL] Error al despachar el email de magic link.');
+    return false;
+  }
+}
+
+export async function sendAdminMagicLinkEmail(email: string, link: string): Promise<boolean> {
+  const html = buildAdminMagicLinkEmailHtml(link);
+
+  try {
+    const resend = getResendClient();
+    const result = await resend.emails.send({
+      from: FROM_ADDRESS,
+      to: email,
+      subject: 'Acceso al panel admin de Brokaza',
+      html
+    });
+
+    if (result.error) {
+      logger.error({ error: result.error }, '[NOTIFIER-EMAIL] Resend devolvió un error al enviar el magic link de admin.');
+      return false;
+    }
+
+    logger.info({ emailId: result.data?.id }, '[NOTIFIER-EMAIL] Magic link de admin enviado con éxito.');
+    return true;
+  } catch (sendErr: any) {
+    logger.error({ error: sendErr.message || sendErr }, '[NOTIFIER-EMAIL] Error al despachar el email de magic link de admin.');
     return false;
   }
 }

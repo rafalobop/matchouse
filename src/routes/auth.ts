@@ -6,6 +6,7 @@ import { withTimeout } from '../utils/withTimeout';
 import { createDistributedRateLimiter } from '../utils/rateLimit';
 import { getClientIp } from '../utils/clientIp';
 import { clearCachedSession } from '../middleware/tenantAuth';
+import { sendMagicLinkEmail } from '../services/notifier-email';
 
 // KAN-142: rutas públicas de autenticación (magic link de Supabase, SPEC-0013), extraídas de
 // src/index.ts. Dependen únicamente de services/supabase (cliente service-role) y no de
@@ -57,22 +58,49 @@ router.post('/api/auth/request-magic-link', async (req, res) => {
   }
 
   try {
-    const { error }: any = await withTimeout(
-      supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: config.appUrl } }),
+    // 2026-08-22: `profiles` solo tiene fila una vez que el tenant completó al menos un login
+    // exitoso (upsert en POST /api/auth/exchange-token) — su ausencia es la señal de "primera
+    // vez" que necesitamos para elegir el template de email correcto, sin depender de
+    // `auth.users` (fuera del schema público).
+    const { data: existingProfile } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('email', email)
+      .maybeSingle();
+    const isFirstTime = !existingProfile;
+
+    const { data, error }: any = await withTimeout(
+      supabase.auth.admin.generateLink({ type: 'magiclink', email, options: { redirectTo: config.appUrl } }),
       10_000,
-      'Supabase signInWithOtp'
+      'Supabase generateLink (magic link)'
     );
     if (error) {
       // AuthRetryableFetchError = Supabase no fue alcanzable (red/TLS/DNS), no un rechazo real del
       // pedido; en ese caso el mensaje del SDK ("fetch failed") no es apto para mostrar al usuario.
       if (error.name === 'AuthRetryableFetchError') {
-        logger.error({ ip, email, supabaseError: error.message, cause: error.cause }, '[AUTH] No se pudo conectar con Supabase para enviar el magic link');
+        logger.error({ ip, email, supabaseError: error.message, cause: error.cause }, '[AUTH] No se pudo conectar con Supabase para generar el magic link');
         return res.status(503).json({ error: 'No pudimos conectar con el servidor de autenticación. Intentá de nuevo en unos segundos.' });
       }
-      logger.warn({ ip, email, supabaseError: error.message }, '[AUTH] Supabase rechazó la solicitud de magic link');
+      logger.warn({ ip, email, supabaseError: error.message }, '[AUTH] Supabase rechazó la generación del magic link');
       return res.status(400).json({ error: error.message });
     }
-    logger.info({ ip, email }, '[AUTH] Magic link enviado exitosamente');
+
+    const actionLink = data?.properties?.action_link;
+    if (!actionLink) {
+      logger.error({ ip, email }, '[AUTH] Supabase generateLink no devolvió action_link');
+      return res.status(502).json({ error: 'No pudimos generar el link de acceso. Intentá de nuevo en unos segundos.' });
+    }
+
+    // 2026-08-22: el email ya no lo manda Supabase (KAN-269 — su template único no puede
+    // diferenciar primera vez/ya registrado) — lo mandamos nosotros por Resend con
+    // `sendMagicLinkEmail` (src/services/notifier-email.ts), mismo mecanismo que el aviso de
+    // interesados.
+    const sent = await sendMagicLinkEmail(email, actionLink, isFirstTime);
+    if (!sent) {
+      return res.status(502).json({ error: 'No pudimos enviar el email de acceso. Intentá de nuevo en unos segundos.' });
+    }
+
+    logger.info({ ip, email, isFirstTime }, '[AUTH] Magic link enviado exitosamente');
     res.json({ success: true, message: 'Revisá tu email. Te enviamos un link de acceso.' });
   } catch (err: any) {
     logger.error({ ip, email, err: err.message, stack: err.stack }, '[AUTH] Error inesperado al solicitar magic link (posible timeout o fallo de red hacia Supabase)');

@@ -15,7 +15,7 @@ export interface Config {
   vapidPrivateKey: string;
   vapidEmail: string;
   appUrl: string;
-  resendApiKey?: string;
+  resendApiKey: string;
   notificationIntervalMinutes: number;
   jiraDomain?: string;
   jiraEmail?: string;
@@ -186,6 +186,16 @@ export function validateConfig(): Config {
 
   if (!vapidPrivateKey) {
     throw new Error('Falta la variable de entorno VAPID_PRIVATE_KEY. Por favor, configúrala en el archivo .env.');
+  }
+
+  // 2026-08-22: SENDER_API_KEY (Resend) pasa de opcional a fail-fast — hasta ahora solo
+  // alimentaba el aviso de "interesados" (canal secundario, se degradaba en silencio si faltaba).
+  // Desde que el magic link ya no lo manda Supabase (KAN-269, `sendMagicLinkEmail`/
+  // `sendAdminMagicLinkEmail` en notifier-email.ts), es la única forma de iniciar sesión —
+  // arrancar sin esto dejaría a todo el mundo (tenant y admin) sin poder loguearse, con un error
+  // genérico de "no pudimos enviar el email" en vez de una falla clara al arrancar.
+  if (!resendApiKey) {
+    throw new Error('Falta la variable de entorno SENDER_API_KEY (Resend). Por favor, configúrala en el archivo .env.');
   }
 
   return {

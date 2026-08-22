@@ -23,6 +23,7 @@ import {
   isAllowedAdminUser,
   clearAdminSessionCache
 } from './adminAuth';
+import { sendAdminMagicLinkEmail } from './services/notifier-email';
 
 const adminDashboardPath = fs.existsSync(path.join(__dirname, 'admin-dashboard'))
   ? path.join(__dirname, 'admin-dashboard')
@@ -93,13 +94,28 @@ export function mountAdminRouter(app: express.Application): void {
       }
 
       const redirectTo = config.adminAppUrl || `https://${config.adminHost}`;
-      const { error }: any = await withTimeout(
-        supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: redirectTo } }),
+      // 2026-08-22: mismo cambio que el tenant (src/routes/auth.ts) — Supabase ya no manda el
+      // email (su template único no puede tener copy propio para admin), generamos el link y lo
+      // mandamos nosotros por Resend con el template de admin.
+      const { data, error }: any = await withTimeout(
+        supabase.auth.admin.generateLink({ type: 'magiclink', email, options: { redirectTo } }),
         10_000,
-        'Supabase signInWithOtp (admin)'
+        'Supabase generateLink (admin)'
       );
       if (error) {
-        logger.error({ ip, email, supabaseError: error.message }, '[ADMIN AUTH] Supabase rechazó el magic link admin');
+        logger.error({ ip, email, supabaseError: error.message }, '[ADMIN AUTH] Supabase rechazó la generación del magic link admin');
+        return res.json(genericResponse);
+      }
+
+      const actionLink = data?.properties?.action_link;
+      if (!actionLink) {
+        logger.error({ ip, email }, '[ADMIN AUTH] Supabase generateLink no devolvió action_link (admin)');
+        return res.json(genericResponse);
+      }
+
+      const sent = await sendAdminMagicLinkEmail(email, actionLink);
+      if (!sent) {
+        logger.error({ ip, email }, '[ADMIN AUTH] No se pudo enviar el email de magic link admin');
       } else {
         logger.info({ ip, email }, '[ADMIN AUTH] Magic link admin enviado');
       }

@@ -9,6 +9,11 @@ import {
   sendIncomingMatchEmailFallback,
   groupMatchesByTenant,
   groupMatchesByWhatsAppGroup,
+  buildMagicLinkFirstTimeEmailHtml,
+  buildMagicLinkReturningEmailHtml,
+  buildAdminMagicLinkEmailHtml,
+  sendMagicLinkEmail,
+  sendAdminMagicLinkEmail,
   __setResendClientForTests
 } from '../src/services/notifier-email';
 
@@ -205,4 +210,117 @@ test('Notifier Email - sendIncomingMatchEmailFallback devuelve false si el dueñ
 
   assert.strictEqual(result, false);
   assert.strictEqual(sendCalled, false, 'No debe intentar enviar si no hay email registrado.');
+});
+
+// Magic link (2026-08-22) — Supabase ya no manda este email (su template único no puede
+// diferenciar tenant/admin ni primera vez/ya registrado), ver src/routes/auth.ts.
+test('Notifier Email - buildMagicLinkFirstTimeEmailHtml incluye el link y el logo, con copy de bienvenida', () => {
+  const html = buildMagicLinkFirstTimeEmailHtml('https://example.supabase.co/auth/v1/verify?token=abc');
+
+  assert.ok(html.includes('https://example.supabase.co/auth/v1/verify?token=abc'), 'Debe incluir el link de acceso.');
+  assert.ok(html.includes('logo_brokaza.png'), 'Debe incluir el logo de marca.');
+  assert.ok(html.includes('¡Bienvenido a Brokaza!'), 'Debe usar el copy de bienvenida de primera vez.');
+});
+
+test('Notifier Email - buildMagicLinkReturningEmailHtml incluye el link y el logo, con copy distinto al de primera vez', () => {
+  const html = buildMagicLinkReturningEmailHtml('https://example.supabase.co/auth/v1/verify?token=xyz');
+
+  assert.ok(html.includes('https://example.supabase.co/auth/v1/verify?token=xyz'), 'Debe incluir el link de acceso.');
+  assert.ok(html.includes('logo_brokaza.png'), 'Debe incluir el logo de marca.');
+  assert.ok(html.includes('¡Hola de nuevo!'), 'Debe usar el copy de bienvenida de regreso.');
+  assert.ok(!html.includes('¡Bienvenido a Brokaza!'), 'No debe compartir el copy del template de primera vez.');
+});
+
+test('Notifier Email - buildAdminMagicLinkEmailHtml incluye el link, el logo y el copy de administrador', () => {
+  const html = buildAdminMagicLinkEmailHtml('https://example.supabase.co/auth/v1/verify?token=admin1');
+
+  assert.ok(html.includes('https://example.supabase.co/auth/v1/verify?token=admin1'), 'Debe incluir el link de acceso.');
+  assert.ok(html.includes('logo_brokaza.png'), 'Debe incluir el logo de marca.');
+  assert.ok(html.includes('Hola, administrador'), 'Debe usar el copy de administrador.');
+});
+
+test('Notifier Email - sendMagicLinkEmail (primera vez) usa el template y el subject de bienvenida', async () => {
+  let sentTo: string | undefined;
+  let sentSubject: string | undefined;
+  let sentHtml: string | undefined;
+  __setResendClientForTests({
+    emails: {
+      send: async (opts: any) => {
+        sentTo = opts.to;
+        sentSubject = opts.subject;
+        sentHtml = opts.html;
+        return { data: { id: 'mock-id' }, error: null };
+      }
+    }
+  });
+
+  const result = await sendMagicLinkEmail('nuevo@example.com', 'https://link.example/1', true);
+
+  assert.strictEqual(result, true);
+  assert.strictEqual(sentTo, 'nuevo@example.com');
+  assert.ok(sentSubject?.toLowerCase().includes('bienvenido'), 'El asunto debe reflejar que es primera vez.');
+  assert.ok(sentHtml?.includes('https://link.example/1'), 'El HTML debe incluir el link generado.');
+});
+
+test('Notifier Email - sendMagicLinkEmail (ya registrado) usa el template y el subject de regreso', async () => {
+  let sentSubject: string | undefined;
+  let sentHtml: string | undefined;
+  __setResendClientForTests({
+    emails: {
+      send: async (opts: any) => {
+        sentSubject = opts.subject;
+        sentHtml = opts.html;
+        return { data: { id: 'mock-id' }, error: null };
+      }
+    }
+  });
+
+  const result = await sendMagicLinkEmail('agente@example.com', 'https://link.example/2', false);
+
+  assert.strictEqual(result, true);
+  assert.ok(!sentSubject?.toLowerCase().includes('bienvenido'), 'El asunto de un tenant ya registrado no debe usar el copy de bienvenida.');
+  assert.ok(sentHtml?.includes('¡Hola de nuevo!'), 'Debe usar el template de regreso, no el de primera vez.');
+});
+
+test('Notifier Email - sendMagicLinkEmail devuelve false si Resend responde con error', async () => {
+  __setResendClientForTests({
+    emails: { send: async () => ({ data: null, error: { message: 'fallo simulado de Resend' } }) }
+  });
+
+  const result = await sendMagicLinkEmail('agente@example.com', 'https://link.example/3', false);
+
+  assert.strictEqual(result, false);
+});
+
+test('Notifier Email - sendAdminMagicLinkEmail manda al email del admin con el subject y template correctos', async () => {
+  let sentTo: string | undefined;
+  let sentSubject: string | undefined;
+  let sentHtml: string | undefined;
+  __setResendClientForTests({
+    emails: {
+      send: async (opts: any) => {
+        sentTo = opts.to;
+        sentSubject = opts.subject;
+        sentHtml = opts.html;
+        return { data: { id: 'mock-id' }, error: null };
+      }
+    }
+  });
+
+  const result = await sendAdminMagicLinkEmail('admin@brokaza.com', 'https://link.example/admin');
+
+  assert.strictEqual(result, true);
+  assert.strictEqual(sentTo, 'admin@brokaza.com');
+  assert.ok(sentSubject?.toLowerCase().includes('admin'), 'El asunto debe mencionar el panel admin.');
+  assert.ok(sentHtml?.includes('Hola, administrador'), 'Debe usar el template de admin.');
+});
+
+test('Notifier Email - sendAdminMagicLinkEmail devuelve false si Resend responde con error', async () => {
+  __setResendClientForTests({
+    emails: { send: async () => ({ data: null, error: { message: 'fallo simulado de Resend' } }) }
+  });
+
+  const result = await sendAdminMagicLinkEmail('admin@brokaza.com', 'https://link.example/admin-err');
+
+  assert.strictEqual(result, false);
 });
