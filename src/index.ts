@@ -26,6 +26,7 @@ import searchRouter from './routes/search';
 import matchesRouter from './routes/matches';
 import notificationsRouter from './routes/notifications';
 import systemRouter from './routes/system';
+import propertiesRouter from './routes/properties';
 
 // KAN-142: src/index.ts quedó reducido al bootstrap de la app (Express, seguridad HTTP, archivos
 // estáticos, gate de acceso privado) y al arranque de los servicios de fondo — toda la lógica de
@@ -157,6 +158,7 @@ app.use(uploadRouter);
 app.use(searchRouter);
 app.use(matchesRouter);
 app.use(notificationsRouter);
+app.use(propertiesRouter);
 
 // KAN-124: manejador de errores global — DEBE quedar como el último app.use(), después de
 // mountAdminRouter y de todas las rutas de tenant/API de arriba, para que también atrape errores

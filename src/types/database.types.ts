@@ -339,6 +339,7 @@ export type Database = {
           sheet_name: string
           tenant_id: string
           unit: string | null
+          updated_at: string
           zone_id: string | null
         }
         Insert: {
@@ -362,6 +363,7 @@ export type Database = {
           sheet_name: string
           tenant_id: string
           unit?: string | null
+          updated_at?: string
           zone_id?: string | null
         }
         Update: {
@@ -385,6 +387,7 @@ export type Database = {
           sheet_name?: string
           tenant_id?: string
           unit?: string | null
+          updated_at?: string
           zone_id?: string | null
         }
         Relationships: [

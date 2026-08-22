@@ -47,6 +47,7 @@ import './routes/upload.route.test';
 import './routes/search.route.test';
 import './routes/matches.route.test';
 import './routes/notifications.route.test';
+import './routes/properties.route.test';
 import './routes/system.route.test';
 import './searchExpiration.test';
 import './searchSegmentsParallel.test';
