@@ -3,7 +3,7 @@ import multer from 'multer';
 import { syncPropertiesToDatabase } from '../services/excel';
 import { peekExcelHeadersInWorker, parseExcelWithColumnMapInWorker } from '../services/excelParsePool';
 import { resolveColumnMapping, confirmColumnMapping, toColumnMapRecord, ExcelMappingServiceError } from '../services/excelMapping';
-import { ExcelMappingField } from '../utils/excelHeaderMatcher';
+import { ExcelMappingField, EXCEL_MAPPING_FIELDS, REQUIRED_EXCEL_MAPPING_FIELDS, EXCEL_MAPPING_FIELDS_VERSION } from '../utils/excelHeaderMatcher';
 import { broadcastUploadStatus } from '../services/realtimeHub';
 import { createDistributedRateLimiter } from '../utils/rateLimit';
 import { config } from '../config/env';
@@ -44,6 +44,19 @@ function handleMulterUpload(req: express.Request, res: express.Response, next: e
 }
 
 const router = express.Router();
+
+// KAN-215: contrato compartido de MAPPING_FIELDS — antes el frontend (legacy `src/dashboard/app.js`)
+// hardcodeaba su propia copia de esta lista, con riesgo real de divergencia silenciosa frente a
+// `excelHeaderMatcher.ts` (documentado como deuda en MIGRATION_PLAN.md §7). Público y sin
+// dependencia de Supabase a propósito, mismo criterio que `GET /api/system/config-status`
+// (KAN-122): es metadata estática de negocio, no hace falta una sesión de tenant para leerla.
+router.get('/api/upload/mapping-fields', (req, res) => {
+  res.json({
+    version: EXCEL_MAPPING_FIELDS_VERSION,
+    fields: EXCEL_MAPPING_FIELDS,
+    required: REQUIRED_EXCEL_MAPPING_FIELDS
+  });
+});
 
 router.post('/api/upload', tenantAuthMiddleware, async (req, res, next) => {
   // KAN-71: rate limit por tenant antes de invertir tiempo/memoria en parsear el archivo.
