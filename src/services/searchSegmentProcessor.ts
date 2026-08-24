@@ -1,7 +1,7 @@
 import { extractFromTextInput, extractZoneIntent } from './ai';
 import { findCrossTenantMatches } from './blindMatching';
-import { sendWebPushToTenant, buildMatchFoundPushPayload, buildIncomingMatchPushPayload, hasActivePushSubscriptions } from './webPush';
-import { sendBlindMatchEmailFallback, sendIncomingMatchEmailFallback } from './notifier-email';
+import { sendWebPushToTenant, buildIncomingMatchPushPayload, hasActivePushSubscriptions } from './webPush';
+import { sendIncomingMatchEmailFallback } from './notifier-email';
 import { notifyMatchFound } from './notifications';
 import { broadcastMatchCountChanged } from './realtimeHub';
 import { logger } from './logger';
@@ -107,19 +107,15 @@ export async function processSingleSearchSegment(
 
   const mappedMatchesWithIds = mappedMatches.map((m, i) => ({ ...m, id: matchIds[i] ?? null }));
 
-  // KAN-44: evento "match encontrado" en el único punto donde hoy se genera en vivo (una búsqueda
-  // nueva). Fire-and-forget: no bloquea ni puede hacer fallar la respuesta ya devuelta al caller.
-  // KAN-48: email como respaldo permanente — notifyMatchFound() solo lo dispara si el tenant no
-  // tiene ninguna suscripción push activa, para no duplicar el aviso.
+  // Decisión de producto (2026-08-21) — el buscador (tenantId) ya NO se notifica de los matches de
+  // su propia búsqueda (ni push ni email). Solo el dueño de la propiedad matcheada se entera (ver
+  // bloque de abajo), porque es quien tiene que contactar al buscador — el buscador nunca debe
+  // tener forma de enterarse por su cuenta. blind_matches se sigue persistiendo igual (arriba,
+  // auditoría + GET /admin/api/metrics), y el WS de abajo sigue avisándole al propio buscador que
+  // su conteo de matches cambió (nudge de refetch inocuo — la UI del tenant no expone ningún dato
+  // de esos matches, ver `brokaza-frontend`), solo se removió el aviso directo (push/email) con
+  // contenido.
   if (mappedMatches.length > 0) {
-    notifyMatchFound({
-      hasActivePush: () => hasActivePushSubscriptions(tenantId),
-      sendPush: () => sendWebPushToTenant(tenantId, buildMatchFoundPushPayload(search.id)),
-      sendEmailFallback: () => sendBlindMatchEmailFallback(tenantId, segmentText, mappedMatches)
-    }).catch((notifyErr: any) => {
-      logger.error({ error: notifyErr.message || notifyErr, tenantId, searchId: search.id }, '[BUSQUEDA] Error al notificar el match encontrado (no afecta la búsqueda ya confirmada)');
-    });
-
     // KAN-78: dirección recíproca — avisar también al dueño de cada propiedad matcheada.
     const bySearcherOwner = groupMatchesByMatchedTenant(mappedMatches);
 

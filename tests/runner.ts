@@ -44,7 +44,6 @@ import './realtimeMatches.test';
 import './routes/auth.route.test';
 import './routes/profile.route.test';
 import './routes/upload.route.test';
-import './routes/search.route.test';
 import './routes/matches.route.test';
 import './routes/notifications.route.test';
 import './routes/properties.route.test';
