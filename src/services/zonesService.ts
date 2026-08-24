@@ -109,6 +109,59 @@ export async function findNeighborhoodByPoint(
   return data[0] as Neighborhood;
 }
 
+export interface ZonePointInput {
+  /** Índice arbitrario definido por el llamador (ej. la posición en el array original) — permite
+   * remapear cada resultado a su punto de origen aunque haya coordenadas repetidas. */
+  idx: number;
+  latitude: number;
+  longitude: number;
+}
+
+export interface ZonePointMatch extends Neighborhood {
+  matchType: 'contains' | 'nearby';
+}
+
+/**
+ * KAN-130: versión batch de `findNeighborhoodByPoint` — resuelve la zona de N puntos con un solo
+ * round-trip a Postgres (RPC `neighborhoods_for_points`), en vez de N llamadas individuales.
+ * Pensado para eliminar el patrón N+1 de `GET /api/properties` en el panel admin. Devuelve un
+ * `Map` keyeado por `idx` — los puntos sin ninguna zona resuelta (ni exacta ni cercana) simplemente
+ * no tienen entrada en el Map, igual que `findNeighborhoodByPoint` devuelve `null`.
+ */
+export async function findNeighborhoodsForPoints(
+  points: ZonePointInput[],
+  client: SupabaseClient = supabase,
+  maxDistanceMeters?: number
+): Promise<Map<number, ZonePointMatch>> {
+  if (points.length === 0) return new Map();
+
+  for (const p of points) {
+    if (!Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) {
+      throw new ZonesServiceError(`Coordenadas inválidas en el punto idx=${p.idx}: lat=${p.latitude}, lon=${p.longitude}`);
+    }
+  }
+
+  const params: Record<string, unknown> = {
+    points: points.map((p) => ({ idx: p.idx, lat: p.latitude, lon: p.longitude }))
+  };
+  if (maxDistanceMeters !== undefined) {
+    params.max_distance_meters = maxDistanceMeters;
+  }
+
+  const { data, error } = await client.rpc('neighborhoods_for_points', params);
+
+  if (error) {
+    throw new ZonesServiceError(`No se pudieron resolver zonas en batch para ${points.length} puntos: ${error.message}`, error);
+  }
+
+  const result = new Map<number, ZonePointMatch>();
+  for (const row of (data ?? []) as any[]) {
+    if (row.id == null) continue; // el punto no cayó dentro ni cerca de ninguna zona conocida
+    result.set(row.idx, { id: row.id, name: row.name, group_id: row.group_id, matchType: row.match_type });
+  }
+  return result;
+}
+
 // --- KAN-22: resolución por texto libre (fallback para propiedades/búsquedas sin coordenadas) ---
 
 interface ZoneKeyword {
@@ -123,36 +176,58 @@ interface ZoneKeyword {
 const ZONE_KEYWORD_CACHE_TTL_MS = 5 * 60 * 1000;
 let zoneKeywordCache: { entries: ZoneKeyword[]; expiresAt: number } | null = null;
 
+// KAN-130 (fix post-QA): "single-flight" — mientras el cache está frío, `resolvePropertiesZoneInfoBatch`
+// puede llamar a esta función decenas de veces en paralelo (una por propiedad de la página, vía
+// `Promise.all`). El chequeo del cache de arriba es síncrono pero el refresco es async, así que sin
+// esto todas esas llamadas concurrentes ven el cache vacío al mismo tiempo y cada una dispara su
+// propio fetch (2 queries) — con 50 propiedades eso son 100 queries en vez de 2, justo lo que QA
+// detectó midiendo llamadas reales contra Supabase (102 en cache frío vs. 1 en cache caliente).
+// Guardar la promise en curso (no solo el resultado ya resuelto) hace que las llamadas concurrentes
+// esperen el mismo fetch en vez de disparar el suyo. Se limpia en el `finally` (éxito o error) para
+// que un fetch fallido no deje el índice bloqueado esperando una promise rechazada para siempre.
+let zoneKeywordFetchInFlight: Promise<ZoneKeyword[]> | null = null;
+
 async function getZoneKeywordIndex(client: SupabaseClient): Promise<ZoneKeyword[]> {
   if (zoneKeywordCache && zoneKeywordCache.expiresAt > Date.now()) {
     return zoneKeywordCache.entries;
   }
-
-  const [{ data: neighborhoods, error: neighborhoodsError }, { data: aliases, error: aliasesError }] = await Promise.all([
-    client.from('neighborhoods').select('id, name'),
-    client.from('neighborhood_aliases').select('alias, neighborhood_id, neighborhoods(name)')
-  ]);
-
-  if (neighborhoodsError) {
-    throw new ZonesServiceError(`No se pudo cargar el índice de zonas (neighborhoods): ${neighborhoodsError.message}`, neighborhoodsError);
-  }
-  if (aliasesError) {
-    throw new ZonesServiceError(`No se pudo cargar el índice de zonas (neighborhood_aliases): ${aliasesError.message}`, aliasesError);
+  if (zoneKeywordFetchInFlight) {
+    return zoneKeywordFetchInFlight;
   }
 
-  const entries: ZoneKeyword[] = [
-    ...(neighborhoods ?? []).map((n: any) => ({ keyword: String(n.name).toLowerCase(), neighborhoodId: n.id, neighborhoodName: n.name })),
-    ...(aliases ?? [])
-      .filter((a: any) => a.neighborhoods)
-      .map((a: any) => ({ keyword: String(a.alias).toLowerCase(), neighborhoodId: a.neighborhood_id, neighborhoodName: a.neighborhoods.name }))
-  ]
-    .filter((entry) => entry.keyword.trim().length > 0)
-    // Coincidencias más largas/específicas primero (ej. "barrio norte" antes que "norte") para
-    // evitar que un alias corto y genérico le gane a uno más preciso contenido en el mismo texto.
-    .sort((a, b) => b.keyword.length - a.keyword.length);
+  zoneKeywordFetchInFlight = (async () => {
+    const [{ data: neighborhoods, error: neighborhoodsError }, { data: aliases, error: aliasesError }] = await Promise.all([
+      client.from('neighborhoods').select('id, name'),
+      client.from('neighborhood_aliases').select('alias, neighborhood_id, neighborhoods(name)')
+    ]);
 
-  zoneKeywordCache = { entries, expiresAt: Date.now() + ZONE_KEYWORD_CACHE_TTL_MS };
-  return entries;
+    if (neighborhoodsError) {
+      throw new ZonesServiceError(`No se pudo cargar el índice de zonas (neighborhoods): ${neighborhoodsError.message}`, neighborhoodsError);
+    }
+    if (aliasesError) {
+      throw new ZonesServiceError(`No se pudo cargar el índice de zonas (neighborhood_aliases): ${aliasesError.message}`, aliasesError);
+    }
+
+    const entries: ZoneKeyword[] = [
+      ...(neighborhoods ?? []).map((n: any) => ({ keyword: String(n.name).toLowerCase(), neighborhoodId: n.id, neighborhoodName: n.name })),
+      ...(aliases ?? [])
+        .filter((a: any) => a.neighborhoods)
+        .map((a: any) => ({ keyword: String(a.alias).toLowerCase(), neighborhoodId: a.neighborhood_id, neighborhoodName: a.neighborhoods.name }))
+    ]
+      .filter((entry) => entry.keyword.trim().length > 0)
+      // Coincidencias más largas/específicas primero (ej. "barrio norte" antes que "norte") para
+      // evitar que un alias corto y genérico le gane a uno más preciso contenido en el mismo texto.
+      .sort((a, b) => b.keyword.length - a.keyword.length);
+
+    zoneKeywordCache = { entries, expiresAt: Date.now() + ZONE_KEYWORD_CACHE_TTL_MS };
+    return entries;
+  })();
+
+  try {
+    return await zoneKeywordFetchInFlight;
+  } finally {
+    zoneKeywordFetchInFlight = null;
+  }
 }
 
 export interface NeighborhoodTextMatch {
@@ -245,7 +320,126 @@ export async function resolvePropertyZoneId(property: PropertyLocationFields, cl
   return resolveNeighborhoodIdByText(text, client);
 }
 
+export interface PropertyZoneInfo {
+  /** Zona resuelta a mostrar (por punto si hay match; si no, por texto; si no, null). */
+  zone: NeighborhoodTextMatch | null;
+  /** De dónde salió `zone`: PostGIS exacto/cercano, fallback de texto, o ninguna de las dos. */
+  source: 'point' | 'text' | 'none';
+  /**
+   * Zona que sugiere el texto (dirección/features/hoja), aunque el punto haya resuelto otra.
+   * Sirve para detectar "el excel dice una zona pero las coordenadas dicen otra" en el panel admin.
+   */
+  textSuggestedZone: NeighborhoodTextMatch | null;
+  /** true si `source === 'point'` pero el texto sugiere una zona distinta. */
+  hasDiscrepancy: boolean;
+}
+
+/**
+ * Igual que `resolvePropertyZoneId`, pero devuelve el detalle completo (zona + de dónde salió +
+ * si hay discrepancia punto/texto) en vez de solo el id. Pensado para el panel admin, donde el
+ * operador necesita ver esa señal para decidir si corregir las coordenadas de una propiedad.
+ * Consolida la lógica que antes vivía duplicada en scripts/check-zone-resolution.ts.
+ */
+export async function resolvePropertyZoneInfo(
+  property: PropertyLocationFields,
+  client: SupabaseClient = supabase
+): Promise<PropertyZoneInfo> {
+  const text = `${property.address} ${property.features ?? ''} ${property.sheet_name} ${property.zone_display_name ?? ''}`;
+  const textSuggestedZone = await resolveNeighborhoodByText(text, client);
+
+  const hasCoords =
+    property.latitude !== undefined && property.latitude !== null &&
+    property.longitude !== undefined && property.longitude !== null &&
+    property.latitude !== 0 && property.longitude !== 0;
+
+  if (hasCoords) {
+    const byPoint = await findNeighborhoodByPoint(property.latitude!, property.longitude!, client);
+    if (byPoint) {
+      const zone = { id: byPoint.id, name: byPoint.name };
+      const hasDiscrepancy = !!textSuggestedZone && textSuggestedZone.id !== byPoint.id;
+      return { zone, source: 'point', textSuggestedZone, hasDiscrepancy };
+    }
+  }
+
+  if (textSuggestedZone) {
+    return { zone: textSuggestedZone, source: 'text', textSuggestedZone, hasDiscrepancy: false };
+  }
+
+  return { zone: null, source: 'none', textSuggestedZone: null, hasDiscrepancy: false };
+}
+
+export interface PropertyForZoneBatch extends PropertyLocationFields {
+  /**
+   * Zona ya cacheada en `properties.zone_id` (típicamente resuelta por el llamador vía un select
+   * con join embebido a `neighborhoods`). Si viene presente, esta propiedad no participa del RPC
+   * batch — se usa tal cual, igual que si `resolvePropertyZoneInfo` ya hubiera resuelto por punto
+   * en una llamada anterior. `undefined`/`null` significa "sin caché, hay que resolverla".
+   */
+  cachedZone?: NeighborhoodTextMatch | null;
+}
+
+/**
+ * KAN-130: versión batch de `resolvePropertyZoneInfo` — resuelve N propiedades con, como mucho,
+ * 1 round-trip a Postgres (el RPC `neighborhoods_for_points`, solo para las que no tienen
+ * `cachedZone` y sí coordenadas válidas). La resolución por texto es 100% en memoria gracias al
+ * cache de `getZoneKeywordIndex`, así que no suma round-trips por propiedad. Pensada para
+ * reemplazar el `Promise.all(rows.map(resolvePropertyZoneInfo))` de `GET /api/properties`
+ * (panel admin), que antes disparaba hasta 2 llamadas a Postgres por propiedad de la página.
+ * Devuelve un array en el mismo orden que `properties`.
+ */
+export async function resolvePropertiesZoneInfoBatch(
+  properties: PropertyForZoneBatch[],
+  client: SupabaseClient = supabase
+): Promise<PropertyZoneInfo[]> {
+  const textSuggestedZones = await Promise.all(
+    properties.map((p) => {
+      const text = `${p.address} ${p.features ?? ''} ${p.sheet_name} ${p.zone_display_name ?? ''}`;
+      return resolveNeighborhoodByText(text, client);
+    })
+  );
+
+  const pointsToResolve: ZonePointInput[] = [];
+  properties.forEach((p, idx) => {
+    if (p.cachedZone) return; // ya resuelta, no participa del batch
+
+    const hasCoords =
+      p.latitude !== undefined && p.latitude !== null &&
+      p.longitude !== undefined && p.longitude !== null &&
+      p.latitude !== 0 && p.longitude !== 0;
+    if (hasCoords) {
+      pointsToResolve.push({ idx, latitude: p.latitude!, longitude: p.longitude! });
+    }
+  });
+
+  const resolvedPoints = pointsToResolve.length > 0
+    ? await findNeighborhoodsForPoints(pointsToResolve, client)
+    : new Map<number, ZonePointMatch>();
+
+  return properties.map((p, idx) => {
+    const textSuggestedZone = textSuggestedZones[idx];
+
+    if (p.cachedZone) {
+      const hasDiscrepancy = !!textSuggestedZone && textSuggestedZone.id !== p.cachedZone.id;
+      return { zone: p.cachedZone, source: 'point' as const, textSuggestedZone, hasDiscrepancy };
+    }
+
+    const byPoint = resolvedPoints.get(idx);
+    if (byPoint) {
+      const zone = { id: byPoint.id, name: byPoint.name };
+      const hasDiscrepancy = !!textSuggestedZone && textSuggestedZone.id !== byPoint.id;
+      return { zone, source: 'point' as const, textSuggestedZone, hasDiscrepancy };
+    }
+
+    if (textSuggestedZone) {
+      return { zone: textSuggestedZone, source: 'text' as const, textSuggestedZone, hasDiscrepancy: false };
+    }
+
+    return { zone: null, source: 'none' as const, textSuggestedZone: null, hasDiscrepancy: false };
+  });
+}
+
 /** Solo para tests: fuerza a que la próxima resolución por texto vuelva a consultar la base. */
 export function __clearZoneKeywordCacheForTests(): void {
   zoneKeywordCache = null;
+  zoneKeywordFetchInFlight = null;
 }

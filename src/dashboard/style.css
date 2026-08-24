@@ -500,7 +500,12 @@ h1, h2, h3 {
   transition: background-color 0.2s, opacity 0.2s;
 }
 
-:root[data-theme="dark"] .btn {
+/* Solo los botones "primarios" (fondo --accent, verde claro en oscuro) necesitan texto teal para
+   contraste — btn-secondary/btn-danger ya definen su propio color legible en tema oscuro. Sin
+   estos :not(), esta regla (mayor especificidad por :root[data-theme] + .btn) pisaba el color de
+   TODOS los .btn, incluidos los secundarios (logout, toggle de tema), dejando texto e íconos
+   oscuros e ilegibles sobre fondo oscuro. */
+:root[data-theme="dark"] .btn:not(.btn-secondary):not(.btn-danger) {
   color: var(--teal);
 }
 
@@ -846,6 +851,30 @@ h1, h2, h3 {
   align-items: center;
 }
 
+/* Overlay de "Completá tu perfil": más ancho que el resto de los overlays (auth) para poder
+   acomodar el formulario en 2 columnas y bajar el alto total, que quedaba muy grande a 1 sola
+   columna (KAN-68 feedback visual). */
+.overlay-card-wide {
+  max-width: 620px;
+}
+
+.profile-form-grid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.85rem 1rem;
+}
+
+@media (min-width: 640px) {
+  .profile-form-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .profile-form-grid .profile-field-full {
+    grid-column: 1 / -1;
+  }
+}
+
 .auth-step-icon {
   display: flex;
   justify-content: center;
@@ -896,6 +925,26 @@ h1, h2, h3 {
   font-size: 1.25rem;
   font-weight: 600;
   color: inherit;
+}
+
+/* KAN-122: lista de variables de entorno faltantes en el modal de configuración incompleta. */
+.config-error-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.config-error-list li {
+  font-family: monospace;
+  font-size: 0.9rem;
+  color: var(--error);
+  background: rgba(220, 38, 38, 0.08);
+  border: 1px solid rgba(220, 38, 38, 0.25);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
 }
 
 /* KAN-84: modal de confirmación de mapeo de columnas de Excel — más ancho que .modal-card

@@ -39,8 +39,8 @@ function sampleSearchRow(overrides: Partial<any> = {}) {
 // insert), profiles (snapshot del buscador + lookup de email de notifier-email.ts) y
 // web_push_subscriptions (hasActivePushSubscriptions). Se deja SIEMPRE sin suscripciones push
 // activas y sin email en profiles para que el camino de notificación se corte temprano (false)
-// sin llegar a tocar webpush/Resend reales — hasActivePushSubscriptions/sendBlindMatchEmailFallback/
-// sendIncomingMatchEmailFallback SÍ reciben este mismo cliente inyectado (ver
+// sin llegar a tocar webpush/Resend reales — hasActivePushSubscriptions/sendIncomingMatchEmailFallback
+// SÍ reciben este mismo cliente inyectado (ver
 // src/services/propertyMatchWebhook.ts), a diferencia de sendWebPushToTenant, que siempre usa el
 // singleton real y por eso nunca debe llegar a invocarse en este test.
 function makeMockClient(options: {

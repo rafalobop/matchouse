@@ -13,6 +13,16 @@ import { logger } from './logger';
 
 export type GetUserFn = (token: string) => Promise<{ data: { user: { id: string } | null }; error: any }>;
 
+// KAN-128: intervalo del heartbeat ping/pong. A la escala objetivo (500-1000 tenants con el
+// dashboard abierto) una conexión "medio caída" (el proceso remoto murió o el cable se cortó sin
+// un cierre TCP limpio) nunca dispara 'close'/'error' por sí sola — quedaría registrada para
+// siempre en `tenantSockets`, acumulando sockets muertos y, peor, haciendo que el cliente crea que
+// tiene un canal en vivo cuando en realidad no recibe nada (nunca reconecta porque nunca ve un
+// 'close'). El ping/pong estándar de WebSocket (RFC 6455, ambos navegadores y el cliente `ws` lo
+// responden automáticamente a nivel de protocolo, sin código en app.js) detecta esto de forma
+// activa en como mucho 2x este intervalo.
+export const HEARTBEAT_INTERVAL_MS = 25_000;
+
 const tenantSockets = new Map<string, Set<WebSocket>>();
 
 export function registerSocket(tenantId: string, socket: WebSocket): void {
@@ -35,6 +45,21 @@ export function connectedTenantCount(): number {
   return tenantSockets.size;
 }
 
+/** Envía `payload` (ya serializado) a todos los sockets abiertos de un único tenant. */
+function sendToTenantSockets(tenantId: string, payload: string): void {
+  const sockets = tenantSockets.get(tenantId);
+  if (!sockets || sockets.size === 0) return;
+
+  for (const socket of sockets) {
+    if (socket.readyState !== socket.OPEN) continue;
+    try {
+      socket.send(payload);
+    } catch (err: any) {
+      logger.error({ error: err.message || err, tenantId }, '[REALTIME] Error al enviar evento WS a un socket.');
+    }
+  }
+}
+
 /**
  * Avisa a todos los sockets abiertos de cada tenant en `tenantIds` que el conteo de matches
  * pudo haber cambiado. Dedupea tenants repetidos (un property upload puede generar varios
@@ -47,18 +72,50 @@ export function broadcastMatchCountChanged(tenantIds: Iterable<string>): void {
   for (const tenantId of tenantIds) {
     if (!tenantId || seen.has(tenantId)) continue;
     seen.add(tenantId);
+    sendToTenantSockets(tenantId, payload);
+  }
+}
 
-    const sockets = tenantSockets.get(tenantId);
-    if (!sockets || sockets.size === 0) continue;
+// KAN-137: etapas del pipeline real de POST /api/upload (ver src/index.ts) — cada una se notifica
+// en el momento en que arranca, así el agente ve avance real durante la subida en vez de un
+// spinner ciego. No es un porcentaje sintético fila-por-fila (el parseo de hasta
+// uploadMaxFileSizeBytes tarda bien menos de un segundo en el worker, KAN-137) — el tramo largo
+// real es el geocoding secuencial (~1 req/seg contra Nominatim) dentro de "syncing_database".
+export type UploadStatusStage =
+  | 'parsing_headers'
+  | 'resolving_column_mapping'
+  | 'parsing_rows'
+  | 'syncing_database'
+  | 'done'
+  | 'error';
 
-    for (const socket of sockets) {
-      if (socket.readyState !== socket.OPEN) continue;
-      try {
-        socket.send(payload);
-      } catch (err: any) {
-        logger.error({ error: err.message || err, tenantId }, '[REALTIME] Error al enviar evento WS a un socket.');
-      }
+/**
+ * Notifica a un único tenant el estado de su propia subida de Excel en curso (KAN-137). A
+ * diferencia de `broadcastMatchCountChanged` (evento liviano sin datos de negocio, dispara un
+ * refetch), este mensaje sí lleva la etapa — el frontend puede usarlo para mostrar progreso real
+ * sin tener que inferirlo. `POST /api/upload` sigue siendo síncrono (el resultado final viaja en
+ * la respuesta HTTP, no acá) — este canal es solo para que el usuario vea que algo está pasando
+ * mientras espera.
+ */
+export function broadcastUploadStatus(tenantId: string, stage: UploadStatusStage, extra?: Record<string, unknown>): void {
+  if (!tenantId) return;
+  sendToTenantSockets(tenantId, JSON.stringify({ type: 'upload_status', stage, ...extra }));
+}
+
+/**
+ * Barrido de heartbeat: marca "muerto" (y termina) cualquier socket que no contestó el ping
+ * anterior con un pong, y pinguea a todos los que siguen vivos para el próximo ciclo. Recibe los
+ * sockets como iterable en vez de tomar el `WebSocketServer` directamente para poder testearlo con
+ * sockets falsos sin depender de `wss.clients` (que solo se puebla con upgrades TCP reales).
+ */
+export function runHeartbeatSweep(sockets: Iterable<WebSocket>): void {
+  for (const socket of sockets as Iterable<WebSocket & { isAlive?: boolean; terminate?: () => void; ping?: () => void }>) {
+    if (socket.isAlive === false) {
+      socket.terminate?.();
+      continue;
     }
+    socket.isAlive = false;
+    socket.ping?.();
   }
 }
 
@@ -103,6 +160,10 @@ export function initRealtimeHub(server: HttpServer, getUser: GetUserFn = (token)
     }
 
     registerSocket(tenantId, socket);
+    (socket as any).isAlive = true;
+    socket.on('pong', () => {
+      (socket as any).isAlive = true;
+    });
 
     socket.on('close', () => {
       unregisterSocket(tenantId as string, socket);
@@ -112,6 +173,12 @@ export function initRealtimeHub(server: HttpServer, getUser: GetUserFn = (token)
       logger.error({ error: err.message || err, tenantId }, '[REALTIME] Error en un socket WS ya autenticado.');
     });
   });
+
+  const heartbeatInterval = setInterval(() => runHeartbeatSweep(wss.clients), HEARTBEAT_INTERVAL_MS);
+  // unref(): este timer no debe mantener vivo el proceso por sí solo (mismo criterio que el
+  // barrido periódico de tenantClientsCache en supabase.ts).
+  heartbeatInterval.unref?.();
+  wss.on('close', () => clearInterval(heartbeatInterval));
 
   return wss;
 }

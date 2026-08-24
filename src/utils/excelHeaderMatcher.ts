@@ -23,6 +23,13 @@ export const EXCEL_MAPPING_FIELDS: ExcelMappingField[] = [
   'caracteristicas', 'contacto', 'tipo', 'operacion', 'latitud', 'longitud'
 ];
 
+// KAN-215: versión del contrato de MAPPING_FIELDS expuesto por `GET /api/upload/mapping-fields`
+// (ver src/routes/upload.ts) — el frontend la usa para detectar drift en vez de hardcodear la
+// lista de campos (ver docs/evolucion_proyecto/mapping_fields_contract.md). Bumpear a mano
+// cualquier vez que cambie `EXCEL_MAPPING_FIELDS` y/o `REQUIRED_EXCEL_MAPPING_FIELDS` (agregar,
+// quitar o renombrar un campo) — es la única señal de auditoría de cambios de este contrato.
+export const EXCEL_MAPPING_FIELDS_VERSION = 1;
+
 // Únicos dos campos sin los cuales `processExcelBuffer` ya descarta la pestaña entera (ver
 // guard `colDomicilio === -1 || colPrecio === -1`) — mismo criterio acá: sin estos dos, no hay
 // suficiente confianza para procesar la hoja sin intervención humana.

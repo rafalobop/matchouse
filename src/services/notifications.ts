@@ -8,8 +8,8 @@ import { withRetry } from '../utils/withRetry';
 // poder testear la lógica de decisión sin tocar Supabase/VAPID/Resend reales.
 //
 // KAN-79: sendPush/sendEmailFallback pueden devolver `false` (fallo real, ya distinto de una
-// excepción) en vez de tirar — sendWebPushToTenant/sendBlindMatchEmailFallback/
-// sendIncomingMatchEmailFallback ya atrapan sus propios errores de red/proveedor internamente,
+// excepción) en vez de tirar — sendWebPushToTenant/sendIncomingMatchEmailFallback ya atrapan sus
+// propios errores de red/proveedor internamente,
 // así que un wrapper de retry basado solo en excepciones nunca vería nada que reintentar. Se
 // amplía el tipo a `Promise<boolean | void>` (compatible con el void anterior) para que ambos
 // contratos entren.

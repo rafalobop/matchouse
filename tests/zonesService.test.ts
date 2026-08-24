@@ -5,10 +5,12 @@ import {
   listNeighborhoods,
   findNeighborhoodByAlias,
   findNeighborhoodByPoint,
+  findNeighborhoodsForPoints,
   resolveNeighborhoodIdByText,
   resolveNeighborhoodByText,
   resolveMultipleNeighborhoodsByText,
   resolvePropertyZoneId,
+  resolvePropertiesZoneInfoBatch,
   __clearZoneKeywordCacheForTests,
   ZonesServiceError
 } from '../src/services/zonesService';
@@ -328,6 +330,50 @@ test('resolveNeighborhoodIdByText - cachea el índice de keywords entre llamadas
   assert.strictEqual(fromCalls.length, 2, 'Las 2 tablas (neighborhoods/neighborhood_aliases) deben consultarse una sola vez gracias al cache.');
 });
 
+// KAN-130 (fix post-QA): reproduce exactamente el escenario que detectó QA con datos reales — con
+// el cache de keywords frío, GET /api/properties dispara ~50 llamadas concurrentes a
+// resolveNeighborhoodByText (una por propiedad de la página, vía Promise.all en
+// resolvePropertiesZoneInfoBatch). Antes del fix, cada una de esas llamadas concurrentes veía el
+// cache vacío y disparaba su propio par de queries (50 × 2 = 100). El fix "single-flight" hace que
+// todas esperen el mismo fetch en curso.
+test('resolveNeighborhoodIdByText (KAN-130) - N llamadas concurrentes con cache frío disparan un solo fetch, no N (fix de cache stampede)', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const CONCURRENT_CALLS = 50;
+  await Promise.all(
+    Array.from({ length: CONCURRENT_CALLS }, (_, i) => resolveNeighborhoodIdByText(`propiedad ${i} en yerba buena`, mockClient as any))
+  );
+
+  const fromCalls = mockClient.calls.filter((c) => c.method === 'from');
+  assert.strictEqual(
+    fromCalls.length, 2,
+    `${CONCURRENT_CALLS} llamadas concurrentes con cache frío deben resultar en un solo fetch (2 queries: neighborhoods + neighborhood_aliases), no ${CONCURRENT_CALLS * 2}.`
+  );
+});
+
+test('resolveNeighborhoodIdByText (KAN-130) - tras un fetch fallido, no queda bloqueado esperando la promise rechazada para siempre', async () => {
+  __clearZoneKeywordCacheForTests();
+  const failingClient = makeTableAwareMockClient({
+    neighborhoods: { error: { message: 'fallo simulado' } },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  await assert.rejects(() => resolveNeighborhoodIdByText('yerba buena', failingClient as any), ZonesServiceError);
+
+  // Después del fallo, un cliente sano debe poder resolver sin quedar atado a la promise rota anterior.
+  const healthyClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+  const result = await resolveNeighborhoodIdByText('yerba buena', healthyClient as any);
+
+  assert.strictEqual(result, 'n-yb');
+});
+
 test('resolvePropertyZoneId - resuelve por punto cuando la propiedad tiene lat/lng válidas', async () => {
   __clearZoneKeywordCacheForTests();
   const mockClient = makeTableAwareMockClient(
@@ -447,4 +493,213 @@ test('resolveMultipleNeighborhoodsByText - array vacío de menciones devuelve ar
   const result = await resolveMultipleNeighborhoodsByText([], mockClient as any);
 
   assert.deepStrictEqual(result, []);
+});
+
+// --- KAN-130: findNeighborhoodsForPoints (versión batch de findNeighborhoodByPoint) ---
+
+test('findNeighborhoodsForPoints - array vacío devuelve un Map vacío sin llamar al RPC', async () => {
+  const mockClient = makeMockClient();
+
+  const result = await findNeighborhoodsForPoints([], mockClient as any);
+
+  assert.strictEqual(result.size, 0);
+  assert.deepStrictEqual(mockClient.calls, []);
+});
+
+test('findNeighborhoodsForPoints - rechaza coordenadas no finitas antes de consultar', async () => {
+  const mockClient = makeMockClient();
+
+  await assert.rejects(
+    () => findNeighborhoodsForPoints([{ idx: 0, latitude: NaN, longitude: -65.2 }], mockClient as any),
+    ZonesServiceError
+  );
+  assert.deepStrictEqual(mockClient.calls, [], 'No debe llamar al RPC si algún punto es inválido.');
+});
+
+test('findNeighborhoodsForPoints - invoca neighborhoods_for_points con el array {idx, lat, lon}', async () => {
+  const mockClient = makeMockClient({ rows: [] });
+
+  await findNeighborhoodsForPoints(
+    [{ idx: 0, latitude: -26.82, longitude: -65.24 }, { idx: 1, latitude: -26.8, longitude: -65.2 }],
+    mockClient as any
+  );
+
+  assert.deepStrictEqual(mockClient.calls[0], {
+    method: 'rpc',
+    args: ['neighborhoods_for_points', { points: [{ idx: 0, lat: -26.82, lon: -65.24 }, { idx: 1, lat: -26.8, lon: -65.2 }] }]
+  });
+});
+
+test('findNeighborhoodsForPoints - sin maxDistanceMeters no lo incluye en los params (usa el DEFAULT de la función)', async () => {
+  const mockClient = makeMockClient({ rows: [] });
+
+  await findNeighborhoodsForPoints([{ idx: 0, latitude: -26.82, longitude: -65.24 }], mockClient as any);
+
+  const rpcCall = mockClient.calls.find((c) => c.method === 'rpc');
+  assert.deepStrictEqual(Object.keys(rpcCall!.args[1]), ['points']);
+});
+
+test('findNeighborhoodsForPoints - con maxDistanceMeters explícito, lo incluye en los params', async () => {
+  const mockClient = makeMockClient({ rows: [] });
+
+  await findNeighborhoodsForPoints([{ idx: 0, latitude: -26.82, longitude: -65.24 }], mockClient as any, 300);
+
+  const rpcCall = mockClient.calls.find((c) => c.method === 'rpc');
+  assert.strictEqual(rpcCall!.args[1].max_distance_meters, 300);
+});
+
+test('findNeighborhoodsForPoints - mapea el resultado por idx e ignora puntos sin match (id null)', async () => {
+  const mockClient = makeMockClient({
+    rows: [
+      { idx: 0, id: 'n1', name: 'YERBA_BUENA', group_id: 'g1', match_type: 'contains' },
+      { idx: 1, id: null, name: null, group_id: null, match_type: null }
+    ]
+  });
+
+  const result = await findNeighborhoodsForPoints(
+    [{ idx: 0, latitude: -26.82, longitude: -65.24 }, { idx: 1, latitude: 0, longitude: 0 }],
+    mockClient as any
+  );
+
+  assert.strictEqual(result.size, 1);
+  assert.deepStrictEqual(result.get(0), { id: 'n1', name: 'YERBA_BUENA', group_id: 'g1', matchType: 'contains' });
+  assert.strictEqual(result.get(1), undefined, 'Un punto sin match no debe tener entrada en el Map.');
+});
+
+test('findNeighborhoodsForPoints - propaga errores del RPC como ZonesServiceError', async () => {
+  const mockClient = makeMockClient({ error: { message: 'fallo simulado' } });
+
+  await assert.rejects(
+    () => findNeighborhoodsForPoints([{ idx: 0, latitude: -26.82, longitude: -65.24 }], mockClient as any),
+    ZonesServiceError
+  );
+});
+
+// --- KAN-130: resolvePropertiesZoneInfoBatch (versión batch de resolvePropertyZoneInfo) ---
+
+test('resolvePropertiesZoneInfoBatch - usa cachedZone sin resolver por punto (no llama al RPC para esa propiedad)', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient(
+    { neighborhoods: { rows: [] }, neighborhood_aliases: { rows: [] } },
+    { rows: [] }
+  );
+
+  const result = await resolvePropertiesZoneInfoBatch(
+    [{ address: 'Cualquier dirección', sheet_name: 'Ventas', cachedZone: { id: 'n-cache', name: 'ZONA_CACHEADA' } }],
+    mockClient as any
+  );
+
+  assert.deepStrictEqual(result[0].zone, { id: 'n-cache', name: 'ZONA_CACHEADA' });
+  assert.strictEqual(result[0].source, 'point');
+  assert.ok(!mockClient.calls.some((c) => c.method === 'rpc'), 'No debe llamar al RPC batch si ya hay cachedZone.');
+});
+
+test('resolvePropertiesZoneInfoBatch - resuelve por RPC batch las propiedades sin cachedZone y con coordenadas válidas', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient(
+    { neighborhoods: { rows: [] }, neighborhood_aliases: { rows: [] } },
+    { rows: [{ idx: 0, id: 'n-punto', name: 'ZONA_POR_PUNTO', group_id: 'g1', match_type: 'contains' }] }
+  );
+
+  const result = await resolvePropertiesZoneInfoBatch(
+    [{ address: 'Dirección A', sheet_name: 'Ventas', latitude: -26.82, longitude: -65.24 }],
+    mockClient as any
+  );
+
+  assert.deepStrictEqual(result[0].zone, { id: 'n-punto', name: 'ZONA_POR_PUNTO' });
+  assert.strictEqual(result[0].source, 'point');
+  assert.ok(mockClient.calls.some((c) => c.method === 'rpc'), 'Debe llamar al RPC batch para propiedades sin cachedZone.');
+});
+
+test('resolvePropertiesZoneInfoBatch - una sola llamada al RPC batch para todas las propiedades sin caché de la página', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient(
+    { neighborhoods: { rows: [] }, neighborhood_aliases: { rows: [] } },
+    { rows: [] }
+  );
+
+  await resolvePropertiesZoneInfoBatch(
+    [
+      { address: 'Dirección A', sheet_name: 'Ventas', latitude: -26.82, longitude: -65.24 },
+      { address: 'Dirección B', sheet_name: 'Ventas', latitude: -26.8, longitude: -65.2 },
+      { address: 'Dirección C', sheet_name: 'Ventas', latitude: -26.9, longitude: -65.1 }
+    ],
+    mockClient as any
+  );
+
+  const rpcCalls = mockClient.calls.filter((c) => c.method === 'rpc');
+  assert.strictEqual(rpcCalls.length, 1, 'Debe resolver las 3 propiedades sin caché en una sola llamada al RPC, no 3.');
+  assert.strictEqual(rpcCalls[0].args[1].points.length, 3);
+});
+
+test('resolvePropertiesZoneInfoBatch - sin coordenadas ni cachedZone, cae al fallback de texto (sin llamar al RPC)', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const result = await resolvePropertiesZoneInfoBatch(
+    [{ address: 'Yerba Buena 1500', sheet_name: 'Ventas' }],
+    mockClient as any
+  );
+
+  assert.deepStrictEqual(result[0].zone, { id: 'n-yb', name: 'Yerba Buena' });
+  assert.strictEqual(result[0].source, 'text');
+  assert.ok(!mockClient.calls.some((c) => c.method === 'rpc'), 'Sin coordenadas no debe intentar resolver por punto.');
+});
+
+test('resolvePropertiesZoneInfoBatch - sin ninguna zona resoluble (ni cache, ni punto, ni texto) devuelve source "none"', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient(
+    { neighborhoods: { rows: [] }, neighborhood_aliases: { rows: [] } },
+    { rows: [] }
+  );
+
+  const result = await resolvePropertiesZoneInfoBatch(
+    [{ address: 'Dirección sin zona conocida', sheet_name: 'Ventas', latitude: -26.82, longitude: -65.24 }],
+    mockClient as any
+  );
+
+  assert.deepStrictEqual(result[0], { zone: null, source: 'none', textSuggestedZone: null, hasDiscrepancy: false });
+});
+
+test('resolvePropertiesZoneInfoBatch - detecta discrepancia cuando el texto sugiere una zona distinta a la cacheada', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const result = await resolvePropertiesZoneInfoBatch(
+    [{ address: 'Yerba Buena 1500', sheet_name: 'Ventas', cachedZone: { id: 'n-otra', name: 'ZONA_CACHEADA_DISTINTA' } }],
+    mockClient as any
+  );
+
+  assert.strictEqual(result[0].hasDiscrepancy, true);
+  assert.deepStrictEqual(result[0].zone, { id: 'n-otra', name: 'ZONA_CACHEADA_DISTINTA' }, 'El punto/caché gana sobre el texto, pero se marca la discrepancia.');
+});
+
+test('resolvePropertiesZoneInfoBatch - mantiene el orden del array de entrada aunque mezcle cache/RPC/texto/ninguno', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient(
+    { neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] }, neighborhood_aliases: { rows: [] } },
+    { rows: [{ idx: 1, id: 'n-punto', name: 'ZONA_POR_PUNTO', group_id: 'g1', match_type: 'contains' }] }
+  );
+
+  const result = await resolvePropertiesZoneInfoBatch(
+    [
+      { address: 'Prop con cache', sheet_name: 'Ventas', cachedZone: { id: 'n-cache', name: 'ZONA_CACHE' } },
+      { address: 'Prop sin cache con coords', sheet_name: 'Ventas', latitude: -26.82, longitude: -65.24 },
+      { address: 'Yerba Buena 1500 sin coords', sheet_name: 'Ventas' },
+      { address: 'Prop sin ninguna zona', sheet_name: 'Ventas' }
+    ],
+    mockClient as any
+  );
+
+  assert.strictEqual(result.length, 4);
+  assert.strictEqual(result[0].zone?.id, 'n-cache');
+  assert.strictEqual(result[1].zone?.id, 'n-punto');
+  assert.strictEqual(result[2].zone?.id, 'n-yb');
+  assert.strictEqual(result[3].zone, null);
 });

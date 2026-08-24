@@ -13,8 +13,8 @@ import {
   SearcherSnapshot
 } from '../utils/blindMatchPersistence';
 import { notifyMatchFound } from './notifications';
-import { sendWebPushToTenant, buildMatchFoundPushPayload, buildIncomingMatchPushPayload, hasActivePushSubscriptions } from './webPush';
-import { sendBlindMatchEmailFallback, sendIncomingMatchEmailFallback } from './notifier-email';
+import { sendWebPushToTenant, buildIncomingMatchPushPayload, hasActivePushSubscriptions } from './webPush';
+import { sendIncomingMatchEmailFallback } from './notifier-email';
 import { broadcastMatchCountChanged } from './realtimeHub';
 import { logger } from './logger';
 
@@ -64,10 +64,11 @@ async function fetchSearcherSnapshot(searchTenantId: string, client: SupabaseCli
 
 /**
  * Procesa una propiedad recién subida contra las active_searches activas de otros tenants: por
- * cada match nuevo (no duplicado), persiste en blind_matches y notifica a ambos lados — al
- * buscador (nuevo match en su búsqueda activa, igual notificación que la primera de
- * POST /api/search) y al dueño de la propiedad nueva (aviso recíproco, igual que KAN-78).
- * Best-effort por match: un fallo puntual (insert o notificación de un match) no aborta el resto.
+ * cada match nuevo (no duplicado), persiste en blind_matches y notifica solo al dueño de la
+ * propiedad nueva (aviso recíproco, igual que KAN-78) — el buscador no recibe push/email de este
+ * evento (decisión de producto, ver comentario más abajo), solo el nudge de WS que ya reciben
+ * ambos lados. Best-effort por match: un fallo puntual (insert o notificación de un match) no
+ * aborta el resto.
  */
 export async function processPropertyUploaded(
   propertyId: string,
@@ -127,14 +128,11 @@ export async function processPropertyUploaded(
       property: propertySnapshot
     };
 
-    // Al buscador: mismo mecanismo que la primera notificación de POST /api/search.
-    notifyMatchFound({
-      hasActivePush: () => hasActivePushSubscriptions(match.tenant_id, client),
-      sendPush: () => sendWebPushToTenant(match.tenant_id, buildMatchFoundPushPayload(match.search_id)),
-      sendEmailFallback: () => sendBlindMatchEmailFallback(match.tenant_id, match.raw_text, [mappedMatchForNotify], client)
-    }).catch((notifyErr: any) => {
-      logger.error({ error: notifyErr.message || notifyErr, tenantId: match.tenant_id, searchId: match.search_id }, '[PROPERTY MATCH WEBHOOK] Error al notificar al buscador (no afecta el match ya persistido).');
-    });
+    // Decisión de producto (2026-08-21) — el buscador (match.tenant_id) ya NO se notifica acá
+    // tampoco (mismo criterio que POST /api/search, ver src/routes/search.ts): solo el dueño de
+    // la propiedad nueva se entera, porque es quien tiene que contactar al buscador. El WS de
+    // abajo le sigue avisando al buscador que su conteo cambió (nudge inocuo), pero sin push/email
+    // con contenido.
 
     // Al dueño de la propiedad nueva: mismo mecanismo recíproco que KAN-78.
     notifyMatchFound({
