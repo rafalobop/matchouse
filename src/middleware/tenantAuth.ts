@@ -1,12 +1,7 @@
-import express from 'express';
+import * as express from 'express';
 import { supabase, getTenantClient } from '../services/supabase';
 import { logger } from '../services/logger';
 import { withTimeout } from '../utils/withTimeout';
-
-// KAN-142: extraído de src/index.ts al partir el monolito en rutas por dominio — tenantAuthMiddleware
-// es la única pieza de auth que consumen prácticamente todas las rutas de tenant (profile, upload,
-// search, matches, notifications, dashboard-metrics), así que vive en su propio módulo compartido en
-// vez de duplicarse o quedar atado a un dominio en particular.
 
 // Cache en memoria de sesiones ya validadas contra Supabase. El dashboard pollea /api/status,
 // /api/matches y /api/catalog cada 1.5-5s; sin este cache, cada poll disparaba una llamada de red
@@ -25,13 +20,8 @@ function getCachedSession(token: string) {
   return entry;
 }
 
-export function clearCachedSession(token: string): void {
+export function clearCachedSession(token: string) {
   sessionCache.delete(token);
-}
-
-/** Solo para tests: tamaño actual de la caché de sesiones. */
-export function __getSessionCacheSizeForTests(): number {
-  return sessionCache.size;
 }
 
 export async function tenantAuthMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {

@@ -50,7 +50,7 @@ import './routes/notifications.route.test';
 import './routes/properties.route.test';
 import './routes/system.route.test';
 import './searchExpiration.test';
-import './searchSegmentsParallel.test';
+import './searchSegmentProcessor.test';
 import './searchValidation.test';
 import './sentryDataCollection.test';
 import './supabase.test';
