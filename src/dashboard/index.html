@@ -181,6 +181,23 @@
     </details>
   </div>
 
+  <!-- Modal de Credenciales de Supabase Faltantes (KAN-122): solo puede llegar a mostrarse si el
+       backend arrancó con ALLOW_MISSING_SUPABASE_CREDENTIALS=true (desarrollo) — en producción,
+       sin esa variable, la app directamente no arranca y este modal nunca es alcanzable. -->
+  <div id="config-error-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <h3>Configuración incompleta</h3>
+      <p class="section-desc">
+        El servidor arrancó sin las siguientes credenciales de Supabase. Ninguna función que dependa
+        de la base de datos (login, catálogo, búsquedas, matches) va a funcionar hasta configurarlas:
+      </p>
+      <ul id="config-error-list" class="config-error-list"></ul>
+      <p class="section-desc">
+        Configurá estas variables en el archivo <code>.env</code> y reiniciá el servidor.
+      </p>
+    </div>
+  </div>
+
   <!-- Modal de Rechazo de Match -->
   <div id="rejection-modal" class="modal-overlay hidden">
     <div class="modal-card">
@@ -285,7 +302,7 @@
 
   <!-- Overlay de Perfil de Tenant: se muestra tras el primer login si profile_completed = false (KAN-64/KAN-68) -->
   <div id="profile-overlay" class="modal-overlay hidden">
-    <div class="overlay-card">
+    <div class="overlay-card overlay-card-wide">
       <div class="logo-area" style="justify-content: center; margin-bottom: 1.5rem; width: 100%;">
         <span class="logo-icon">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -298,7 +315,7 @@
         Antes de usar Brokaza necesitamos algunos datos de contacto para que otros agentes puedan encontrarte.
       </p>
 
-      <form id="profile-form" style="width: 100%; display: flex; flex-direction: column; gap: 0.85rem;">
+      <form id="profile-form" class="profile-form-grid">
         <div style="text-align: left; width: 100%;">
           <label for="profile-firstname-input" style="display: block; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.3rem;">Nombre</label>
           <input type="text" id="profile-firstname-input" maxlength="100" placeholder="Ej: Juan" required style="width: 100%; padding: 0.65rem 0.75rem; background: rgba(97, 121, 144, 0.08); border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-primary); outline: none; font-size: 0.95rem; box-sizing: border-box;">
@@ -326,7 +343,7 @@
           <label for="profile-province-input" style="display: block; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.3rem;">Provincia</label>
           <input type="text" id="profile-province-input" value="Tucumán" disabled style="width: 100%; padding: 0.65rem 0.75rem; background: rgba(97, 121, 144, 0.04); border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-secondary); outline: none; font-size: 0.95rem; box-sizing: border-box; cursor: not-allowed;">
         </div>
-        <div style="text-align: left; width: 100%;">
+        <div class="profile-field-full" style="text-align: left; width: 100%;">
           <label for="profile-city-select" style="display: block; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.3rem;">Ciudad</label>
           <select id="profile-city-select" required style="width: 100%; padding: 0.65rem 0.75rem; background: rgba(97, 121, 144, 0.08); border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-primary); outline: none; font-size: 0.95rem; box-sizing: border-box;">
             <option value="" disabled selected>Cargando localidades de Tucumán...</option>
@@ -336,7 +353,7 @@
           </div>
         </div>
 
-        <button type="submit" id="profile-save-btn" class="btn btn-primary" style="width: 100%; padding: 0.75rem; margin-top: 0.5rem;">Guardar y continuar</button>
+        <button type="submit" id="profile-save-btn" class="btn btn-primary profile-field-full" style="padding: 0.75rem; margin-top: 0.5rem;">Guardar y continuar</button>
       </form>
 
       <p id="profile-form-error" style="color: var(--error); font-size: 0.85rem; margin-top: 1rem; text-align: center; display: none;"></p>
@@ -345,6 +362,7 @@
 
   <script src="/ios-onboarding.js"></script>
   <script src="/realtimeMatches.js"></script>
+  <script src="/metrics.js"></script>
   <script src="/app.js"></script>
 </body>
 

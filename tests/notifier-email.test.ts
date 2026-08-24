@@ -4,13 +4,16 @@ import {
   buildEmailHtml,
   buildPropertyRowHtml,
   buildWhatsAppMessage,
-  buildBlindMatchEmailHtml,
   buildBlindMatchPropertyRowHtml,
-  sendBlindMatchEmailFallback,
   buildIncomingMatchEmailHtml,
   sendIncomingMatchEmailFallback,
   groupMatchesByTenant,
   groupMatchesByWhatsAppGroup,
+  buildMagicLinkFirstTimeEmailHtml,
+  buildMagicLinkReturningEmailHtml,
+  buildAdminMagicLinkEmailHtml,
+  sendMagicLinkEmail,
+  sendAdminMagicLinkEmail,
   __setResendClientForTests
 } from '../src/services/notifier-email';
 
@@ -136,71 +139,6 @@ test('Notifier Email - buildBlindMatchPropertyRowHtml incluye domicilio, piso/lo
   assert.ok(html.includes('150000'), 'Debe incluir el precio.');
 });
 
-test('Notifier Email - buildBlindMatchEmailHtml consolida varios matches e incluye el texto de la búsqueda', () => {
-  const matches = [
-    sampleBlindMatch(),
-    sampleBlindMatch({ property: { ...sampleBlindMatch().property, domicilio: 'Mendoza 123' } })
-  ];
-  const html = buildBlindMatchEmailHtml('Busco depto 2 dormitorios en alquiler', matches);
-
-  assert.ok(html.includes('Av. Alem 500'), 'Debe incluir la primera propiedad.');
-  assert.ok(html.includes('Mendoza 123'), 'Debe incluir la segunda propiedad.');
-  assert.ok(html.includes('Busco depto 2 dormitorios en alquiler'), 'Debe incluir el texto original de la búsqueda.');
-});
-
-test('Notifier Email - sendBlindMatchEmailFallback (KAN-48) devuelve false sin tocar la DB si no hay matches', async () => {
-  const throwingClient = { from: () => { throw new Error('no debería consultarse la DB sin matches'); } };
-
-  const result = await sendBlindMatchEmailFallback('tenant-1', 'Busco depto', [], throwingClient as any);
-
-  assert.strictEqual(result, false);
-});
-
-test('Notifier Email - sendBlindMatchEmailFallback envía el email al address del profile y devuelve true', async () => {
-  let sentTo: string | undefined;
-  let sentSubject: string | undefined;
-  __setResendClientForTests({
-    emails: {
-      send: async (opts: any) => {
-        sentTo = opts.to;
-        sentSubject = opts.subject;
-        return { data: { id: 'mock-id' }, error: null };
-      }
-    }
-  });
-
-  const client = makeProfileClient({ email: 'agente@example.com' });
-  const result = await sendBlindMatchEmailFallback('tenant-1', 'Busco depto', [sampleBlindMatch()], client as any);
-
-  assert.strictEqual(result, true);
-  assert.strictEqual(sentTo, 'agente@example.com');
-  assert.ok(sentSubject?.includes('1 match'), 'El asunto debe reflejar la cantidad de matches.');
-});
-
-test('Notifier Email - sendBlindMatchEmailFallback devuelve false si el tenant no tiene email en profiles (sin intentar enviar)', async () => {
-  let sendCalled = false;
-  __setResendClientForTests({
-    emails: { send: async () => { sendCalled = true; return { data: { id: 'x' }, error: null }; } }
-  });
-
-  const client = makeProfileClient({ email: null });
-  const result = await sendBlindMatchEmailFallback('tenant-1', 'Busco depto', [sampleBlindMatch()], client as any);
-
-  assert.strictEqual(result, false);
-  assert.strictEqual(sendCalled, false, 'No debe intentar enviar si no hay email registrado.');
-});
-
-test('Notifier Email - sendBlindMatchEmailFallback devuelve false si Resend responde con error', async () => {
-  __setResendClientForTests({
-    emails: { send: async () => ({ data: null, error: { message: 'fallo simulado de Resend' } }) }
-  });
-
-  const client = makeProfileClient({ email: 'agente@example.com' });
-  const result = await sendBlindMatchEmailFallback('tenant-1', 'Busco depto', [sampleBlindMatch()], client as any);
-
-  assert.strictEqual(result, false);
-});
-
 test('Notifier Email - __setResendClientForTests permite inyectar un mock (nunca se manda mail real en el test suite)', () => {
   let sendCalled = false;
   __setResendClientForTests({
@@ -214,8 +152,8 @@ test('Notifier Email - __setResendClientForTests permite inyectar un mock (nunca
   assert.strictEqual(sendCalled, false, 'Inyectar el mock no debe disparar un envío por sí solo.');
 });
 
-// KAN-78: aviso al dueño de la propiedad matcheada de que un agente la buscó (dirección
-// recíproca a sendBlindMatchEmailFallback) — a diferencia del push, el email SÍ incluye el
+// KAN-78: aviso al dueño de la propiedad matcheada de que un agente la buscó — único lado que se
+// notifica (decisión de producto, 2026-08-21) — a diferencia del push, el email SÍ incluye el
 // contacto completo del buscador porque es un canal privado 1:1 con el dueño de la propiedad.
 const sampleSearcherSnapshot = { full_name: 'Juan Perez', phone_number: '5493815551234', agency_name: 'Inmobiliaria Test' };
 
@@ -272,4 +210,117 @@ test('Notifier Email - sendIncomingMatchEmailFallback devuelve false si el dueñ
 
   assert.strictEqual(result, false);
   assert.strictEqual(sendCalled, false, 'No debe intentar enviar si no hay email registrado.');
+});
+
+// Magic link (2026-08-22) — Supabase ya no manda este email (su template único no puede
+// diferenciar tenant/admin ni primera vez/ya registrado), ver src/routes/auth.ts.
+test('Notifier Email - buildMagicLinkFirstTimeEmailHtml incluye el link y el logo, con copy de bienvenida', () => {
+  const html = buildMagicLinkFirstTimeEmailHtml('https://example.supabase.co/auth/v1/verify?token=abc');
+
+  assert.ok(html.includes('https://example.supabase.co/auth/v1/verify?token=abc'), 'Debe incluir el link de acceso.');
+  assert.ok(html.includes('logo_brokaza.png'), 'Debe incluir el logo de marca.');
+  assert.ok(html.includes('¡Bienvenido a Brokaza!'), 'Debe usar el copy de bienvenida de primera vez.');
+});
+
+test('Notifier Email - buildMagicLinkReturningEmailHtml incluye el link y el logo, con copy distinto al de primera vez', () => {
+  const html = buildMagicLinkReturningEmailHtml('https://example.supabase.co/auth/v1/verify?token=xyz');
+
+  assert.ok(html.includes('https://example.supabase.co/auth/v1/verify?token=xyz'), 'Debe incluir el link de acceso.');
+  assert.ok(html.includes('logo_brokaza.png'), 'Debe incluir el logo de marca.');
+  assert.ok(html.includes('¡Hola de nuevo!'), 'Debe usar el copy de bienvenida de regreso.');
+  assert.ok(!html.includes('¡Bienvenido a Brokaza!'), 'No debe compartir el copy del template de primera vez.');
+});
+
+test('Notifier Email - buildAdminMagicLinkEmailHtml incluye el link, el logo y el copy de administrador', () => {
+  const html = buildAdminMagicLinkEmailHtml('https://example.supabase.co/auth/v1/verify?token=admin1');
+
+  assert.ok(html.includes('https://example.supabase.co/auth/v1/verify?token=admin1'), 'Debe incluir el link de acceso.');
+  assert.ok(html.includes('logo_brokaza.png'), 'Debe incluir el logo de marca.');
+  assert.ok(html.includes('Hola, administrador'), 'Debe usar el copy de administrador.');
+});
+
+test('Notifier Email - sendMagicLinkEmail (primera vez) usa el template y el subject de bienvenida', async () => {
+  let sentTo: string | undefined;
+  let sentSubject: string | undefined;
+  let sentHtml: string | undefined;
+  __setResendClientForTests({
+    emails: {
+      send: async (opts: any) => {
+        sentTo = opts.to;
+        sentSubject = opts.subject;
+        sentHtml = opts.html;
+        return { data: { id: 'mock-id' }, error: null };
+      }
+    }
+  });
+
+  const result = await sendMagicLinkEmail('nuevo@example.com', 'https://link.example/1', true);
+
+  assert.strictEqual(result, true);
+  assert.strictEqual(sentTo, 'nuevo@example.com');
+  assert.ok(sentSubject?.toLowerCase().includes('bienvenido'), 'El asunto debe reflejar que es primera vez.');
+  assert.ok(sentHtml?.includes('https://link.example/1'), 'El HTML debe incluir el link generado.');
+});
+
+test('Notifier Email - sendMagicLinkEmail (ya registrado) usa el template y el subject de regreso', async () => {
+  let sentSubject: string | undefined;
+  let sentHtml: string | undefined;
+  __setResendClientForTests({
+    emails: {
+      send: async (opts: any) => {
+        sentSubject = opts.subject;
+        sentHtml = opts.html;
+        return { data: { id: 'mock-id' }, error: null };
+      }
+    }
+  });
+
+  const result = await sendMagicLinkEmail('agente@example.com', 'https://link.example/2', false);
+
+  assert.strictEqual(result, true);
+  assert.ok(!sentSubject?.toLowerCase().includes('bienvenido'), 'El asunto de un tenant ya registrado no debe usar el copy de bienvenida.');
+  assert.ok(sentHtml?.includes('¡Hola de nuevo!'), 'Debe usar el template de regreso, no el de primera vez.');
+});
+
+test('Notifier Email - sendMagicLinkEmail devuelve false si Resend responde con error', async () => {
+  __setResendClientForTests({
+    emails: { send: async () => ({ data: null, error: { message: 'fallo simulado de Resend' } }) }
+  });
+
+  const result = await sendMagicLinkEmail('agente@example.com', 'https://link.example/3', false);
+
+  assert.strictEqual(result, false);
+});
+
+test('Notifier Email - sendAdminMagicLinkEmail manda al email del admin con el subject y template correctos', async () => {
+  let sentTo: string | undefined;
+  let sentSubject: string | undefined;
+  let sentHtml: string | undefined;
+  __setResendClientForTests({
+    emails: {
+      send: async (opts: any) => {
+        sentTo = opts.to;
+        sentSubject = opts.subject;
+        sentHtml = opts.html;
+        return { data: { id: 'mock-id' }, error: null };
+      }
+    }
+  });
+
+  const result = await sendAdminMagicLinkEmail('admin@brokaza.com', 'https://link.example/admin');
+
+  assert.strictEqual(result, true);
+  assert.strictEqual(sentTo, 'admin@brokaza.com');
+  assert.ok(sentSubject?.toLowerCase().includes('admin'), 'El asunto debe mencionar el panel admin.');
+  assert.ok(sentHtml?.includes('Hola, administrador'), 'Debe usar el template de admin.');
+});
+
+test('Notifier Email - sendAdminMagicLinkEmail devuelve false si Resend responde con error', async () => {
+  __setResendClientForTests({
+    emails: { send: async () => ({ data: null, error: { message: 'fallo simulado de Resend' } }) }
+  });
+
+  const result = await sendAdminMagicLinkEmail('admin@brokaza.com', 'https://link.example/admin-err');
+
+  assert.strictEqual(result, false);
 });

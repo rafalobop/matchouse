@@ -9,7 +9,8 @@
     "test-pipeline": "ts-node src/test-pipeline.ts",
     "build": "tsc",
     "test": "ts-node tests/runner.ts",
-    "graph:run": "ts-node src/graph/run.ts"
+    "graph:run": "ts-node src/graph/run.ts",
+    "load-test:dashboard": "ts-node scripts/load-test-dashboard.ts"
   },
   "keywords": [],
   "author": "",
@@ -32,7 +33,7 @@
     "resend": "^6.16.0",
     "web-push": "^3.6.7",
     "ws": "^8.21.0",
-    "xlsx": "^0.18.5"
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",

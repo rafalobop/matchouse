@@ -15,7 +15,7 @@ export interface Config {
   vapidPrivateKey: string;
   vapidEmail: string;
   appUrl: string;
-  resendApiKey?: string;
+  resendApiKey: string;
   notificationIntervalMinutes: number;
   jiraDomain?: string;
   jiraEmail?: string;
@@ -31,6 +31,14 @@ export interface Config {
   uploadMaxFileSizeBytes: number;
   internalWebhookSecret: string;
   accessGateCode?: string;
+  adminHost?: string;
+  adminAppUrl?: string;
+  metricsRateLimitMax: number;
+  metricsRateLimitWindowMs: number;
+  excelParsePoolSize: number;
+  excelParseTimeoutMs: number;
+  /** KAN-122: nombres de las variables de Supabase que faltan (vacío si están todas presentes). */
+  missingSupabaseCredentials: string[];
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -100,6 +108,61 @@ export function validateConfig(): Config {
   // detrás de una pantalla de "acceso privado" hasta que se visite /?access=<código>. Opcional
   // a propósito — sin esta variable la app funciona igual que siempre, sin gate.
   const accessGateCode = cleanEnvVar(process.env.ACCESS_GATE_CODE);
+  // Panel admin (app.admin.brokaza.com): mismo proceso Express que el resto de la app, pero
+  // solo se sirve el adminRouter cuando el Host de la request coincide con esta variable. Sin
+  // ADMIN_HOST seteada, el panel admin queda completamente deshabilitado (útil en local/dev).
+  const adminHost = cleanEnvVar(process.env.ADMIN_HOST);
+  // URL a la que redirige el magic link del panel admin. Opcional: si no se setea, se arma como
+  // `https://${ADMIN_HOST}` (correcto en producción, donde el dominio admin tiene TLS real — sea
+  // un custom domain o el dominio *.up.railway.app que Railway da gratis). En local, sin dominio
+  // propio ni certificado, hace falta setearla explícita a algo como http://localhost:3000 para
+  // poder probar el flujo de login completo en el navegador.
+  const adminAppUrl = cleanEnvVar(process.env.ADMIN_APP_URL);
+  // KAN-131: GET /api/metrics es autenticado (adminAuthMiddleware), pero eso solo prueba
+  // identidad — no evita que una sesión admin válida (o su cookie robada/filtrada) haga polling
+  // agresivo y dispare Promise.all con 4 counts contra Postgres en cada request. Mismo criterio
+  // que search/upload (KAN-71): rate limit por identidad estable (adminUserId), no por IP, porque
+  // el endpoint ya está detrás de auth. El dashboard admin pollea cada 7s (~8.6 req/min) — 30/min
+  // da margen para varias pestañas/instancias del mismo admin sin abrir la puerta a scraping.
+  const metricsRateLimitMax = parseInt(cleanEnvVar(process.env.METRICS_RATE_LIMIT_MAX) || '30', 10);
+  const metricsRateLimitWindowMs = parseInt(cleanEnvVar(process.env.METRICS_RATE_LIMIT_WINDOW_MS) || '60000', 10);
+  // KAN-137: cantidad de worker threads persistentes que parsean Excels subidos (xlsx.read +
+  // resolución de columnas, ver excelParsePool.ts) sin bloquear el event loop del proceso
+  // principal. Default 2: la instancia real de Railway tiene 2 vCPU / 1GB de RAM compartidos con
+  // el resto del proceso (WS hub, notifier-email, search expiration, etc.) — un pool sin límite
+  // podría agotar CPU/RAM ante uploads concurrentes de varios tenants.
+  const excelParsePoolSize = parseInt(cleanEnvVar(process.env.EXCEL_PARSE_POOL_SIZE) || '2', 10);
+  // Límite de tiempo por tarea de parseo en el worker — protege contra un archivo malformado (o
+  // un bug de xlsx) que deje un worker colgado indefinidamente, sacando ese slot del pool para
+  // siempre. 30s es generoso para un Excel de hasta uploadMaxFileSizeBytes (10MB default).
+  const excelParseTimeoutMs = parseInt(cleanEnvVar(process.env.EXCEL_PARSE_TIMEOUT_MS) || '30000', 10);
+
+  // KAN-122: sin SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY la app queda inservible (todo el acceso a
+  // datos pasa por el cliente service-role de src/services/supabase.ts) — antes de este ticket
+  // arrancaba igual con un console.warn, y cada request recién fallaba en el primer intento real
+  // de pegarle a Supabase. Por default el arranque se aborta acá mismo, con un mensaje que lista
+  // exactamente qué variable falta. ALLOW_MISSING_SUPABASE_CREDENTIALS=true permite arrancar
+  // igual (solo pensado para desarrollo local sin Supabase todavía configurado) — hace falta
+  // habilitarlo explícito, no alcanza con NODE_ENV=development.
+  const allowMissingSupabaseCredentials = cleanEnvVar(process.env.ALLOW_MISSING_SUPABASE_CREDENTIALS) === 'true';
+  const missingSupabaseCredentials: string[] = [];
+  if (!supabaseUrl) missingSupabaseCredentials.push('SUPABASE_URL');
+  if (!supabaseServiceRoleKey) missingSupabaseCredentials.push('SUPABASE_SERVICE_ROLE_KEY');
+
+  if (missingSupabaseCredentials.length > 0 && !allowMissingSupabaseCredentials) {
+    throw new Error(
+      `Faltan las siguientes variables de entorno de Supabase: ${missingSupabaseCredentials.join(', ')}. ` +
+      'Configuralas en el archivo .env, o seteá ALLOW_MISSING_SUPABASE_CREDENTIALS=true para arrancar ' +
+      'igual en modo desarrollo (la app va a mostrar un aviso, pero cualquier función que dependa de ' +
+      'Supabase va a fallar).'
+    );
+  }
+  if (missingSupabaseCredentials.length > 0) {
+    console.warn(
+      `[CONFIG] Arrancando con credenciales de Supabase incompletas (${missingSupabaseCredentials.join(', ')}) ` +
+      'porque ALLOW_MISSING_SUPABASE_CREDENTIALS=true. Esto NO debe estar habilitado en producción.'
+    );
+  }
 
   if (!geminiApiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY. Por favor, configúrala en el archivo .env.');
@@ -123,6 +186,16 @@ export function validateConfig(): Config {
 
   if (!vapidPrivateKey) {
     throw new Error('Falta la variable de entorno VAPID_PRIVATE_KEY. Por favor, configúrala en el archivo .env.');
+  }
+
+  // 2026-08-22: SENDER_API_KEY (Resend) pasa de opcional a fail-fast — hasta ahora solo
+  // alimentaba el aviso de "interesados" (canal secundario, se degradaba en silencio si faltaba).
+  // Desde que el magic link ya no lo manda Supabase (KAN-269, `sendMagicLinkEmail`/
+  // `sendAdminMagicLinkEmail` en notifier-email.ts), es la única forma de iniciar sesión —
+  // arrancar sin esto dejaría a todo el mundo (tenant y admin) sin poder loguearse, con un error
+  // genérico de "no pudimos enviar el email" en vez de una falla clara al arrancar.
+  if (!resendApiKey) {
+    throw new Error('Falta la variable de entorno SENDER_API_KEY (Resend). Por favor, configúrala en el archivo .env.');
   }
 
   return {
@@ -151,7 +224,14 @@ export function validateConfig(): Config {
     uploadRateLimitWindowMs,
     uploadMaxFileSizeBytes,
     internalWebhookSecret,
-    accessGateCode
+    accessGateCode,
+    adminHost,
+    adminAppUrl,
+    metricsRateLimitMax,
+    metricsRateLimitWindowMs,
+    excelParsePoolSize,
+    excelParseTimeoutMs,
+    missingSupabaseCredentials
   };
 }
 

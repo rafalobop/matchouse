@@ -7,6 +7,23 @@
   const DEFAULT_INITIAL_DELAY_MS = 1000;
   const DEFAULT_MAX_DELAY_MS = 15000;
 
+  // KAN-128: el polling ya no es el mecanismo primario de actualización (eso lo hace el push por
+  // WS de arriba) — es la red de seguridad para pestañas sin WS o con el socket caído. Antes corría
+  // fijo cada 2-10s por cada uno de los 4 recursos del dashboard (loadMatches/loadCatalogInfo/
+  // loadActiveSearches/loadIncomingMatches); a la escala objetivo (500-1000 pestañas abiertas) eso
+  // solo era ya, por sí solo, cientos de requests/segundo sostenidos contra el servidor. Se baja el
+  // piso a 15-30s.
+  const FALLBACK_POLL_MIN_MS = 15000;
+  const FALLBACK_POLL_MAX_MS = 30000;
+
+  // Intervalo random dentro de [minMs, maxMs), independiente por cada pestaña/recurso — evita que
+  // todas las pestañas abiertas al mismo tiempo (ej. todas reconectando tras una caída del server)
+  // polleen en el mismo instante exacto ("thundering herd"), sin necesidad de coordinación entre
+  // clientes.
+  function randomIntervalMs(minMs, maxMs) {
+    return Math.floor(minMs + Math.random() * (maxMs - minMs));
+  }
+
   function buildMatchCountSocketUrl(location) {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${protocol}//${location.host}/ws`;
@@ -37,9 +54,12 @@
   const api = {
     DEFAULT_INITIAL_DELAY_MS,
     DEFAULT_MAX_DELAY_MS,
+    FALLBACK_POLL_MIN_MS,
+    FALLBACK_POLL_MAX_MS,
     buildMatchCountSocketUrl,
     shouldRefetchOnMessage,
-    nextReconnectDelayMs
+    nextReconnectDelayMs,
+    randomIntervalMs
   };
 
   if (typeof module !== 'undefined' && module.exports) {

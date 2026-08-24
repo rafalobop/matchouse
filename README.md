@@ -43,6 +43,17 @@ Variables requeridas (sin default, el arranque falla si faltan):
 
 El resto de las variables documentadas en `.env.example` son opcionales y tienen defaults razonables definidos en `src/config/env.ts`.
 
+## Tipado de las respuestas de Supabase (KAN-139)
+
+`src/services/supabase.ts` expone `supabase` (cliente service-role) y `getTenantClient(token)` (cliente scoped al tenant, patrón "Tenant Context" de KAN-63) tipados como `TypedSupabaseClient` = `SupabaseClient<Database>`, en vez del cliente genérico sin tipar que se usaba antes. `Database` vive en `src/types/database.types.ts`, generado directamente desde el schema real del proyecto de Supabase (`brokaza`, `bbadahhljpddlckyrmvi`) — no escrito a mano.
+
+**Implicancias para quien escriba código nuevo contra Supabase:**
+- Cualquier `.from('tabla')` sobre `supabase` o el resultado de `getTenantClient(...)` ahora tipa `select`/`insert`/`update`/`delete`/`eq`/etc. contra las columnas reales (nombre, nullability, FKs) — un typo en el nombre de una columna, o pasarle un tipo que no matchea (ej. `string | string[]` donde la columna es `string`), ahora es un error de compilación, no un `any` silencioso que solo fallaba en runtime contra la base real.
+- Si se recibe un `SupabaseClient` como parámetro de una función (patrón "cliente inyectable" usado en varios servicios para testear sin red real, ej. `syncPropertiesToDatabase`), tipalo como `TypedSupabaseClient` (exportado desde `services/supabase.ts`) en vez del genérico, para no perder el tipado al pasar por la función.
+- **Regenerar `database.types.ts` cada vez que cambie el schema real** (nueva tabla/columna/función, migración aplicada): `mcp__supabase__generate_typescript_types` (o `supabase gen types typescript --project-id bbadahhljpddlckyrmvi` con la CLI). El archivo no se edita a mano.
+
+**Migración real de este ticket:** el mapeo de dependencias (`tsc --noEmit` tras tipar `supabase.ts`) encontró solo 4 errores, todos en `src/adminRoutes.ts` (`PATCH /api/properties/:id/coordinates`), causados por un problema de tipado preexistente y no relacionado a Supabase en sí: `isValidUUID` (`src/utils/idValidation.ts`) devolvía `boolean` en vez de un type predicate (`value is string`), así que TypeScript no angostaba `id` (`req.params.id`, tipado `string | string[]` por Express) a `string` después del `if (!isValidUUID(id)) return ...` — el cliente sin tipar antes aceptaba cualquier cosa en `.eq()` sin chequearlo. Se corrigió `isValidUUID` a type predicate (mismo comportamiento en runtime, angosta el tipo en compile-time) y los 4 sitios quedaron resueltos sin tocarlos individualmente. El AC que pedía `src/models/{tipo}.ts` no aplica — el proyecto no tiene una carpeta `src/models/`, los shapes de datos viven como interfaces junto al servicio que los usa (ej. `Property` en `services/excel.ts`, `SearcherSnapshot` en `services/notifier-email.ts`).
+
 ## Formulario de Perfil de Tenant (KAN-90)
 
 Tras el primer login por magic link, el agente completa un formulario obligatorio (`POST /api/profile`, validado en `src/utils/profileValidation.ts`) antes de poder usar el dashboard. Reglas de formato:

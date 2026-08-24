@@ -9,23 +9,11 @@ import { logger } from './logger';
 
 webpush.setVapidDetails(config.vapidEmail, config.vapidPublicKey, config.vapidPrivateKey);
 
-// KAN-45: texto minimizado y fijo (no depende del conteo de matches ni de datos de la propiedad)
-// para que la notificación nunca filtre dirección/precio/contacto por un canal sin control de
-// acceso propio, sin importar quién la dispare.
-export function buildMatchFoundPushPayload(searchId: string): Record<string, unknown> {
-  return {
-    title: 'Brokaza',
-    body: 'Tenés un match nuevo — tocá para ver',
-    tag: `search-match-${searchId}`,
-    data: { url: '/' }
-  };
-}
-
-// KAN-78: aviso al dueño de la propiedad matcheada de que un agente la buscó (dirección
-// recíproca — hasta ahora solo se notificaba al buscador). Mismo criterio de privacidad que
-// buildMatchFoundPushPayload: genérico, sin datos del buscador (nombre/teléfono/inmobiliaria) por
-// un canal sin control de acceso propio; el detalle completo va solo por email/dashboard
-// autenticado (GET /api/matches/incoming).
+// KAN-78: aviso al dueño de la propiedad matcheada de que un agente la buscó — único lado que se
+// notifica de este evento (decisión de producto, 2026-08-21: el buscador ya no recibe push/email
+// de sus propios matches, ver src/routes/search.ts). Texto genérico y fijo, sin datos del
+// buscador (nombre/teléfono/inmobiliaria) por un canal sin control de acceso propio; el detalle
+// completo va solo por email/dashboard autenticado (GET /api/matches/incoming).
 export function buildIncomingMatchPushPayload(matchId: string): Record<string, unknown> {
   return {
     title: 'Brokaza',
