@@ -30,7 +30,6 @@ export interface Config {
   uploadRateLimitWindowMs: number;
   uploadMaxFileSizeBytes: number;
   internalWebhookSecret: string;
-  accessGateCode?: string;
   adminHost?: string;
   adminAppUrl?: string;
   metricsRateLimitMax: number;
@@ -104,10 +103,6 @@ export function validateConfig(): Config {
   // quedaría abierto a cualquiera que adivine la URL. El mismo valor debe estar guardado en
   // Supabase Vault (secret 'internal_webhook_secret'), leído por la función del trigger.
   const internalWebhookSecret = cleanEnvVar(process.env.INTERNAL_WEBHOOK_SECRET);
-  // Gate temporal de acceso privado (pre-lanzamiento): si está seteada, toda la app queda
-  // detrás de una pantalla de "acceso privado" hasta que se visite /?access=<código>. Opcional
-  // a propósito — sin esta variable la app funciona igual que siempre, sin gate.
-  const accessGateCode = cleanEnvVar(process.env.ACCESS_GATE_CODE);
   // Panel admin (app.admin.brokaza.com): mismo proceso Express que el resto de la app, pero
   // solo se sirve el adminRouter cuando el Host de la request coincide con esta variable. Sin
   // ADMIN_HOST seteada, el panel admin queda completamente deshabilitado (útil en local/dev).
@@ -224,7 +219,6 @@ export function validateConfig(): Config {
     uploadRateLimitWindowMs,
     uploadMaxFileSizeBytes,
     internalWebhookSecret,
-    accessGateCode,
     adminHost,
     adminAppUrl,
     metricsRateLimitMax,
