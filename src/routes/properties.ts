@@ -7,6 +7,7 @@ import {
   resolvePropertyZoneInfo,
   type PropertyForZoneBatch
 } from '../services/zonesService';
+import { getTenantPlanLimits, countTenantProperties } from '../services/planLimits';
 
 // KAN-273: CRUD de propiedades para la tabla interactiva del dashboard (visualización, edición,
 // filtros/orden, alta y baja desde la UI, sin depender de un re-upload del Excel). Todas las rutas
@@ -234,6 +235,14 @@ router.post('/api/catalog/properties', tenantAuthMiddleware, async (req, res) =>
   }
 
   try {
+    // Fase 1 pre-lanzamiento: cap de cartera del plan (ver src/config/planLimits.ts). Cheque
+    // antes del insert para no depender de que el UNIQUE/CHECK de la tabla lo frene después.
+    const { maxProperties } = await getTenantPlanLimits(tenantId, supabase);
+    const currentCount = await countTenantProperties(tenantId, supabase);
+    if (currentCount >= maxProperties) {
+      return res.status(403).json({ error: `Llegaste al límite de propiedades de tu plan (${maxProperties}).` });
+    }
+
     const payload = {
       address: req.body.address.trim(),
       floor: req.body.floor || null,

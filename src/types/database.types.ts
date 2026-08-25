@@ -291,6 +291,7 @@ export type Database = {
           full_name: string
           id: string
           phone_number: string | null
+          plan: string
           profile_completed: boolean
         }
         Insert: {
@@ -302,6 +303,7 @@ export type Database = {
           full_name: string
           id: string
           phone_number?: string | null
+          plan?: string
           profile_completed?: boolean
         }
         Update: {
@@ -313,6 +315,7 @@ export type Database = {
           full_name?: string
           id?: string
           phone_number?: string | null
+          plan?: string
           profile_completed?: boolean
         }
         Relationships: []

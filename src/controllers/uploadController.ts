@@ -3,6 +3,7 @@ import { processExcelBufferWithColumnMap, peekExcelHeaders, syncPropertiesToData
 import { resolveColumnMapping, confirmColumnMapping, toColumnMapRecord, ExcelMappingServiceError } from '../services/excelMapping';
 import { ExcelMappingField } from '../utils/excelHeaderMatcher';
 import { logger } from '../services/logger';
+import { getTenantPlanLimits } from '../services/planLimits';
 
 export async function uploadCatalog(req: express.Request, res: express.Response) {
   const tenantId = (req as any).tenantId;
@@ -52,6 +53,14 @@ export async function uploadCatalog(req: express.Request, res: express.Response)
     const { properties: catalog, priceParseErrors } = processExcelBufferWithColumnMap(req.file.buffer, mappingsBySignature);
     if (catalog.length === 0) {
       return res.status(400).json({ error: 'El archivo Excel no contiene propiedades legibles.' });
+    }
+
+    // Fase 1 pre-lanzamiento: cap de cartera del plan (ver src/config/planLimits.ts). syncPropertiesToDatabase
+    // reemplaza toda la cartera del tenant (upsert + delete de lo no matcheado, ver services/excel.ts), así
+    // que el conteo final ≈ catalog.length — se valida antes de tocar la base.
+    const { maxProperties } = await getTenantPlanLimits(tenantId, tenantSupabase);
+    if (catalog.length > maxProperties) {
+      return res.status(400).json({ error: `El archivo tiene ${catalog.length} propiedades y tu plan permite hasta ${maxProperties}.` });
     }
 
     // Aislamiento por tenant
@@ -120,6 +129,12 @@ export async function confirmMapping(req: express.Request, res: express.Response
     const { properties: catalog, priceParseErrors } = processExcelBufferWithColumnMap(req.file.buffer, mappingsBySignature);
     if (catalog.length === 0) {
       return res.status(400).json({ error: 'El archivo Excel no contiene propiedades legibles.' });
+    }
+
+    // Fase 1 pre-lanzamiento: mismo cap de cartera que uploadCatalog (ver ese handler para el detalle).
+    const { maxProperties } = await getTenantPlanLimits(tenantId, tenantSupabase);
+    if (catalog.length > maxProperties) {
+      return res.status(400).json({ error: `El archivo tiene ${catalog.length} propiedades y tu plan permite hasta ${maxProperties}.` });
     }
 
     await syncPropertiesToDatabase(catalog, tenantId, tenantSupabase);

@@ -17,7 +17,9 @@ const ROUTE_SOURCE_FILES = [
   ['src', 'routes', 'auth.ts'],
   ['src', 'routes', 'profile.ts'],
   ['src', 'routes', 'upload.ts'],
-  ['src', 'routes', 'search.ts'],
+  // src/routes/search.ts se eliminó (chore: remove orphaned routes/search.ts, 2026-08-24) — era un
+  // duplicado nunca montado, el camino real es searchRoutes.ts -> controllers/searchController.ts.
+  ['src', 'controllers', 'searchController.ts'],
   ['src', 'routes', 'matches.ts'],
   ['src', 'routes', 'notifications.ts'],
   ['src', 'routes', 'system.ts']
