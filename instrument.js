@@ -15,7 +15,7 @@ const { buildSentryDataCollectionConfig } = require(
 );
 
 Sentry.init({
-  dsn: "https://fe2d2e998e70b7634e2fb0e920f940b2@o4511038748950528.ingest.us.sentry.io/4511847434420224",
+  dsn: "https://612bb75a635df3d64b56fc88c4aa5c66@o4511038748950528.ingest.us.sentry.io/4511978708729856",
   // KAN-126: antes acá "dataCollection" quedaba comentado por default — Sentry capturaba bodies
   // HTTP completos (emails, access_token, datos de perfil) y cookies/headers sin filtrar,
   // incluida la cookie de sesión y el header Authorization en texto plano. Ver
