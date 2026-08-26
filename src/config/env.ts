@@ -1,5 +1,6 @@
 import * as dotenv from 'dotenv';
 import * as path from 'path';
+import { logger } from '../services/logger';
 
 // Cargar variables de entorno desde .env
 dotenv.config();
@@ -153,9 +154,10 @@ export function validateConfig(): Config {
     );
   }
   if (missingSupabaseCredentials.length > 0) {
-    console.warn(
-      `[CONFIG] Arrancando con credenciales de Supabase incompletas (${missingSupabaseCredentials.join(', ')}) ` +
-      'porque ALLOW_MISSING_SUPABASE_CREDENTIALS=true. Esto NO debe estar habilitado en producción.'
+    logger.warn(
+      { missingSupabaseCredentials },
+      '[CONFIG] Arrancando con credenciales de Supabase incompletas porque ALLOW_MISSING_SUPABASE_CREDENTIALS=true. ' +
+      'Esto NO debe estar habilitado en producción.'
     );
   }
 

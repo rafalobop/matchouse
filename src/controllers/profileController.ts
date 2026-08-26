@@ -2,6 +2,7 @@ import * as express from 'express';
 import { getTucumanLocalities } from '../services/localitiesService';
 import { logger } from '../services/logger';
 import { validateProfileInput } from '../utils/profileValidation';
+import { validateBodyWhitelist } from '../utils/bodyWhitelist';
 
 // KAN-93: única fuente de valores para el combobox de "Ciudad" del formulario de perfil —
 // alcance geográfico fijo a Tucumán (decisión de negocio, ver .agent/CONTEXT.md), nunca un
@@ -34,7 +35,7 @@ export async function getProfile(req: express.Request, res: express.Response) {
     res.json({ profile });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[PERFIL] Error al obtener el perfil del tenant');
-    res.status(500).json({ error: error.message || 'Error interno al obtener el perfil.' });
+    res.status(500).json({ error: 'Error interno al obtener el perfil.' });
   }
 }
 
@@ -50,6 +51,13 @@ export async function updateProfile(req: express.Request, res: express.Response)
   // así que se hardcodea acá en vez de confiar en lo que mande el body (defensa en profundidad,
   // ni un payload manipulado puede setear otro país).
   const { first_name, last_name, phone_number, agency_name, city } = req.body;
+
+  // KAN-134: whitelist de campos del body — rechaza cualquier key inesperada antes de validar
+  // el contenido de las esperadas.
+  const bodyWhitelistError = validateBodyWhitelist(req.body, ['first_name', 'last_name', 'phone_number', 'agency_name', 'city']);
+  if (bodyWhitelistError) {
+    return res.status(400).json({ error: bodyWhitelistError });
+  }
 
   const validationError = validateProfileInput({ first_name, last_name, phone_number, agency_name, city });
   if (validationError) {
@@ -77,6 +85,6 @@ export async function updateProfile(req: express.Request, res: express.Response)
     res.json({ success: true, profile });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[PERFIL] Error al actualizar el perfil del tenant');
-    res.status(500).json({ error: error.message || 'Error interno al actualizar el perfil.' });
+    res.status(500).json({ error: 'Error interno al actualizar el perfil.' });
   }
 }

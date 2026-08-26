@@ -24,6 +24,14 @@ export function clearCachedSession(token: string) {
   sessionCache.delete(token);
 }
 
+// KAN-76: solo para tests — siembra `sessionCache` directamente para poder ejercitar el router
+// real con una cookie de sesión válida sin pegarle a la API de Auth real de Supabase (no hay
+// credenciales reales disponibles en este sandbox, mismo límite documentado en tickets previos).
+// Mismo patrón que `__expireTenantClientForTests`/`__setTenantClientForTests` en services/supabase.ts.
+export function __setCachedSessionForTests(token: string, tenantId: string): void {
+  sessionCache.set(token, { tenantId, expiresAt: Date.now() + SESSION_CACHE_TTL_MS });
+}
+
 export async function tenantAuthMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
   const token = req.cookies?.brokaza_session;
   if (!token) {

@@ -8,6 +8,7 @@ import { searchRoutes } from './searchRoutes';
 import { matchesRoutes } from './matchesRoutes';
 import { notificationsRoutes } from './notificationsRoutes';
 import { internalRoutes } from './internalRoutes';
+import { systemRoutes } from './systemRoutes';
 
 export const routes = Router();
 
@@ -24,3 +25,4 @@ routes.use(searchRoutes);
 routes.use(matchesRoutes);
 routes.use(notificationsRoutes);
 routes.use(internalRoutes);
+routes.use(systemRoutes);

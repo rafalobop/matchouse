@@ -24,7 +24,7 @@ export async function listMatches(req: express.Request, res: express.Response) {
     res.json({ matches: mappedMatches });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[MATCHES] Error al recuperar matches de blind_matches');
-    res.status(500).json({ error: error.message || 'Error interno al recuperar matches.' });
+    res.status(500).json({ error: 'Error interno al recuperar matches.' });
   }
 }
 
@@ -51,7 +51,7 @@ export async function listIncomingMatches(req: express.Request, res: express.Res
     res.json({ matches: mappedMatches });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[MATCHES] Error al recuperar matches entrantes de blind_matches');
-    res.status(500).json({ error: error.message || 'Error interno al recuperar matches entrantes.' });
+    res.status(500).json({ error: 'Error interno al recuperar matches entrantes.' });
   }
 }
 
@@ -84,7 +84,7 @@ export async function submitFeedback(req: express.Request, res: express.Response
 
     res.json({ success: true });
   } catch (error: any) {
-    console.error('Error al actualizar el feedback de match:', error);
-    res.status(500).json({ error: error.message || 'Error interno al guardar feedback.' });
+    logger.error({ tenantId, matchId: id, err: error.message || error }, '[MATCHES] Error al actualizar el feedback de match');
+    res.status(500).json({ error: 'Error interno al guardar feedback.' });
   }
 }

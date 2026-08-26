@@ -11,18 +11,19 @@ import * as path from 'path';
 // este test valida el mismo contrato a nivel de código fuente: si alguien reintroduce
 // `error.message ||` delante de cualquiera de estos fallbacks, el test falla de inmediato.
 // KAN-142: las 12 rutas se repartieron entre src/index.ts y src/routes/*.ts al partir el
-// monolito — se concatenan todas las fuentes relevantes para no perder cobertura tras la mudanza.
+// monolito. KAN-76: el commit "add: new routes structure" (2026-08-24) las volvió a repartir, esta
+// vez entre src/routes/*Routes.ts y src/controllers/*Controller.ts (los routes/*.ts viejos citados
+// acá antes eran código muerto, nunca montado — ver src/routes/index.ts) — se apunta a las fuentes
+// activas reales para no perder cobertura tras la segunda mudanza. Ese mismo commit había
+// reintroducido `error.message ||` en 6 de estas respuestas (matchesController/profileController/
+// notificationsController/uploadController) — corregido como parte de KAN-76.
 const ROUTE_SOURCE_FILES = [
   ['src', 'index.ts'],
-  ['src', 'routes', 'auth.ts'],
-  ['src', 'routes', 'profile.ts'],
-  ['src', 'routes', 'upload.ts'],
-  // src/routes/search.ts se eliminó (chore: remove orphaned routes/search.ts, 2026-08-24) — era un
-  // duplicado nunca montado, el camino real es searchRoutes.ts -> controllers/searchController.ts.
+  ['src', 'controllers', 'profileController.ts'],
+  ['src', 'controllers', 'uploadController.ts'],
   ['src', 'controllers', 'searchController.ts'],
-  ['src', 'routes', 'matches.ts'],
-  ['src', 'routes', 'notifications.ts'],
-  ['src', 'routes', 'system.ts']
+  ['src', 'controllers', 'matchesController.ts'],
+  ['src', 'controllers', 'notificationsController.ts']
 ];
 const indexSource = ROUTE_SOURCE_FILES
   .map((segments) => fs.readFileSync(path.join(__dirname, '..', ...segments), 'utf-8'))
@@ -63,8 +64,9 @@ for (const fallback of CLIENT_FACING_FALLBACKS) {
 
 test('KAN-129 - los logger.error/console.error de esas mismas rutas siguen logueando error.message (no se perdió el detalle real)', () => {
   // Contraparte del test anterior: confirma que NO se sobre-corrigió sacando el logueo real, solo
-  // la respuesta al cliente. Cuenta ocurrencias de "error.message || error" (patrón de logging) en
-  // vez de listarlas una por una, porque acompañan a las 12 rutas de arriba con distintos textos.
-  const loggingOccurrences = (indexSource.match(/logger\.error\(\{ error: error\.message \|\| error/g) || []).length;
+  // la respuesta al cliente. Cuenta ocurrencias de "error.message || error" dentro de un
+  // logger.error(...) en vez de listarlas una por una (el orden de las keys del objeto varía entre
+  // controllers, ej. `{ error: error.message || error, tenantId }` vs `{ tenantId, err: error.message || error }`).
+  const loggingOccurrences = (indexSource.match(/logger\.error\(\{[^)]*error\.message \|\| error/g) || []).length;
   assert.ok(loggingOccurrences >= 10, 'El logging real de error.message en las rutas afectadas no debería haber desaparecido.');
 });

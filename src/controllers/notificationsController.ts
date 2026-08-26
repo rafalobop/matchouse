@@ -1,5 +1,7 @@
 import * as express from 'express';
 import { config } from '../config/env';
+import { logger } from '../services/logger';
+import { validateBodyWhitelist } from '../utils/bodyWhitelist';
 
 export function getVapidPublicKey(req: express.Request, res: express.Response) {
   res.json({ publicKey: config.vapidPublicKey });
@@ -9,6 +11,12 @@ export async function subscribe(req: express.Request, res: express.Response) {
   const tenantId = (req as any).tenantId;
   const { subscription } = req.body;
   const supabase = (req as any).supabaseClient;
+
+  // KAN-134: whitelist de campos del body.
+  const bodyWhitelistError = validateBodyWhitelist(req.body, ['subscription']);
+  if (bodyWhitelistError) {
+    return res.status(400).json({ error: bodyWhitelistError });
+  }
 
   if (!subscription || !subscription.endpoint) {
     return res.status(400).json({ error: 'Suscripción inválida' });
@@ -37,7 +45,7 @@ export async function subscribe(req: express.Request, res: express.Response) {
 
     res.json({ success: true });
   } catch (error: any) {
-    console.error('Error al registrar suscripción web push:', error);
-    res.status(500).json({ error: error.message || 'Error interno al suscribir.' });
+    logger.error({ tenantId, err: error.message || error }, '[NOTIFICATIONS] Error al registrar suscripción web push');
+    res.status(500).json({ error: 'Error interno al suscribir.' });
   }
 }
