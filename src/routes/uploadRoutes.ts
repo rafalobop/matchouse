@@ -47,5 +47,6 @@ function handleUpload(req: express.Request, res: express.Response, next: express
   });
 }
 
+uploadRoutes.get('/api/upload/mapping-fields', uploadController.getMappingFields);
 uploadRoutes.post('/api/upload', tenantAuthMiddleware, checkUploadRateLimit, handleUpload, uploadController.uploadCatalog);
 uploadRoutes.post('/api/upload/confirm-mapping', tenantAuthMiddleware, checkUploadRateLimit, handleUpload, uploadController.confirmMapping);
