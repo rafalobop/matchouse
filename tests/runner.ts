@@ -55,6 +55,7 @@ import './searchExpiration.test';
 import './searchSegmentProcessor.test';
 import './searchValidation.test';
 import './sentryDataCollection.test';
+import './sentryForwarding.test';
 import './supabase.test';
 import './truncatedProfileDetector.test';
 import './uploadController.test';

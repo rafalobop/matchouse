@@ -6,6 +6,7 @@ import * as path from 'path';
 import { routes } from './routes';
 import { mountAdminRouter } from './adminRoutes';
 import { globalErrorHandler } from './utils/errorHandler';
+import { buildHealthPayload } from './utils/health';
 
 export function createApp(): express.Application {
   const app = express();
@@ -43,11 +44,16 @@ export function createApp(): express.Application {
   // seteada no registra nada (panel deshabilitado por completo, ver mountAdminRouter).
   mountAdminRouter(app);
 
-  // Healthcheck de Railway: sin auth, sin dependencias externas (no toca Supabase) para que el
-  // resultado refleje solo si el proceso Node está arriba y respondiendo, no la salud de servicios
-  // downstream.
+  // Healthcheck de Railway + monitor de uptime externo (KAN-83): sin auth, sin dependencias
+  // externas (no toca Supabase) para que el resultado refleje solo si el proceso Node está arriba
+  // y respondiendo, no la salud de servicios downstream. Hallazgo de KAN-83: `buildHealthPayload()`
+  // (src/utils/health.ts, KAN-141) ya existía y ya tenía tests (tests/health.test.ts, con un
+  // comentario que decía explícitamente "GET /health delega en buildHealthPayload()"), pero este
+  // handler nunca lo invocaba — quedó desconectado en el mismo split de src/index.ts que dejó
+  // varias otras rutas sin montar (ver KAN-76/KAN-273). `status: 'ok'` se mantiene por
+  // compatibilidad con lo que ya devolvía este endpoint.
   app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'ok' });
+    res.status(200).json({ status: 'ok', ...buildHealthPayload() });
   });
 
   app.use(express.static(path.join(process.cwd(), 'public')));
