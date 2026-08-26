@@ -9,6 +9,7 @@ import { sendWebPushToTenant } from '../services/webPush';
 import { config } from '../config/env';
 import { logger } from '../services/logger';
 import { processSingleSearchSegment, SearchSegmentResult } from '../services/searchSegmentProcessor';
+import { getTenantPlanLimits, countTenantSearchesThisMonth } from '../services/planLimits';
 
 // KAN-37: motor de matching bidireccional entre tenants, dirección búsqueda→cartera. Un tenant
 // describe lo que busca en texto libre y recibe matches de la cartera de OTROS tenants (excluye
@@ -33,6 +34,17 @@ export async function createSearch(req: express.Request, res: express.Response) 
     return res.status(501).json({ error: 'La búsqueda de texto libre (matching ciego) todavía no está habilitada.' });
   }
 
+  // Fase 1 pre-lanzamiento: cuota mensual de búsquedas del plan (ver src/config/planLimits.ts).
+  // Cheque temprano, antes de segmentar, para no gastar la llamada a IA de Agente 0 si ya no queda cuota.
+  const { maxSearchesPerMonth } = await getTenantPlanLimits(tenantId, tenantSupabase);
+  const searchesThisMonth = await countTenantSearchesThisMonth(tenantId, tenantSupabase);
+  if (searchesThisMonth >= maxSearchesPerMonth) {
+    return res.status(403).json({
+      error: `Alcanzaste el límite de ${maxSearchesPerMonth} búsquedas de este mes.`,
+      code: 'SEARCH_QUOTA_EXCEEDED'
+    });
+  }
+
   let segments: string[];
   try {
     segments = await segmentSearchRequests(text); // Agente 0 — fail-soft, nunca lanza
@@ -43,10 +55,17 @@ export async function createSearch(req: express.Request, res: express.Response) 
     segments = [text];
   }
 
+  // Un mismo mensaje puede segmentarse en más sub-búsquedas de las que quedan de cuota este mes:
+  // se procesan las primeras `remaining` y el resto queda marcado como cuota agotada, sin llegar a
+  // pedirle nada a la IA de extracción (Agente 1) para esos segmentos.
+  const remaining = maxSearchesPerMonth - searchesThisMonth;
+  const segmentsToProcess = segments.slice(0, remaining);
+  const segmentsOverQuota = segments.slice(remaining);
+
   const results: SearchSegmentResult[] = [];
   let anyAITimeout = false;
 
-  for (const segmentText of segments) {
+  for (const segmentText of segmentsToProcess) {
     try {
       const result = await processSingleSearchSegment(tenantId, tenantSupabase, segmentText);
       results.push(result);
@@ -57,12 +76,22 @@ export async function createSearch(req: express.Request, res: express.Response) 
         continue; // seguir con los demás segmentos, no abortar todo el lote por un timeout puntual
       }
       logger.error({ error: error.message || error, tenantId, segmentText }, '[BUSQUEDA] Error al procesar un segmento de búsqueda.');
-      results.push({ success: false, raw_text: segmentText, error: error.message || 'Error interno al procesar este segmento.' });
+      results.push({ success: false, raw_text: segmentText, error: 'Error interno al procesar este segmento.' });
     }
   }
 
+  const anyQuotaExceeded = segmentsOverQuota.length > 0;
+  for (const segmentText of segmentsOverQuota) {
+    results.push({
+      success: false,
+      raw_text: segmentText,
+      error: `Límite mensual de búsquedas alcanzado (${maxSearchesPerMonth}/mes).`,
+      code: 'SEARCH_QUOTA_EXCEEDED'
+    });
+  }
+
   const allFailed = results.every(r => !r.success);
-  const httpStatus = allFailed ? (anyAITimeout ? 504 : 500) : 200;
+  const httpStatus = allFailed ? (anyAITimeout ? 504 : anyQuotaExceeded ? 403 : 500) : 200;
 
   res.status(httpStatus).json({
     success: !allFailed,
@@ -129,7 +158,7 @@ export async function listSearches(req: express.Request, res: express.Response) 
     res.json({ searches: results });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[BUSQUEDAS] Error al listar búsquedas activas');
-    res.status(500).json({ error: error.message || 'Error interno al listar las búsquedas.' });
+    res.status(500).json({ error: 'Error interno al listar las búsquedas.' });
   }
 }
 
@@ -188,7 +217,7 @@ export async function archiveSearch(req: express.Request, res: express.Response)
     res.json({ success: true });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId, searchId: id }, '[BUSQUEDAS] Error al archivar la búsqueda');
-    res.status(500).json({ error: error.message || 'Error interno al archivar la búsqueda.' });
+    res.status(500).json({ error: 'Error interno al archivar la búsqueda.' });
   }
 }
 
@@ -240,6 +269,6 @@ export async function reactivateSearch(req: express.Request, res: express.Respon
     res.json({ success: true, expires_at: updated.expires_at });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId, searchId: id }, '[BUSQUEDAS] Error al reactivar la búsqueda');
-    res.status(500).json({ error: error.message || 'Error interno al reactivar la búsqueda.' });
+    res.status(500).json({ error: 'Error interno al reactivar la búsqueda.' });
   }
 }

@@ -1,8 +1,22 @@
 import * as express from 'express';
 import { processExcelBufferWithColumnMap, peekExcelHeaders, syncPropertiesToDatabase } from '../services/excel';
 import { resolveColumnMapping, confirmColumnMapping, toColumnMapRecord, ExcelMappingServiceError } from '../services/excelMapping';
-import { ExcelMappingField } from '../utils/excelHeaderMatcher';
+import { ExcelMappingField, EXCEL_MAPPING_FIELDS, REQUIRED_EXCEL_MAPPING_FIELDS, EXCEL_MAPPING_FIELDS_VERSION } from '../utils/excelHeaderMatcher';
 import { logger } from '../services/logger';
+import { getTenantPlanLimits } from '../services/planLimits';
+
+// KAN-215: contrato compartido de MAPPING_FIELDS — el frontend lo consume en vez de hardcodear su
+// propia copia (ver docs/evolucion_proyecto/mapping_fields_contract.md). Público, sin
+// tenantAuthMiddleware: es metadata estática de negocio, no depende de una sesión de tenant.
+// Hallazgo de KAN-76: este endpoint solo existía en el src/routes/upload.ts viejo (KAN-142),
+// nunca montado tras el split a routes/*Routes.ts + controllers/* — roto en producción hasta acá.
+export function getMappingFields(req: express.Request, res: express.Response) {
+  res.json({
+    version: EXCEL_MAPPING_FIELDS_VERSION,
+    fields: EXCEL_MAPPING_FIELDS,
+    required: REQUIRED_EXCEL_MAPPING_FIELDS
+  });
+}
 
 export async function uploadCatalog(req: express.Request, res: express.Response) {
   const tenantId = (req as any).tenantId;
@@ -54,6 +68,14 @@ export async function uploadCatalog(req: express.Request, res: express.Response)
       return res.status(400).json({ error: 'El archivo Excel no contiene propiedades legibles.' });
     }
 
+    // Fase 1 pre-lanzamiento: cap de cartera del plan (ver src/config/planLimits.ts). syncPropertiesToDatabase
+    // reemplaza toda la cartera del tenant (upsert + delete de lo no matcheado, ver services/excel.ts), así
+    // que el conteo final ≈ catalog.length — se valida antes de tocar la base.
+    const { maxProperties } = await getTenantPlanLimits(tenantId, tenantSupabase);
+    if (catalog.length > maxProperties) {
+      return res.status(400).json({ error: `El archivo tiene ${catalog.length} propiedades y tu plan permite hasta ${maxProperties}.` });
+    }
+
     // Aislamiento por tenant
     await syncPropertiesToDatabase(catalog, tenantId, tenantSupabase);
 
@@ -66,8 +88,8 @@ export async function uploadCatalog(req: express.Request, res: express.Response)
 
     res.json({ success: true, count: catalog.length, priceParseErrors });
   } catch (error: any) {
-    console.error('Error al procesar subida de Excel:', error);
-    res.status(500).json({ error: error.message || 'Error interno al procesar el archivo.' });
+    logger.error({ tenantId, err: error.message || error }, '[UPLOAD] Error al procesar subida de Excel');
+    res.status(500).json({ error: 'Error interno al procesar el archivo.' });
   }
 }
 
@@ -122,6 +144,12 @@ export async function confirmMapping(req: express.Request, res: express.Response
       return res.status(400).json({ error: 'El archivo Excel no contiene propiedades legibles.' });
     }
 
+    // Fase 1 pre-lanzamiento: mismo cap de cartera que uploadCatalog (ver ese handler para el detalle).
+    const { maxProperties } = await getTenantPlanLimits(tenantId, tenantSupabase);
+    if (catalog.length > maxProperties) {
+      return res.status(400).json({ error: `El archivo tiene ${catalog.length} propiedades y tu plan permite hasta ${maxProperties}.` });
+    }
+
     await syncPropertiesToDatabase(catalog, tenantId, tenantSupabase);
 
     if (priceParseErrors.length > 0) {
@@ -136,7 +164,7 @@ export async function confirmMapping(req: express.Request, res: express.Response
     if (error instanceof ExcelMappingServiceError) {
       return res.status(400).json({ error: error.message });
     }
-    console.error('Error al confirmar mapeo de columnas y procesar Excel:', error);
-    res.status(500).json({ error: error.message || 'Error interno al procesar el archivo.' });
+    logger.error({ tenantId, err: error.message || error }, '[UPLOAD] Error al confirmar mapeo de columnas y procesar Excel');
+    res.status(500).json({ error: 'Error interno al procesar el archivo.' });
   }
 }

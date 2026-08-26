@@ -139,7 +139,7 @@ function resolveHeuristicColumnIndices(headers: string[], sheetName: string): Sh
   if (domicilio === -1) {
     // Si no hay columna "domicilio", asumir la primera columna (columna 0) como la dirección
     domicilio = 0;
-    console.log(`[EXCEL] No se encontró columna "domicilio". Asumiendo columna 0 ("${headers[0]}") como domicilio.`);
+    logger.info({ sheetName, assumedHeader: headers[0] }, '[EXCEL] No se encontró columna "domicilio". Asumiendo columna 0 como domicilio.');
   }
 
   return {
@@ -407,7 +407,7 @@ export function processExcelBuffer(buffer: Buffer): ProcessExcelResult {
     const rows = xlsx.utils.sheet_to_json<any[]>(worksheet, { header: 1 });
 
     if (!rows || rows.length < 2) {
-      console.log(`[EXCEL] La pestaña "${sheetName}" está vacía o no tiene suficientes filas.`);
+      logger.info({ sheetName }, '[EXCEL] La pestaña está vacía o no tiene suficientes filas.');
       continue;
     }
 
@@ -416,11 +416,11 @@ export function processExcelBuffer(buffer: Buffer): ProcessExcelResult {
     const colIndices = resolveHeuristicColumnIndices(headers, sheetName);
 
     if (colIndices.domicilio === -1 || colIndices.precio === -1) {
-      console.warn(`[EXCEL] Pestaña "${sheetName}" omitida: no se encontró la columna de Precio o el Domicilio.`);
+      logger.warn({ sheetName }, '[EXCEL] Pestaña omitida: no se encontró la columna de Precio o el Domicilio.');
       continue;
     }
 
-    console.log(`[EXCEL] Procesando pestaña "${sheetName}" (Zona predeterminada: ${zona}, Operación predeterminada: ${operacion})...`);
+    logger.info({ sheetName, zona, operacion }, '[EXCEL] Procesando pestaña...');
 
     const sheetResult = parseSheetToProperties(rows, colIndices, sheetName, operacion, zona);
     catalog.push(...sheetResult.properties);
@@ -452,7 +452,7 @@ export function processExcelBufferWithColumnMap(
     const rows = xlsx.utils.sheet_to_json<any[]>(worksheet, { header: 1 });
 
     if (!rows || rows.length < 2) {
-      console.log(`[EXCEL] La pestaña "${sheetName}" está vacía o no tiene suficientes filas.`);
+      logger.info({ sheetName }, '[EXCEL] La pestaña está vacía o no tiene suficientes filas.');
       continue;
     }
 

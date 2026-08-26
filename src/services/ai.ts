@@ -586,9 +586,9 @@ export function logFallbackWarning(strategyName: string, error: any) {
     error?.statusCode === 429;
 
   if (isQuotaError) {
-    console.warn(`[AI STRATEGY] Límite de cuota excedido (429/Resource Exhausted) en: ${strategyName}. Cambiando de modelo (ejecutando fallback)...`);
+    logger.warn({ strategyName }, '[AI STRATEGY] Límite de cuota excedido (429/Resource Exhausted). Cambiando de modelo (ejecutando fallback)...');
   } else {
-    console.warn(`[AI STRATEGY] Falló la estrategia ${strategyName} debido a un error inesperado. Cambiando de modelo (ejecutando fallback)... Detalle: ${errMsg}`);
+    logger.warn({ strategyName, err: errMsg }, '[AI STRATEGY] Falló la estrategia debido a un error inesperado. Cambiando de modelo (ejecutando fallback)...');
   }
 }
 
@@ -603,14 +603,14 @@ class AIExtractorContext {
     if (config.openaiApiKey) {
       this.strategies.push(new OpenAIStrategy());
     } else {
-      console.warn('[AI CONTEXT] OpenAI no está disponible (falta OPENAI_API_KEY).');
+      logger.warn('[AI CONTEXT] OpenAI no está disponible (falta OPENAI_API_KEY).');
     }
   }
 
   async extractRealEstateRequest(messageTexto: string): Promise<ExtractedRealEstateRequest> {
     for (const strategy of this.strategies) {
       try {
-        console.log(`[AI STRATEGY] Intentando Extracción Básica con: ${strategy.name}`);
+        logger.info({ strategyName: strategy.name }, '[AI STRATEGY] Intentando Extracción Básica');
         const rawResult = await strategy.extractRealEstateRequest(messageTexto, SYSTEM_INSTRUCTIONS_AGENT1);
         return normalizeAgent1(rawResult);
       } catch (error) {
@@ -618,7 +618,7 @@ class AIExtractorContext {
       }
     }
 
-    console.error('[AI STRATEGY] Todas las estrategias de extracción fallaron.');
+    logger.error('[AI STRATEGY] Todas las estrategias de extracción fallaron.');
     return {
       operation: 'desconocido',
       property_type: 'otro',
@@ -644,7 +644,7 @@ class AIExtractorContext {
 
     for (const strategy of this.strategies) {
       try {
-        console.log(`[AI STRATEGY] Intentando Extracción de Texto Libre con: ${strategy.name}`);
+        logger.info({ strategyName: strategy.name }, '[AI STRATEGY] Intentando Extracción de Texto Libre');
         const rawResult = await strategy.extractFromFreeText(freeText, SYSTEM_INSTRUCTIONS_AGENT1_TEXT_INPUT);
         return normalizeAgent1(rawResult);
       } catch (error) {
@@ -659,7 +659,7 @@ class AIExtractorContext {
       throw new AITimeoutError();
     }
 
-    console.error('[AI STRATEGY] Todas las estrategias de extracción de texto libre fallaron.');
+    logger.error('[AI STRATEGY] Todas las estrategias de extracción de texto libre fallaron.');
     return {
       operation: 'desconocido',
       property_type: 'otro',
@@ -675,7 +675,7 @@ class AIExtractorContext {
   async extractZoneIntent(messageTexto: string, operacion?: string): Promise<ZoneIntentRequest> {
     for (const strategy of this.strategies) {
       try {
-        console.log(`[AI STRATEGY] Intentando Geo Comparación con: ${strategy.name}`);
+        logger.info({ strategyName: strategy.name }, '[AI STRATEGY] Intentando Geo Comparación');
         const rawResult = await strategy.extractZoneIntent(messageTexto, SYSTEM_INSTRUCTIONS_AGENT2, operacion);
         const normalized = normalizeAgent2(rawResult, operacion);
         return await resolveZoneIntent(normalized);
@@ -687,7 +687,7 @@ class AIExtractorContext {
     // Fallo total del LLM (ambas estrategias) — no hay evidencia de que el usuario mencionara una
     // zona real, solo que el LLM no respondió, así que se degrada a INDEFINIDA (no bloqueante) y
     // no DESCONOCIDA (que sí bloquea matches).
-    console.error('[AI STRATEGY] Todas las estrategias de zona fallaron.');
+    logger.error('[AI STRATEGY] Todas las estrategias de zona fallaron.');
     return {
       zone_status: 'INDEFINIDA',
       zona_ids: [],
@@ -706,7 +706,7 @@ class AIExtractorContext {
   async segmentSearchRequests(messageTexto: string): Promise<string[]> {
     for (const strategy of this.strategies) {
       try {
-        console.log(`[AI STRATEGY] Intentando Segmentación de Búsquedas con: ${strategy.name}`);
+        logger.info({ strategyName: strategy.name }, '[AI STRATEGY] Intentando Segmentación de Búsquedas');
         const raw = await strategy.segmentSearchRequests(messageTexto, SYSTEM_INSTRUCTIONS_SEGMENTER);
         const segments = Array.isArray(raw?.segments)
           ? raw.segments.map((s: any) => String(s).trim()).filter((s: string) => s.length > 0)
@@ -718,7 +718,7 @@ class AIExtractorContext {
       }
     }
 
-    console.warn('[AI STRATEGY] Todas las estrategias de segmentación fallaron; se trata el mensaje como una sola búsqueda.');
+    logger.warn('[AI STRATEGY] Todas las estrategias de segmentación fallaron; se trata el mensaje como una sola búsqueda.');
     return [messageTexto];
   }
 
@@ -729,7 +729,7 @@ class AIExtractorContext {
   ): Promise<ValidationResult> {
     for (const strategy of this.strategies) {
       try {
-        console.log(`[AI STRATEGY] Intentando Validación con: ${strategy.name}`);
+        logger.info({ strategyName: strategy.name }, '[AI STRATEGY] Intentando Validación');
         const result = await strategy.validateMatch(messageTexto, property, extractedData, SYSTEM_INSTRUCTIONS_VALIDATOR);
         return {
           score: Number(result.score) || 0,
@@ -741,7 +741,7 @@ class AIExtractorContext {
       }
     }
 
-    console.error('[AI STRATEGY] Todas las estrategias de validación fallaron.');
+    logger.error('[AI STRATEGY] Todas las estrategias de validación fallaron.');
     return {
       score: 0,
       isValid: false,
@@ -757,7 +757,7 @@ class AIExtractorContext {
   async suggestExcelColumnMapping(headers: string[]): Promise<ExcelColumnMappingSuggestion[]> {
     for (const strategy of this.strategies) {
       try {
-        console.log(`[AI STRATEGY] Intentando mapeo de columnas de Excel con: ${strategy.name}`);
+        logger.info({ strategyName: strategy.name }, '[AI STRATEGY] Intentando mapeo de columnas de Excel');
         const raw = await strategy.suggestExcelColumnMapping(headers, SYSTEM_INSTRUCTIONS_EXCEL_MAPPING);
         if (!Array.isArray(raw?.mapping)) {
           throw new Error('La respuesta de IA no tiene el formato esperado (falta "mapping" como array).');
@@ -772,7 +772,7 @@ class AIExtractorContext {
       }
     }
 
-    console.error('[AI STRATEGY] Todas las estrategias de mapeo de columnas de Excel fallaron.');
+    logger.error('[AI STRATEGY] Todas las estrategias de mapeo de columnas de Excel fallaron.');
     return [];
   }
 }

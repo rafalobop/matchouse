@@ -27,6 +27,7 @@ cache/
 sessions/
 auditoria.md
 MIGRATION_PLAN.md
+RUNBOOK.md
 
 # Proyectos de video generados con HyperFrames (outputs pesados, no versionar)
 videos/

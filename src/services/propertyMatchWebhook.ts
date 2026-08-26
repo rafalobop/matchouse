@@ -110,7 +110,7 @@ export async function processPropertyUploaded(
       match.reasons
     );
 
-    const { error: insertErr } = await client.from('blind_matches').insert(row);
+    const { data: insertedRow, error: insertErr } = await client.from('blind_matches').insert(row).select('id').single();
 
     if (insertErr) {
       logger.error({ error: insertErr.message, propertyId, searchId: match.search_id }, '[PROPERTY MATCH WEBHOOK] Error al persistir un match cartera→búsqueda (se continúa con el resto).');
@@ -137,7 +137,7 @@ export async function processPropertyUploaded(
     // Al dueño de la propiedad nueva: mismo mecanismo recíproco que KAN-78.
     notifyMatchFound({
       hasActivePush: () => hasActivePushSubscriptions(propertyOwnerTenantId, client),
-      sendPush: () => sendWebPushToTenant(propertyOwnerTenantId, buildIncomingMatchPushPayload(match.search_id)),
+      sendPush: () => sendWebPushToTenant(propertyOwnerTenantId, buildIncomingMatchPushPayload(insertedRow.id)),
       sendEmailFallback: () => sendIncomingMatchEmailFallback(propertyOwnerTenantId, searcherSnapshot, match.raw_text, [mappedMatchForNotify], client)
     }).catch((notifyErr: any) => {
       logger.error({ error: notifyErr.message || notifyErr, tenantId: propertyOwnerTenantId, searchId: match.search_id }, '[PROPERTY MATCH WEBHOOK] Error al notificar al dueño de la propiedad nueva (no afecta el match ya persistido).');

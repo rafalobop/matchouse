@@ -237,3 +237,16 @@ CREATE POLICY "blind_matches_matched_tenant_read" ON public.blind_matches
 -- app.settings.*` no está permitido para el rol de migraciones de este proyecto gestionado).
 -- **APP_URL sigue en el placeholder `http://localhost:3000`** — actualizar en Vault antes de
 -- confiar en el trigger contra producción real (ver el .sql de arriba para el comando exacto).
+--
+-- `profiles.plan` (2026-08-24, Fase 1 pre-lanzamiento de brokaza-frontend/Next_Steps.md — ver
+-- docs/evolucion_proyecto/add_profiles_plan_2026-08-24.sql): columna nueva, `text NOT NULL DEFAULT
+-- 'FREE'` con `CHECK (plan IN ('FREE'))` — un solo valor activo hoy, pensada para sumar tiers pagos
+-- después ampliando el CHECK, sin migrar de tipo (mismo patrón text+CHECK que operation/
+-- property_type/currency/active_searches.status, no un enum nativo de Postgres). Los límites por
+-- plan (hoy: 100 propiedades en cartera, 10 búsquedas por mes para FREE) viven en código, no en la
+-- base — ver src/config/planLimits.ts — así que sumar un tier nuevo no requiere tocar esta tabla
+-- más que ampliar el CHECK. `REVOKE UPDATE (plan) ON public.profiles FROM authenticated` acompaña
+-- la columna: la política RLS de profiles (`id = auth.uid()`) es row-level, no column-level, y
+-- `req.supabaseClient` (patrón "Tenant Context" de KAN-63) sí respeta RLS de verdad en el tráfico
+-- real — sin el REVOKE, un futuro endpoint de edición de perfil que no excluya `plan` del whitelist
+-- dejaría a cualquier tenant auto-asignarse un plan pago. Solo `service_role` puede escribir `plan`.

@@ -117,15 +117,18 @@ export async function processSingleSearchSegment(
   // contenido.
   if (mappedMatches.length > 0) {
     // KAN-78: dirección recíproca — avisar también al dueño de cada propiedad matcheada.
-    const bySearcherOwner = groupMatchesByMatchedTenant(mappedMatches);
+    // KAN-303: se agrupa mappedMatchesWithIds (no mappedMatches) para que cada grupo lleve el id
+    // real de su fila en blind_matches y el push pueda resaltar esas filas puntuales al entrar.
+    const bySearcherOwner = groupMatchesByMatchedTenant(mappedMatchesWithIds);
 
     // KAN-88: evento en vivo del contador de matches.
     broadcastMatchCountChanged([tenantId, ...Object.keys(bySearcherOwner)]);
 
     for (const [ownerTenantId, ownerMatches] of Object.entries(bySearcherOwner)) {
+      const ownerMatchIds = ownerMatches.map((m) => m.id).filter((id): id is string => Boolean(id));
       notifyMatchFound({
         hasActivePush: () => hasActivePushSubscriptions(ownerTenantId),
-        sendPush: () => sendWebPushToTenant(ownerTenantId, buildIncomingMatchPushPayload(search.id)),
+        sendPush: () => sendWebPushToTenant(ownerTenantId, buildIncomingMatchPushPayload(ownerMatchIds)),
         sendEmailFallback: () => sendIncomingMatchEmailFallback(ownerTenantId, searcherSnapshot, segmentText, ownerMatches)
       }).catch((notifyErr: any) => {
         logger.error({ error: notifyErr.message || notifyErr, tenantId: ownerTenantId, searchId: search.id }, '[BUSQUEDA] Error al notificar al dueño de una propiedad matcheada (no afecta la búsqueda ya confirmada)');

@@ -143,6 +143,14 @@ export function __expireTenantClientForTests(token: string): void {
   if (entry) entry.expiresAt = Date.now() - 1;
 }
 
+// KAN-76: solo para tests — siembra `tenantClientsCache` con un cliente fake (chainable, sin red
+// real), para poder correr tests de integración HTTP con cookie de sesión de punta a punta contra
+// los routers reales sin pegarle a Supabase de verdad (no hay credenciales reales disponibles en
+// este sandbox). `getTenantClient(token)` devuelve este cliente mientras la entrada no expire.
+export function __setTenantClientForTests(token: string, client: TypedSupabaseClient): void {
+  tenantClientsCache.set(token, { client, expiresAt: Date.now() + TENANT_CLIENT_CACHE_TTL_MS });
+}
+
 /** Solo para tests: corre el barrido de entradas vencidas fuera del setInterval real. */
 export function __sweepTenantClientsCacheForTests(): void {
   sweepExpiredTenantClients();

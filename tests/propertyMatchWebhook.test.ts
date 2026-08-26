@@ -88,7 +88,12 @@ function makeMockClient(options: {
         calls.push({ table: 'blind_matches', method: 'insert', args: [row] });
         const currentIndex = insertCallIndex++;
         const error = currentIndex === options.insertErrorOnCallIndex ? { message: 'fallo simulado de insert' } : null;
-        return Promise.resolve({ data: null, error });
+        return {
+          select: (...selectArgs: any[]) => {
+            calls.push({ table: 'blind_matches', method: 'select-after-insert', args: selectArgs });
+            return { single: () => Promise.resolve({ data: error ? null : { id: `blind-match-${currentIndex}` }, error }) };
+          }
+        };
       }
     };
   }
@@ -228,7 +233,10 @@ test('processPropertyUploaded (KAN-79) - si falla el chequeo de duplicados (fail
           eq: function (this: any) { return this; },
           then: (resolve: any) => resolve({ count: null, error: { message: 'fallo simulado de dedup' } })
         }),
-        insert: (row: any) => { mockClient.calls.push({ table: 'blind_matches', method: 'insert', args: [row] }); return Promise.resolve({ data: null, error: null }); }
+        insert: (row: any) => {
+          mockClient.calls.push({ table: 'blind_matches', method: 'insert', args: [row] });
+          return { select: () => ({ single: () => Promise.resolve({ data: { id: 'blind-match-dedup-fail-open' }, error: null }) }) };
+        }
       };
     }
     return originalFrom(table);

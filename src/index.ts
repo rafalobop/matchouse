@@ -12,7 +12,7 @@ import { initExcelParsePool } from './services/excelParsePool';
 const PORT = process.env.PORT || 3000;
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[PROCESO] Promesa no capturada (Unhandled Rejection):', reason);
+  logger.error({ reason }, '[PROCESO] Promesa no capturada (Unhandled Rejection)');
 });
 
 process.on('uncaughtException', (error) => {
