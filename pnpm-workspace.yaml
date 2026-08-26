@@ -2,3 +2,7 @@ allowBuilds:
   '@google/genai': true
   '@whiskeysockets/baileys': true
   protobufjs: true
+onlyBuiltDependencies:
+  - '@google/genai'
+  - '@whiskeysockets/baileys'
+  - protobufjs
