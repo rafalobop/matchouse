@@ -31,6 +31,10 @@ export interface MappedBlindMatch {
   score: number;
   reasons: string[];
   property: Record<string, unknown>;
+  // KAN-303: id real de la fila en blind_matches, adjuntado después del insert — usado para armar
+  // el `?highlight=` del push de aviso (ver buildIncomingMatchPushPayload). Ausente/null antes de
+  // insertarse o si la persistencia falló.
+  id?: string | null;
 }
 
 export interface SearcherSnapshot {

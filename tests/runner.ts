@@ -27,6 +27,7 @@ import './graph-techlead.test';
 import './health.test';
 import './htmlSanitize.test';
 import './idValidation.test';
+import './kan303IncomingMatchHighlight.test';
 import './localitiesService.test';
 import './logger.test';
 import './logRedaction.test';

@@ -14,12 +14,21 @@ webpush.setVapidDetails(config.vapidEmail, config.vapidPublicKey, config.vapidPr
 // de sus propios matches, ver src/routes/search.ts). Texto genérico y fijo, sin datos del
 // buscador (nombre/teléfono/inmobiliaria) por un canal sin control de acceso propio; el detalle
 // completo va solo por email/dashboard autenticado (GET /api/matches/incoming).
-export function buildIncomingMatchPushPayload(matchId: string): Record<string, unknown> {
+//
+// KAN-303: `data.url` ya no es '/' fijo — apunta a la página de matches entrantes del frontend
+// (`brokaza-frontend`, ruta real de Next.js `/matches`, no una sección por hash — ese era el
+// esquema del dashboard legacy servido por este mismo repo, retirado en KAN-258) con los ids de
+// blind_matches recién insertados en `?highlight=` para que `MatchesPage`/`IncomingMatchesSection`
+// resalten esas filas al entrar. matchRowIds son los ids reales de fila (blind_matches.id), no el
+// search_id — sin esto el frontend no tiene forma de saber qué fila puntual resaltar.
+export function buildIncomingMatchPushPayload(matchRowIds: string | (string | null)[]): Record<string, unknown> {
+  const ids = (Array.isArray(matchRowIds) ? matchRowIds : [matchRowIds]).filter((id): id is string => Boolean(id));
+  const tagId = ids[0] || 'unknown';
   return {
     title: 'Brokaza',
     body: 'Un agente busca una propiedad como una de las tuyas — tocá para ver',
-    tag: `incoming-match-${matchId}`,
-    data: { url: '/' }
+    tag: `incoming-match-${tagId}`,
+    data: { url: `/matches?highlight=${encodeURIComponent(ids.join(','))}` }
   };
 }
 
