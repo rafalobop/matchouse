@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import { hasActivePushSubscriptions } from '../src/services/webPush';
+import { hasActivePushSubscriptions, buildIncomingMatchPushPayload } from '../src/services/webPush';
 
 // Mismo estilo de mock de query builder encadenable usado en tests/searchExpiration.test.ts.
 function makeMockClient(options: { count?: number | null; error?: any } = {}) {
@@ -49,4 +49,31 @@ test('webPush.hasActivePushSubscriptions - consulta la tabla y el tenant correct
 
   assert.deepStrictEqual(mockClient.calls[0], { method: 'from', args: ['web_push_subscriptions'] });
   assert.deepStrictEqual(mockClient.calls[2], { method: 'eq', args: ['tenant_id', 'tenant-42'] });
+});
+
+test('webPush.buildIncomingMatchPushPayload (KAN-303) - un solo id arma data.url con ?highlight=<id> sin codificar', () => {
+  const payload = buildIncomingMatchPushPayload('match-abc');
+
+  assert.strictEqual((payload.data as any).url, '/matches?highlight=match-abc');
+  assert.strictEqual(payload.tag, 'incoming-match-match-abc');
+});
+
+test('webPush.buildIncomingMatchPushPayload (KAN-303) - varios ids se unen con coma (codificada) en un solo highlight', () => {
+  const payload = buildIncomingMatchPushPayload(['match-1', 'match-2']);
+
+  assert.strictEqual((payload.data as any).url, '/matches?highlight=match-1%2Cmatch-2');
+  assert.strictEqual(payload.tag, 'incoming-match-match-1', 'El tag usa el primer id como referencia de dedup del navegador.');
+});
+
+test('webPush.buildIncomingMatchPushPayload (KAN-303) - ids null/undefined en el array se filtran sin romper', () => {
+  const payload = buildIncomingMatchPushPayload([null, 'match-real', undefined] as any);
+
+  assert.strictEqual((payload.data as any).url, '/matches?highlight=match-real');
+});
+
+test('webPush.buildIncomingMatchPushPayload (KAN-303) - sin ningún id válido, cae a un tag "unknown" en vez de romper', () => {
+  const payload = buildIncomingMatchPushPayload([]);
+
+  assert.strictEqual(payload.tag, 'incoming-match-unknown');
+  assert.strictEqual((payload.data as any).url, '/matches?highlight=');
 });
