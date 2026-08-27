@@ -1,9 +1,52 @@
 import * as express from 'express';
-import { processExcelBufferWithColumnMap, peekExcelHeaders, syncPropertiesToDatabase } from '../services/excel';
+import { processExcelBufferWithColumnMap, peekExcelHeaders, syncPropertiesToDatabase, Property, PriceParseError, SkippedSheet, PropertyGeocodeFailure } from '../services/excel';
 import { resolveColumnMapping, confirmColumnMapping, toColumnMapRecord, ExcelMappingServiceError } from '../services/excelMapping';
 import { ExcelMappingField, EXCEL_MAPPING_FIELDS, REQUIRED_EXCEL_MAPPING_FIELDS, EXCEL_MAPPING_FIELDS_VERSION } from '../utils/excelHeaderMatcher';
 import { logger } from '../services/logger';
 import { getTenantPlanLimits } from '../services/planLimits';
+import { broadcastUploadStatus } from '../services/realtimeHub';
+
+// Implementación provisoria del modal de resultado de la subida (KAN-218/220): junto con el
+// conteo agregado que ya devolvía la respuesta, se arma el detalle propiedad por propiedad —
+// las que se cargaron sin problemas (`loaded`) y las que se cargaron con algún dato faltante o
+// directamente no se cargaron (`failed`, con el motivo), uniendo las tres fuentes de fallo que ya
+// existían por separado (priceParseErrors, geocodeFailures, skippedSheets) en una sola lista que
+// el frontend puede listar tal cual.
+export interface UploadFailureDetail {
+  sheetName: string;
+  address: string | null;
+  reason: string;
+}
+
+export interface UploadLoadedProperty {
+  sheetName: string;
+  address: string;
+  operation: 'venta' | 'alquiler';
+  price: number;
+  currency: 'USD' | 'ARS';
+}
+
+function buildUploadSummary(
+  catalog: Property[],
+  priceParseErrors: PriceParseError[],
+  skippedSheets: SkippedSheet[],
+  geocodeFailures: PropertyGeocodeFailure[]
+): { loaded: UploadLoadedProperty[]; failed: UploadFailureDetail[] } {
+  const failedAddresses = new Set(priceParseErrors.map(e => `${e.sheetName}::${e.address}`));
+  geocodeFailures.forEach(f => failedAddresses.add(`${f.sheetName}::${f.address}`));
+
+  const loaded = catalog
+    .filter(p => !failedAddresses.has(`${p.sheet_name}::${p.address}`))
+    .map(p => ({ sheetName: p.sheet_name, address: p.address, operation: p.operation, price: p.price, currency: p.currency }));
+
+  const failed: UploadFailureDetail[] = [
+    ...priceParseErrors.map(e => ({ sheetName: e.sheetName, address: e.address, reason: `Precio no reconocido ("${e.rawValue}"), se cargó sin precio.` })),
+    ...geocodeFailures.map(f => ({ sheetName: f.sheetName, address: f.address, reason: `No se pudo ubicar la dirección en el mapa (${f.reason}), se cargó sin coordenadas.` })),
+    ...skippedSheets.map(s => ({ sheetName: s.sheetName, address: null, reason: s.reason }))
+  ];
+
+  return { loaded, failed };
+}
 
 // KAN-215: contrato compartido de MAPPING_FIELDS — el frontend lo consume en vez de hardcodear su
 // propia copia (ver docs/evolucion_proyecto/mapping_fields_contract.md). Público, sin
@@ -26,6 +69,10 @@ export async function uploadCatalog(req: express.Request, res: express.Response)
   }
 
   try {
+    // KAN-137: notifica por WS cada etapa real del pipeline a medida que arranca, para que el
+    // frontend (useUpload/UploadProgressBar) muestre avance real en vez de un spinner ciego.
+    broadcastUploadStatus(tenantId, 'parsing_headers');
+
     // KAN-84: antes de parsear el archivo completo, resolvemos el mapeo de columnas de cada hoja
     // (mapeo confirmado ya guardado -> heurística de keywords -> IA como re-detección) — si
     // alguna hoja no llega a confianza suficiente, no se procesa nada todavía: se le devuelve al
@@ -34,6 +81,8 @@ export async function uploadCatalog(req: express.Request, res: express.Response)
     if (sheetsHeaders.length === 0) {
       return res.status(400).json({ error: 'El archivo Excel no contiene propiedades legibles.' });
     }
+
+    broadcastUploadStatus(tenantId, 'resolving_column_mapping');
 
     const mappingsBySignature = new Map<string, Partial<Record<ExcelMappingField, string | null>>>();
     const pendingConfirmations: any[] = [];
@@ -63,8 +112,10 @@ export async function uploadCatalog(req: express.Request, res: express.Response)
       return res.status(200).json({ requiresMappingConfirmation: true, sheets: pendingConfirmations });
     }
 
-    const { properties: catalog, priceParseErrors } = processExcelBufferWithColumnMap(req.file.buffer, mappingsBySignature);
+    broadcastUploadStatus(tenantId, 'parsing_rows');
+    const { properties: catalog, priceParseErrors, skippedSheets } = processExcelBufferWithColumnMap(req.file.buffer, mappingsBySignature);
     if (catalog.length === 0) {
+      broadcastUploadStatus(tenantId, 'error');
       return res.status(400).json({ error: 'El archivo Excel no contiene propiedades legibles.' });
     }
 
@@ -73,11 +124,13 @@ export async function uploadCatalog(req: express.Request, res: express.Response)
     // que el conteo final ≈ catalog.length — se valida antes de tocar la base.
     const { maxProperties } = await getTenantPlanLimits(tenantId, tenantSupabase);
     if (catalog.length > maxProperties) {
+      broadcastUploadStatus(tenantId, 'error');
       return res.status(400).json({ error: `El archivo tiene ${catalog.length} propiedades y tu plan permite hasta ${maxProperties}.` });
     }
 
     // Aislamiento por tenant
-    await syncPropertiesToDatabase(catalog, tenantId, tenantSupabase);
+    broadcastUploadStatus(tenantId, 'syncing_database');
+    const { geocodeFailures } = await syncPropertiesToDatabase(catalog, tenantId, tenantSupabase);
 
     if (priceParseErrors.length > 0) {
       logger.warn(
@@ -86,9 +139,12 @@ export async function uploadCatalog(req: express.Request, res: express.Response)
       );
     }
 
-    res.json({ success: true, count: catalog.length, priceParseErrors });
+    const { loaded, failed } = buildUploadSummary(catalog, priceParseErrors, skippedSheets, geocodeFailures);
+    broadcastUploadStatus(tenantId, 'done');
+    res.json({ success: true, count: catalog.length, priceParseErrors, loaded, failed });
   } catch (error: any) {
     logger.error({ tenantId, err: error.message || error }, '[UPLOAD] Error al procesar subida de Excel');
+    broadcastUploadStatus(tenantId, 'error');
     res.status(500).json({ error: 'Error interno al procesar el archivo.' });
   }
 }
@@ -114,7 +170,9 @@ export async function confirmMapping(req: express.Request, res: express.Response
   }
 
   try {
+    broadcastUploadStatus(tenantId, 'parsing_headers');
     const sheetsHeaders = peekExcelHeaders(req.file.buffer);
+    broadcastUploadStatus(tenantId, 'resolving_column_mapping');
     const mappingsBySignature = new Map<string, Partial<Record<ExcelMappingField, string | null>>>();
 
     for (const { sheetName, headers } of sheetsHeaders) {
@@ -134,23 +192,28 @@ export async function confirmMapping(req: express.Request, res: express.Response
       // real del cliente (mapeo incompleto).
       const resolution = await resolveColumnMapping(tenantId, headers, tenantSupabase);
       if (resolution.status !== 'ready') {
+        broadcastUploadStatus(tenantId, 'error');
         return res.status(400).json({ error: `Falta el mapeo confirmado para la hoja "${sheetName}".` });
       }
       mappingsBySignature.set(resolution.headerSignature, toColumnMapRecord(resolution.fields));
     }
 
-    const { properties: catalog, priceParseErrors } = processExcelBufferWithColumnMap(req.file.buffer, mappingsBySignature);
+    broadcastUploadStatus(tenantId, 'parsing_rows');
+    const { properties: catalog, priceParseErrors, skippedSheets } = processExcelBufferWithColumnMap(req.file.buffer, mappingsBySignature);
     if (catalog.length === 0) {
+      broadcastUploadStatus(tenantId, 'error');
       return res.status(400).json({ error: 'El archivo Excel no contiene propiedades legibles.' });
     }
 
     // Fase 1 pre-lanzamiento: mismo cap de cartera que uploadCatalog (ver ese handler para el detalle).
     const { maxProperties } = await getTenantPlanLimits(tenantId, tenantSupabase);
     if (catalog.length > maxProperties) {
+      broadcastUploadStatus(tenantId, 'error');
       return res.status(400).json({ error: `El archivo tiene ${catalog.length} propiedades y tu plan permite hasta ${maxProperties}.` });
     }
 
-    await syncPropertiesToDatabase(catalog, tenantId, tenantSupabase);
+    broadcastUploadStatus(tenantId, 'syncing_database');
+    const { geocodeFailures } = await syncPropertiesToDatabase(catalog, tenantId, tenantSupabase);
 
     if (priceParseErrors.length > 0) {
       logger.warn(
@@ -159,8 +222,11 @@ export async function confirmMapping(req: express.Request, res: express.Response
       );
     }
 
-    res.json({ success: true, count: catalog.length, priceParseErrors });
+    const { loaded, failed } = buildUploadSummary(catalog, priceParseErrors, skippedSheets, geocodeFailures);
+    broadcastUploadStatus(tenantId, 'done');
+    res.json({ success: true, count: catalog.length, priceParseErrors, loaded, failed });
   } catch (error: any) {
+    broadcastUploadStatus(tenantId, 'error');
     if (error instanceof ExcelMappingServiceError) {
       return res.status(400).json({ error: error.message });
     }

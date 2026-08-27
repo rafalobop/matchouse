@@ -82,7 +82,7 @@ test('uploadCatalog - un Excel con más filas de las que permite el plan respond
 test('uploadCatalog - un Excel dentro del límite del plan sincroniza normalmente', async (t) => {
   mockReadyMapping(t);
   t.mock.method(planLimitsService, 'getTenantPlanLimits', async () => ({ maxProperties: 100, maxSearchesPerMonth: 10 }));
-  const syncMock = t.mock.method(excelService, 'syncPropertiesToDatabase', async () => {});
+  const syncMock = t.mock.method(excelService, 'syncPropertiesToDatabase', async () => ({ geocodeFailures: [] }));
 
   const req = makeReq(buildCatalogBuffer(3));
   const res = makeRes();
@@ -92,6 +92,8 @@ test('uploadCatalog - un Excel dentro del límite del plan sincroniza normalment
   assert.strictEqual(res.statusCode, 200);
   assert.strictEqual(res.jsonBody.success, true);
   assert.strictEqual(res.jsonBody.count, 3);
+  assert.strictEqual(res.jsonBody.loaded.length, 3);
+  assert.strictEqual(res.jsonBody.failed.length, 0);
   assert.strictEqual(syncMock.mock.callCount(), 1);
 });
 

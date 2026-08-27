@@ -69,9 +69,27 @@ export interface PriceParseError {
   rawValue: string;
 }
 
+// Hoja completa que no se pudo cargar (a diferencia de PriceParseError, que es una fila puntual
+// dentro de una hoja que sí se cargó) — usada para armar el detalle de "qué falló y por qué" que
+// ve el agente en el modal de resultado de la subida.
+export interface SkippedSheet {
+  sheetName: string;
+  reason: string;
+}
+
 export interface ProcessExcelResult {
   properties: Property[];
   priceParseErrors: PriceParseError[];
+  skippedSheets: SkippedSheet[];
+}
+
+// Propiedad para la que se resolvieron domicilio/precio pero no se pudo geocodificar la dirección
+// (se guarda igual, sin coordenadas — ver syncPropertiesToDatabase). Mismo criterio de "se cargó
+// con un dato faltante, no un fallo duro" que PriceParseError.
+export interface PropertyGeocodeFailure {
+  sheetName: string;
+  address: string;
+  reason: string;
 }
 
 export function detectTipoPropiedad(
@@ -398,6 +416,7 @@ export function processExcelBuffer(buffer: Buffer): ProcessExcelResult {
   const workbook = xlsx.read(buffer, { type: 'buffer' });
   const catalog: Property[] = [];
   const priceParseErrors: PriceParseError[] = [];
+  const skippedSheets: SkippedSheet[] = [];
 
   for (const sheetName of workbook.SheetNames) {
     const { operacion, zona } = sheetOperacionYZona(sheetName);
@@ -408,6 +427,7 @@ export function processExcelBuffer(buffer: Buffer): ProcessExcelResult {
 
     if (!rows || rows.length < 2) {
       logger.info({ sheetName }, '[EXCEL] La pestaña está vacía o no tiene suficientes filas.');
+      skippedSheets.push({ sheetName, reason: 'La hoja está vacía o no tiene filas de datos.' });
       continue;
     }
 
@@ -417,6 +437,7 @@ export function processExcelBuffer(buffer: Buffer): ProcessExcelResult {
 
     if (colIndices.domicilio === -1 || colIndices.precio === -1) {
       logger.warn({ sheetName }, '[EXCEL] Pestaña omitida: no se encontró la columna de Precio o el Domicilio.');
+      skippedSheets.push({ sheetName, reason: 'No se encontró la columna de Precio o de Domicilio.' });
       continue;
     }
 
@@ -427,7 +448,7 @@ export function processExcelBuffer(buffer: Buffer): ProcessExcelResult {
     priceParseErrors.push(...sheetResult.priceParseErrors);
   }
 
-  return { properties: catalog, priceParseErrors };
+  return { properties: catalog, priceParseErrors, skippedSheets };
 }
 
 // KAN-84: variante que resuelve las columnas de cada hoja a partir de un mapeo por tenant ya
@@ -444,6 +465,7 @@ export function processExcelBufferWithColumnMap(
   const workbook = xlsx.read(buffer, { type: 'buffer' });
   const catalog: Property[] = [];
   const priceParseErrors: PriceParseError[] = [];
+  const skippedSheets: SkippedSheet[] = [];
 
   for (const sheetName of workbook.SheetNames) {
     const { operacion, zona } = sheetOperacionYZona(sheetName);
@@ -453,6 +475,7 @@ export function processExcelBufferWithColumnMap(
 
     if (!rows || rows.length < 2) {
       logger.info({ sheetName }, '[EXCEL] La pestaña está vacía o no tiene suficientes filas.');
+      skippedSheets.push({ sheetName, reason: 'La hoja está vacía o no tiene filas de datos.' });
       continue;
     }
 
@@ -462,12 +485,14 @@ export function processExcelBufferWithColumnMap(
 
     if (!mapping) {
       logger.warn({ sheetName, signature }, '[EXCEL] No hay mapeo de columnas resuelto para esta hoja, se omite.');
+      skippedSheets.push({ sheetName, reason: 'No se resolvió un mapeo de columnas para esta hoja.' });
       continue;
     }
 
     const colIndices = resolveColumnIndicesFromMapping(headersRaw, mapping);
     if (colIndices.domicilio === -1 || colIndices.precio === -1) {
       logger.warn({ sheetName }, '[EXCEL] El mapeo de columnas no resuelve domicilio/precio en esta hoja, se omite.');
+      skippedSheets.push({ sheetName, reason: 'El mapeo de columnas no resuelve Domicilio o Precio en esta hoja.' });
       continue;
     }
 
@@ -476,7 +501,7 @@ export function processExcelBufferWithColumnMap(
     priceParseErrors.push(...sheetResult.priceParseErrors);
   }
 
-  return { properties: catalog, priceParseErrors };
+  return { properties: catalog, priceParseErrors, skippedSheets };
 }
 
 // KAN-63 (patrón "Tenant Context"): acepta un cliente Supabase opcional, scoped al tenant
@@ -491,7 +516,8 @@ export async function syncPropertiesToDatabase(
   // KAN-80: inyectable (mismo patrón que `client`) para poder testear sin pegarle a Nominatim
   // real ni quedar atado a su límite de 1 request/seg durante la suite.
   geocodeFn: (query: string) => Promise<GeocodeResult> = geocodeAddress
-): Promise<void> {
+): Promise<{ geocodeFailures: PropertyGeocodeFailure[] }> {
+  const geocodeFailures: PropertyGeocodeFailure[] = [];
   try {
     logger.info({ propertiesCount: properties.length, tenantId }, '[SUPABASE] Iniciando sincronización de propiedades...');
 
@@ -546,6 +572,7 @@ export async function syncPropertiesToDatabase(
             latitude = null;
             longitude = null;
             logger.warn({ tenantId, address: p.address, reason: geocodeResult.reason }, '[EXCEL] No se pudo geocodificar la propiedad, se guarda sin coordenadas');
+            geocodeFailures.push({ sheetName: p.sheet_name, address: p.address, reason: geocodeResult.reason || 'No se pudo geocodificar la dirección.' });
           }
         }
       }
@@ -608,11 +635,13 @@ export async function syncPropertiesToDatabase(
       }
     }
     
-    logger.info({ 
-      upsertedCount: upsertList.length, 
+    logger.info({
+      upsertedCount: upsertList.length,
       deletedCount: deleteList.length,
       tenantId
     }, '[SUPABASE] Sincronización de propiedades finalizada con éxito.');
+
+    return { geocodeFailures };
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId }, '[SUPABASE] Error al sincronizar propiedades');
     throw error;
