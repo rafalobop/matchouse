@@ -5,6 +5,7 @@ import { logger } from '../services/logger';
 import { withTimeout } from '../utils/withTimeout';
 import { getClientIp } from '../utils/getClientIp';
 import { clearCachedSession } from '../middleware/tenantAuth';
+import { sendMagicLinkEmail } from '../services/notifier-email';
 
 export async function getSession(req: express.Request, res: express.Response) {
   const token = req.cookies?.brokaza_session;
@@ -41,10 +42,18 @@ export async function requestMagicLink(req: express.Request, res: express.Respon
   }
 
   try {
-    const { error }: any = await withTimeout(
-      supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: config.appUrl } }),
+    // 2026-08-27: antes usaba `supabase.auth.signInWithOtp(...)`, que hace mandar el magic link
+    // directo por Supabase (su template único, sin logo ni copy de marca — el mail que seguía
+    // llegando aunque `notifier-email.ts` ya tuviera el template propio armado, porque nada lo
+    // llamaba desde acá). Mismo cambio que ya tenía `adminRoutes.ts`: generamos el link con
+    // `generateLink` (no manda ningún email por sí solo) y lo mandamos nosotros por Resend.
+    const { data: existingProfile } = await supabase.from('profiles').select('id').eq('email', email).maybeSingle();
+    const isFirstTime = !existingProfile;
+
+    const { data, error }: any = await withTimeout(
+      supabase.auth.admin.generateLink({ type: 'magiclink', email, options: { redirectTo: config.appUrl } }),
       10_000,
-      'Supabase signInWithOtp'
+      'Supabase generateLink (tenant)'
     );
     if (error) {
       // AuthRetryableFetchError = Supabase no fue alcanzable (red/TLS/DNS), no un rechazo real del
@@ -56,7 +65,20 @@ export async function requestMagicLink(req: express.Request, res: express.Respon
       logger.warn({ ip, email, supabaseError: error.message }, '[AUTH] Supabase rechazó la solicitud de magic link');
       return res.status(400).json({ error: error.message });
     }
-    logger.info({ ip, email }, '[AUTH] Magic link enviado exitosamente');
+
+    const actionLink = data?.properties?.action_link;
+    if (!actionLink) {
+      logger.error({ ip, email }, '[AUTH] Supabase generateLink no devolvió action_link');
+      return res.status(502).json({ error: 'No pudimos generar el link de acceso. Intentá de nuevo.' });
+    }
+
+    const sent = await sendMagicLinkEmail(email, actionLink, isFirstTime);
+    if (!sent) {
+      logger.error({ ip, email }, '[AUTH] No se pudo enviar el email de magic link');
+      return res.status(502).json({ error: 'No pudimos enviar el email de acceso. Intentá de nuevo.' });
+    }
+
+    logger.info({ ip, email, isFirstTime }, '[AUTH] Magic link enviado exitosamente');
     res.json({ success: true, message: 'Revisá tu email. Te enviamos un link de acceso.' });
   } catch (err: any) {
     logger.error({ ip, email, err: err.message, stack: err.stack }, '[AUTH] Error inesperado al solicitar magic link (posible timeout o fallo de red hacia Supabase)');
