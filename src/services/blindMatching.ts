@@ -126,9 +126,9 @@ function normalizePagination(pagination?: CrossTenantMatchesPagination): { limit
 async function stampNeighborhoodIds(candidates: TenantScopedProperty[]): Promise<void> {
   await Promise.all(candidates.map(async ({ property }) => {
     try {
-      property.neighborhood_id = await resolvePropertyZoneId(property);
+      property.neighborhood_id = await withRetry(() => resolvePropertyZoneId(property), { attempts: 3 });
     } catch (error: any) {
-      logger.error({ error: error.message || error, address: property.address }, '[BLIND MATCHING] Error al resolver la zona de una propiedad candidata (se trata como zona desconocida)');
+      logger.error({ error: error.message || error, address: property.address }, '[BLIND MATCHING] Error al resolver la zona de una propiedad candidata tras reintentos (se trata como zona desconocida)');
       property.neighborhood_id = null;
     }
   }));
@@ -349,8 +349,8 @@ export async function findMatchingActiveSearchesForProperty(
   // tras el healing, o ya lo estaba de entrada).
   const anyDefinida = rows.some((r: any) => healedById.get(r.id)?.zone_status === 'DEFINIDA' || r.zone_status === 'DEFINIDA');
   if (anyDefinida) {
-    property.neighborhood_id = await resolvePropertyZoneId(property, client).catch((err: any) => {
-      logger.error({ error: err.message || err, propertyId }, '[BLIND MATCHING] Error al resolver zona de la propiedad para self-healing (se trata como zona desconocida).');
+    property.neighborhood_id = await withRetry(() => resolvePropertyZoneId(property, client), { attempts: 3 }).catch((err: any) => {
+      logger.error({ error: err.message || err, propertyId }, '[BLIND MATCHING] Error al resolver zona de la propiedad tras reintentos (se trata como zona desconocida).');
       return null;
     });
   }
