@@ -30,30 +30,67 @@ function brandLogoUrl(): string {
 
 /**
  * Shell compartido por los emails "de marca" (magic link ×3, aviso de interesado) — header con
- * logo circular + título, card clara sobre fondo sage, footer chico. Separado de
+ * logo + título, card clara sobre fondo sage, footer chico. Separado de
  * `buildEmailHtml`/`buildBlindMatchPropertyRowHtml` de más abajo (tema oscuro, sin logo) porque
  * esos son el canal legacy de WhatsApp, dormido (SPEC-0014) y fuera de este rediseño.
+ *
+ * Layout a base de `<table>` (no `<div>` + `max-width`) — patrón "bulletproof email HTML":
+ * Gmail Android, Outlook y varios clientes mobile ignoran `max-width` en `<div>`, así que sin
+ * esto la card no se achicaba al ancho del teléfono (quedaba un contenedor ancho, con scroll
+ * horizontal, y el CTA de `buildEmailCtaButton` se veía roto/gigante dentro de eso). Las tablas
+ * con `width` explícito (no solo `style`) sí las respetan todos los clientes.
  */
 function buildBrandedEmailShell(title: string, bodyHtml: string, footerNote?: string): string {
   return `<!DOCTYPE html>
-<html>
-<body style="font-family:Arial,Helvetica,sans-serif;background:${BRAND.sage};color:${BRAND.forest};padding:32px 16px;margin:0;">
-  <div style="max-width:460px;margin:0 auto;background:${BRAND.paper};border-radius:16px;padding:36px 28px;box-shadow:0 8px 24px rgba(42,54,56,0.12);">
-    <div style="text-align:center;margin-bottom:20px;">
-      <img src="${brandLogoUrl()}" width="56" height="56" alt="Brokaza" style="border-radius:50%;display:inline-block;" />
-    </div>
-    <h1 style="text-align:center;color:${BRAND.forest};font-size:20px;margin:0 0 16px;">${title}</h1>
-    ${bodyHtml}
-    <p style="text-align:center;color:${BRAND.slate};font-size:12px;margin-top:28px;">${footerNote ?? 'Brokaza — matching inmobiliario para agentes en Tucumán.'}</p>
-  </div>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta http-equiv="X-UA-Compatible" content="IE=edge" />
+<title>${title}</title>
+</head>
+<body style="margin:0;padding:0;background:${BRAND.sage};font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:${BRAND.sage};">
+    <tr>
+      <td align="center" style="padding:32px 16px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:460px;width:100%;background:${BRAND.paper};border-radius:16px;box-shadow:0 8px 24px rgba(42,54,56,0.12);">
+          <tr>
+            <td style="padding:36px 28px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="center" style="padding-bottom:20px;">
+                    <img src="${brandLogoUrl()}" width="64" height="64" alt="Brokaza" style="display:block;border-radius:16px;" />
+                  </td>
+                </tr>
+              </table>
+              <h1 style="text-align:center;color:${BRAND.forest};font-size:20px;margin:0 0 16px;font-family:Arial,Helvetica,sans-serif;">${title}</h1>
+              ${bodyHtml}
+              <p style="text-align:center;color:${BRAND.slate};font-size:12px;margin-top:28px;font-family:Arial,Helvetica,sans-serif;">${footerNote ?? 'Brokaza — matching inmobiliario para agentes en Tucumán.'}</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
 </body>
 </html>`;
 }
 
+/**
+ * Botón "bulletproof" — `<a>` como `display:block` adentro de una celda de tabla con ancho
+ * acotado (`max-width:280px`, centrada con `align="center"` en la tabla exterior), en vez del
+ * `<div>` + `<a display:inline-block>` anterior. Esa versión no tenía ningún tope de ancho propio:
+ * en clientes que no recortan el `<div>` padre al ancho de pantalla (ver comentario de
+ * `buildBrandedEmailShell`), el botón se estiraba con el resto del contenedor roto.
+ */
 function buildEmailCtaButton(link: string, label: string): string {
-  return `<div style="text-align:center;margin:28px 0;">
-    <a href="${link}" style="display:inline-block;background:${BRAND.olive};color:${BRAND.white};text-decoration:none;padding:13px 32px;border-radius:8px;font-weight:700;font-size:15px;">${label}</a>
-  </div>`;
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:28px auto;width:100%;max-width:280px;">
+    <tr>
+      <td align="center" bgcolor="${BRAND.olive}" style="border-radius:8px;">
+        <a href="${link}" target="_blank" style="display:block;padding:14px 24px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:${BRAND.white};text-decoration:none;border-radius:8px;">${label}</a>
+      </td>
+    </tr>
+  </table>`;
 }
 
 let resendClient: Resend | null = null;
