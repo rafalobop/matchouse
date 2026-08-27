@@ -6,7 +6,7 @@ import { logger } from '../services/logger';
 import { getTenantPlanLimits } from '../services/planLimits';
 import { broadcastUploadStatus } from '../services/realtimeHub';
 
-// Implementación provisoria del modal de resultado de la subida (KAN-218/220): junto con el
+// Detalle del modal de resultado de la subida (KAN-218/220): junto con el
 // conteo agregado que ya devolvía la respuesta, se arma el detalle propiedad por propiedad —
 // las que se cargaron sin problemas (`loaded`) y las que se cargaron con algún dato faltante o
 // directamente no se cargaron (`failed`, con el motivo), uniendo las tres fuentes de fallo que ya
