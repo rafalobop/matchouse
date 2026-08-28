@@ -187,8 +187,9 @@ test('processSingleSearchSegment - un match nuevo se persiste, notifica en ambas
   assert.strictEqual(insertCall!.args[0][0].tenant_id, 'tenant-searcher');
   assert.strictEqual(insertCall!.args[0][0].matched_tenant_id, 'tenant-owner-1');
 
-  // KAN-78: dirección búsqueda→cartera (aviso al buscador) + dirección recíproca (aviso al dueño).
-  assert.strictEqual(notifyMock.mock.callCount(), 2);
+  // Decisión de producto (2026-08-21): el buscador ya no se notifica de los matches de su propia
+  // búsqueda, solo el dueño de la propiedad matcheada (KAN-304).
+  assert.strictEqual(notifyMock.mock.callCount(), 1);
   assert.strictEqual(broadcastMock.mock.callCount(), 1);
   assert.deepStrictEqual(broadcastMock.mock.calls[0].arguments[0], ['tenant-searcher', 'tenant-owner-1']);
 });
@@ -208,8 +209,8 @@ test('processSingleSearchSegment - matches de varios dueños agrupa y notifica u
   const result = await processSingleSearchSegment('tenant-searcher', tenantSupabase as any, 'busco casa en venta');
 
   assert.strictEqual(result.matches?.length, 3);
-  // 1 aviso al buscador + 1 por cada dueño único (a y b), no uno por match.
-  assert.strictEqual(notifyMock.mock.callCount(), 3);
+  // 1 aviso por cada dueño único (a y b), no uno por match ni uno al buscador (KAN-304).
+  assert.strictEqual(notifyMock.mock.callCount(), 2);
   assert.deepStrictEqual(broadcastMock.mock.calls[0].arguments[0], ['tenant-searcher', 'tenant-owner-a', 'tenant-owner-b']);
 });
 
@@ -243,5 +244,5 @@ test('processSingleSearchSegment - si falla la persistencia de blind_matches (be
   assert.strictEqual(result.success, true);
   assert.strictEqual(result.matches?.[0].id, null);
   assert.ok(!tenantSupabase.calls.some(c => c.table === 'blind_matches'), 'No debe intentar insertar si no pudo armar el snapshot del buscador.');
-  assert.strictEqual(notifyMock.mock.callCount(), 2, 'La notificación no depende de que la persistencia haya funcionado.');
+  assert.strictEqual(notifyMock.mock.callCount(), 1, 'La notificación no depende de que la persistencia haya funcionado.');
 });

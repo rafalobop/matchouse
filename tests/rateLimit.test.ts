@@ -296,3 +296,83 @@ test('createDistributedRateLimiter (KAN-127, AC1) - simula 3 instancias del proc
   assert.strictEqual(permitidos, 5, 'De 15 requests repartidas entre 3 instancias, solo las primeras 5 (el límite real) deben permitirse.');
   assert.strictEqual(bloqueados, 10, 'Las 10 restantes deben bloquearse — el límite es compartido entre instancias, no 5 por instancia.');
 });
+
+// --- KAN-82: rate limit de /api/auth/request-magic-link por IP Y por email (en paralelo) ---
+// Mismo patrón "simulated handler" que KAN-71/KAN-131 más arriba: replica el bloque real de
+// src/routes/authRoutes.ts (dos checks independientes, cualquiera de los dos puede bloquear)
+// contra la función real createRateLimiter, sin supertest/servidor HTTP.
+
+function simulateMagicLinkRateLimitedHandler(
+  ipLimiter: ReturnType<typeof createRateLimiter>,
+  emailLimiter: ReturnType<typeof createRateLimiter>,
+  ip: string,
+  email: string | null
+): SimulatedResponse {
+  if (!ipLimiter.check(ip)) {
+    return { statusCode: 429, body: { error: 'Demasiados intentos. Esperá unos minutos e intentá de nuevo.' } };
+  }
+  const normalizedEmail = email ? email.trim().toLowerCase() : null;
+  if (normalizedEmail && !emailLimiter.check(normalizedEmail)) {
+    return { statusCode: 429, body: { error: 'Demasiados intentos. Esperá unos minutos e intentá de nuevo.' } };
+  }
+  return { statusCode: 200, body: { success: true } };
+}
+
+test('rateLimit (KAN-82) - request-magic-link responde 429 al superar el límite por IP (10/10min) y 200 por debajo', () => {
+  const ipLimiter = createRateLimiter(10, 10 * 60_000);
+  const emailLimiter = createRateLimiter(10, 10 * 60_000);
+
+  // Mismo IP, emails distintos en cada request — así el que bloquea es exclusivamente el límite
+  // por IP, nunca el de email.
+  const respuestas = Array.from({ length: 11 }, (_, i) =>
+    simulateMagicLinkRateLimitedHandler(ipLimiter, emailLimiter, '1.2.3.4', `agente${i}@ejemplo.com`)
+  );
+
+  assert.ok(respuestas.slice(0, 10).every((r) => r.statusCode === 200), 'Las primeras 10 solicitudes desde la misma IP deben pasar.');
+  assert.strictEqual(respuestas[10].statusCode, 429, 'La solicitud número 11 desde la misma IP dentro de la ventana debe ser rechazada.');
+});
+
+test('rateLimit (KAN-82) - request-magic-link responde 429 al superar el límite por email (10/10min), incluso desde IPs distintas', () => {
+  const ipLimiter = createRateLimiter(10, 10 * 60_000);
+  const emailLimiter = createRateLimiter(10, 10 * 60_000);
+
+  const respuestas = Array.from({ length: 11 }, (_, i) =>
+    simulateMagicLinkRateLimitedHandler(ipLimiter, emailLimiter, `10.0.0.${i}`, 'mismo.agente@ejemplo.com')
+  );
+
+  assert.ok(respuestas.slice(0, 10).every((r) => r.statusCode === 200), 'Las primeras 10 solicitudes para el mismo email deben pasar.');
+  assert.strictEqual(respuestas[10].statusCode, 429, 'La solicitud número 11 para el mismo email dentro de la ventana debe ser rechazada, aunque cambie la IP.');
+});
+
+test('rateLimit (KAN-82) - dos agentes en la misma IP con emails distintos no se bloquean entre sí por el cupo de email', () => {
+  const ipLimiter = createRateLimiter(10, 10 * 60_000);
+  const emailLimiter = createRateLimiter(1, 10 * 60_000);
+
+  const agenteA = simulateMagicLinkRateLimitedHandler(ipLimiter, emailLimiter, '9.9.9.9', 'agente-a@ejemplo.com');
+  const agenteAOtraVez = simulateMagicLinkRateLimitedHandler(ipLimiter, emailLimiter, '9.9.9.9', 'agente-a@ejemplo.com');
+  const agenteB = simulateMagicLinkRateLimitedHandler(ipLimiter, emailLimiter, '9.9.9.9', 'agente-b@ejemplo.com');
+
+  assert.strictEqual(agenteA.statusCode, 200);
+  assert.strictEqual(agenteAOtraVez.statusCode, 429, 'agente-a ya agotó su cupo de email (límite de 1 en este test).');
+  assert.strictEqual(agenteB.statusCode, 200, 'agente-b comparte la misma IP pero tiene su propio cupo de email — no debe bloquearse por el abuso de agente-a.');
+});
+
+test('rateLimit (KAN-82) - el email se normaliza (lowercase + trim) antes de contar el cupo', () => {
+  const ipLimiter = createRateLimiter(10, 10 * 60_000);
+  const emailLimiter = createRateLimiter(1, 10 * 60_000);
+
+  const primera = simulateMagicLinkRateLimitedHandler(ipLimiter, emailLimiter, '1.1.1.1', 'Agente@Ejemplo.com');
+  const variantesDelMismoEmail = simulateMagicLinkRateLimitedHandler(ipLimiter, emailLimiter, '2.2.2.2', '  agente@ejemplo.com  ');
+
+  assert.strictEqual(primera.statusCode, 200);
+  assert.strictEqual(variantesDelMismoEmail.statusCode, 429, '"Agente@Ejemplo.com" y "  agente@ejemplo.com  " deben compartir el mismo cupo normalizado.');
+});
+
+test('rateLimit (KAN-82) - sin email en el body, solo aplica el límite por IP (el controller responde 400 sin gastar cupo de email)', () => {
+  const ipLimiter = createRateLimiter(10, 10 * 60_000);
+  const emailLimiter = createRateLimiter(10, 10 * 60_000);
+
+  const respuesta = simulateMagicLinkRateLimitedHandler(ipLimiter, emailLimiter, '5.5.5.5', null);
+
+  assert.strictEqual(respuesta.statusCode, 200, 'El rate limiter en sí no rechaza la falta de email — esa validación es responsabilidad del controller.');
+});

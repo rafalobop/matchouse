@@ -1,0 +1,47 @@
+name: CI
+
+# KAN-281: workflow mínimo — build + tests en cada PR y en push a las ramas principales. Antes de
+# esto, npm run build (tsc) y npm test nunca se ejecutaban automáticamente, así que un PR podía
+# mergearse con el build roto o con tests en rojo sin que nadie lo notara hasta production.
+on:
+  pull_request:
+    branches: [master, development]
+  push:
+    branches: [master, development]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      # Ninguno de los tests pega a red real (Supabase/Gemini/OpenAI/Resend quedan mockeados por
+      # t.mock.method en cada test, ver .agent/CONTEXT.md) — estos valores son placeholders sin
+      # significado real, solo para pasar la validación de presencia/formato de src/config/env.ts
+      # al importar el módulo (fail-fast por diseño, KAN-122). VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY
+      # sí necesitan tener el formato real de un par de claves EC (web-push los valida en
+      # setVapidDetails al importar src/services/webPush.ts) — este es un par descartable generado
+      # con `npx web-push generate-vapid-keys`, no corresponde a ninguna suscripción real.
+      - run: npm test
+        env:
+          GEMINI_API_KEY: dummy-ci-gemini-key
+          OPENAI_API_KEY: dummy-ci-openai-key
+          SUPABASE_URL: https://example.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: dummy-ci-service-role-key
+          SUPABASE_ANON_KEY: dummy-ci-anon-key
+          SUPABASE_JWT_SECRET: dummy-ci-jwt-secret
+          INTERNAL_WEBHOOK_SECRET: dummy-ci-webhook-secret
+          VAPID_PUBLIC_KEY: BDF5oylZ3ZVC_QqKnD_8FI5tl5vuJ8HLdzts6bhAdii7CeD4Ba_fFWsKhu3AtrQhPwe_Tp-A219FUGMXK5eSCnI
+          VAPID_PRIVATE_KEY: JHfSSmRxLMD9TP5ocnc0iNvBr7AyZrVnYtezXejOVa0
+          VAPID_EMAIL: mailto:ci@example.com
+          SENDER_API_KEY: dummy-ci-resend-key
+          APP_URL: http://localhost:3000

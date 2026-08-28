@@ -10,6 +10,14 @@ import { AITimeoutError } from '../src/services/ai';
 // que replican el bloque real (mismo try/catch por segmento, misma clasificación de
 // AITimeoutError) contra una función `processSingleSearchSegment` mockeada, para ejercitar el
 // paralelismo, el aislamiento de errores y la mejora de latencia sin red ni servidor real.
+//
+// KAN-279 (2026-08-28): este archivo quedó huérfano tras el split de rutas (KAN-142/KAN-273) —
+// apuntaba a `src/routes/search.ts`, borrado en ese refactor, y nunca se enganchó de vuelta en
+// `tests/runner.ts`. El código real volvió a un loop secuencial sin que ningún test lo detectara
+// (la implementación paralela de KAN-132 nunca llegó a moverse a `src/controllers/searchController.ts`,
+// que es donde vive `createSearch` desde el split). Reconectado acá: AC1 ahora apunta al archivo
+// real, y el archivo vuelve a importarse desde `tests/runner.ts` para que una futura regresión
+// vuelva a fallar el build.
 
 interface SearchSegmentResult {
   success: boolean;
@@ -67,16 +75,18 @@ function delayedSuccess(ms: number, raw_text: string): Promise<SearchSegmentResu
 
 // --- AC1: usa Promise.all para procesar los segmentos en paralelo ---
 
-test('KAN-132 (AC1) - POST /api/search usa Promise.all para procesar los segmentos, no un loop secuencial con await', () => {
-  // KAN-142: la ruta se movió de src/index.ts a src/routes/search.ts al partir el monolito.
-  const indexSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'search.ts'), 'utf-8');
-  const searchRouteIdx = indexSource.indexOf("router.post('/api/search'");
-  assert.ok(searchRouteIdx >= 0, 'No se encontró la ruta POST /api/search en src/routes/search.ts — el test quedó desactualizado.');
+test('KAN-279 (AC1) - createSearch usa Promise.all para procesar los segmentos, no un loop secuencial con await', () => {
+  // KAN-279: la lógica de POST /api/search vive en src/controllers/searchController.ts
+  // (createSearch) desde el split de rutas (KAN-142/KAN-273) — src/routes/search.ts, donde
+  // apuntaba este test originalmente (KAN-132), fue borrado en ese mismo split.
+  const controllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'controllers', 'searchController.ts'), 'utf-8');
+  const createSearchIdx = controllerSource.indexOf('export async function createSearch');
+  assert.ok(createSearchIdx >= 0, 'No se encontró createSearch en src/controllers/searchController.ts — el test quedó desactualizado.');
 
-  const routeBlock = indexSource.slice(searchRouteIdx, searchRouteIdx + 3000);
-  assert.match(routeBlock, /segments\.map\(/, 'El procesamiento de segmentos debe mapear el array (paralelo), no iterarlo con un for.');
-  assert.match(routeBlock, /await Promise\.all\(/, 'El procesamiento de segmentos debe usar Promise.all.');
-  assert.doesNotMatch(routeBlock, /for\s*\(\s*const segmentText of segments\s*\)/, 'No debe quedar el loop secuencial "for (const segmentText of segments)".');
+  const functionBlock = controllerSource.slice(createSearchIdx, createSearchIdx + 3000);
+  assert.match(functionBlock, /segmentsToProcess\.map\(/, 'El procesamiento de segmentos debe mapear el array (paralelo), no iterarlo con un for.');
+  assert.match(functionBlock, /await Promise\.all\(/, 'El procesamiento de segmentos debe usar Promise.all.');
+  assert.doesNotMatch(functionBlock, /for\s*\(\s*const segmentText of segmentsToProcess\s*\)/, 'No debe quedar el loop secuencial "for (const segmentText of segmentsToProcess)".');
 });
 
 // --- AC2 (funcional): latencia paralela vs. en serie ---

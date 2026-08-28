@@ -62,23 +62,27 @@ export async function createSearch(req: express.Request, res: express.Response) 
   const segmentsToProcess = segments.slice(0, remaining);
   const segmentsOverQuota = segments.slice(remaining);
 
-  const results: SearchSegmentResult[] = [];
-  let anyAITimeout = false;
-
-  for (const segmentText of segmentsToProcess) {
-    try {
-      const result = await processSingleSearchSegment(tenantId, tenantSupabase, segmentText);
-      results.push(result);
-    } catch (error: any) {
-      if (error instanceof AITimeoutError) {
-        anyAITimeout = true;
-        results.push({ success: false, raw_text: segmentText, error: error.message, code: 'AI_TIMEOUT' });
-        continue; // seguir con los demás segmentos, no abortar todo el lote por un timeout puntual
+  // KAN-279: en paralelo (antes: `for...await` secuencial, ~Nx la latencia de un solo segmento).
+  // Cada llamada atrapa su propio error acá adentro (nunca rechaza el `Promise.all` de afuera) —
+  // mismo criterio de "un timeout/error puntual no aborta el resto del lote" que ya tenía el catch
+  // del loop secuencial, solo que ahora corren concurrentemente en vez de en serie.
+  const segmentOutcomes = await Promise.all(
+    segmentsToProcess.map(async (segmentText): Promise<{ result: SearchSegmentResult; aiTimeout: boolean }> => {
+      try {
+        const result = await processSingleSearchSegment(tenantId, tenantSupabase, segmentText);
+        return { result, aiTimeout: false };
+      } catch (error: any) {
+        if (error instanceof AITimeoutError) {
+          return { result: { success: false, raw_text: segmentText, error: error.message, code: 'AI_TIMEOUT' }, aiTimeout: true };
+        }
+        logger.error({ error: error.message || error, tenantId, segmentText }, '[BUSQUEDA] Error al procesar un segmento de búsqueda.');
+        return { result: { success: false, raw_text: segmentText, error: 'Error interno al procesar este segmento.' }, aiTimeout: false };
       }
-      logger.error({ error: error.message || error, tenantId, segmentText }, '[BUSQUEDA] Error al procesar un segmento de búsqueda.');
-      results.push({ success: false, raw_text: segmentText, error: 'Error interno al procesar este segmento.' });
-    }
-  }
+    })
+  );
+
+  const results: SearchSegmentResult[] = segmentOutcomes.map(o => o.result);
+  const anyAITimeout = segmentOutcomes.some(o => o.aiTimeout);
 
   const anyQuotaExceeded = segmentsOverQuota.length > 0;
   for (const segmentText of segmentsOverQuota) {

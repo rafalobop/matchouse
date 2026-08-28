@@ -53,6 +53,7 @@ import './routes/system.route.test';
 import './searchController.test';
 import './searchExpiration.test';
 import './searchSegmentProcessor.test';
+import './searchSegmentsParallel.test';
 import './searchValidation.test';
 import './sentryDataCollection.test';
 import './sentryForwarding.test';

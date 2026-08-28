@@ -43,7 +43,30 @@ const adminMetricsRateLimiter = createDistributedRateLimiter(
   config.metricsRateLimitMax,
   config.metricsRateLimitWindowMs
 );
+// KAN-277: mismo mecanismo (por adminUserId) que adminMetricsRateLimiter, extendido al resto de
+// las rutas autenticadas del panel admin que quedaron sin cubrir cuando KAN-131 cerró puntualmente
+// GET /api/metrics — GET /api/properties, POST /api/zones y PATCH /api/properties/:id/coordinates.
+const adminApiRateLimiter = createDistributedRateLimiter(
+  'admin-api',
+  config.metricsRateLimitMax,
+  config.metricsRateLimitWindowMs
+);
 const PROPERTIES_PAGE_SIZE = 50;
+
+// KAN-276: hasta ahora solo la corrección de coordenadas quedaba auditada en admin_audit_log —
+// las lecturas de /api/metrics y /api/properties (que exponen datos de todos los tenants a través
+// de la clave service-role) no dejaban rastro. Fire-and-forget: la auditoría no debe afectar la
+// latencia ni la disponibilidad del endpoint que audita.
+function logAdminRead(adminUserId: string, action: string): void {
+  supabase
+    .from('admin_audit_log')
+    .insert({ admin_user_id: adminUserId, action })
+    .then(({ error }) => {
+      if (error) {
+        logger.error({ err: error.message, action }, '[ADMIN] No se pudo escribir el audit log de lectura');
+      }
+    });
+}
 
 function isFiniteInRange(value: unknown, min: number, max: number): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
@@ -201,6 +224,8 @@ export function mountAdminRouter(app: express.Application): void {
       return res.status(429).json({ error: 'Demasiadas solicitudes de métricas. Esperá un minuto e intentá de nuevo.' });
     }
 
+    logAdminRead(admin.adminUserId, 'read_metrics');
+
     try {
       const [propertiesCount, profilesCount, matchesCount, activeSearches] = await Promise.all([
         supabase.from('properties').select('id', { count: 'exact', head: true }),
@@ -242,6 +267,13 @@ export function mountAdminRouter(app: express.Application): void {
   // Resultado: 1 (SELECT) + a lo sumo 1 (RPC batch) = 2 llamadas a la base por página, sea cual
   // sea la cantidad de propiedades.
   adminRouter.get('/api/properties', adminAuthMiddleware, async (req, res) => {
+    const admin = (req as any).admin as { adminUserId: string; email: string };
+    if (!(await adminApiRateLimiter.check(admin.adminUserId))) {
+      return res.status(429).json({ error: 'Demasiadas solicitudes. Esperá un minuto e intentá de nuevo.' });
+    }
+
+    logAdminRead(admin.adminUserId, 'list_properties');
+
     try {
       const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
       const page = Math.max(1, parseInt(String(req.query.page ?? '1'), 10) || 1);
@@ -307,6 +339,11 @@ export function mountAdminRouter(app: express.Application): void {
   const MAX_ZONE_POINTS_PER_REQUEST = 500;
 
   adminRouter.post('/api/zones', adminAuthMiddleware, async (req, res) => {
+    const zonesAdmin = (req as any).admin as { adminUserId: string; email: string };
+    if (!(await adminApiRateLimiter.check(zonesAdmin.adminUserId))) {
+      return res.status(429).json({ error: 'Demasiadas solicitudes. Esperá un minuto e intentá de nuevo.' });
+    }
+
     // KAN-134: whitelist de campos del body.
     const bodyWhitelistError = validateBodyWhitelist(req.body, ['points']);
     if (bodyWhitelistError) {
@@ -350,6 +387,10 @@ export function mountAdminRouter(app: express.Application): void {
     const { id } = req.params;
     const { latitude, longitude } = req.body ?? {};
     const admin = (req as any).admin as { adminUserId: string; email: string };
+
+    if (!(await adminApiRateLimiter.check(admin.adminUserId))) {
+      return res.status(429).json({ error: 'Demasiadas solicitudes. Esperá un minuto e intentá de nuevo.' });
+    }
 
     if (!isValidUUID(id)) {
       return res.status(400).json({ error: 'Id de propiedad inválido.' });
