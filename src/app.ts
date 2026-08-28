@@ -7,6 +7,7 @@ import { routes } from './routes';
 import { mountAdminRouter } from './adminRoutes';
 import { globalErrorHandler } from './utils/errorHandler';
 import { buildHealthPayload } from './utils/health';
+import { JSON_BODY_SIZE_LIMIT, jsonBodyParseErrorHandler } from './utils/bodyWhitelist';
 
 export function createApp(): express.Application {
   const app = express();
@@ -32,7 +33,10 @@ export function createApp(): express.Application {
       }
     })
   );
-  app.use(express.json());
+  // KAN-282: mismo límite explícito + traducción de errores de body-parser que ya usa el
+  // panel admin (src/adminRoutes.ts) — ver src/utils/bodyWhitelist.ts.
+  app.use(express.json({ limit: JSON_BODY_SIZE_LIMIT }));
+  app.use(jsonBodyParseErrorHandler);
   app.use(cookieParser());
 
   // Panel admin (app.admin.brokaza.com): se monta ANTES que el resto del pipeline de tenants
