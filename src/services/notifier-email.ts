@@ -271,6 +271,59 @@ export async function sendIncomingMatchEmailFallback(matchedTenantId: string, se
   }
 }
 
+// KAN-58: aviso de reenganche ("¿la renovás?") — canal de respaldo del push
+// (buildReengagementPushPayload en webPush.ts) para el mismo evento: la búsqueda del tenant venció
+// (7 días, KAN-41) sin haber recibido ningún match (`blind_matches.search_id`, ver
+// `src/services/reengagement.ts`). Mismo shell de marca que el resto de los emails "de marca"
+// (magic link, aviso de interesado) — a diferencia de los emails legacy de match_queue, este
+// dominio nunca usó el tema oscuro sin marca.
+export function buildReengagementEmailHtml(rawText: string): string {
+  const truncatedText = rawText.length > 150 ? `${rawText.substring(0, 150)}...` : rawText;
+  const body = `
+    <p style="text-align:center;color:${BRAND.slate};font-size:14px;line-height:1.5;">
+      Tu búsqueda "${truncatedText}" venció hace 7 días sin ningún match. ¿La renovás para seguir recibiendo propiedades que puedan interesarte?
+    </p>
+    ${buildEmailCtaButton(config.appUrl, 'Renovar búsqueda')}`;
+
+  return buildBrandedEmailShell('¿La renovás?', body);
+}
+
+export async function sendReengagementEmail(tenantId: string, rawText: string, client = supabase): Promise<boolean> {
+  const { data: profile, error: profileError } = await client
+    .from('profiles')
+    .select('email')
+    .eq('id', tenantId)
+    .single();
+
+  if (profileError || !profile?.email) {
+    logger.warn({ tenantId }, '[NOTIFIER-EMAIL] Tenant sin email registrado en profiles. Omitiendo aviso de reenganche.');
+    return false;
+  }
+
+  const html = buildReengagementEmailHtml(rawText);
+
+  try {
+    const resend = getResendClient();
+    const result = await resend.emails.send({
+      from: FROM_ADDRESS,
+      to: profile.email,
+      subject: '¿La renovás? Tu búsqueda en Matchouse venció sin matches',
+      html
+    });
+
+    if (result.error) {
+      logger.error({ error: result.error, tenantId }, '[NOTIFIER-EMAIL] Resend devolvió un error al enviar el aviso de reenganche.');
+      return false;
+    }
+
+    logger.info({ tenantId, emailId: result.data?.id }, '[NOTIFIER-EMAIL] Email de reenganche enviado con éxito.');
+    return true;
+  } catch (sendErr: any) {
+    logger.error({ error: sendErr.message || sendErr, tenantId }, '[NOTIFIER-EMAIL] Error al despachar el email de reenganche.');
+    return false;
+  }
+}
+
 // Magic link (2026-08-22) — antes lo mandaba Supabase directo (`signInWithOtp`), con un único
 // template global (dashboard de Supabase) sin forma de diferenciar tenant/admin ni primera
 // vez/ya registrado. Ahora `src/routes/auth.ts`/`src/adminRoutes.ts` generan el link con

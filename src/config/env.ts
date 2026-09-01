@@ -24,6 +24,7 @@ export interface Config {
   atlassianApiKey?: string;
   freeTextExtractionEnabled: boolean;
   searchExpirationIntervalMinutes: number;
+  reengagementIntervalMinutes: number;
   aiRequestTimeoutMs: number;
   searchRateLimitMax: number;
   searchRateLimitWindowMs: number;
@@ -75,6 +76,11 @@ export function validateConfig(): Config {
   // (expires_at < ahora) como 'expired'. Default 60 min: el vencimiento es a 7 días, no hace
   // falta chequear con más frecuencia que una vez por hora.
   const searchExpirationIntervalMinutes = parseInt(cleanEnvVar(process.env.SEARCH_EXPIRATION_INTERVAL_MINUTES) || '60', 10);
+  // KAN-58: frecuencia del servicio en segundo plano que envía el aviso de reenganche ("¿la
+  // renovás?") a las búsquedas ya 'expired' sin match. Mismo default que
+  // SEARCH_EXPIRATION_INTERVAL_MINUTES (60 min) y mismo criterio: el vencimiento es a 7 días, no
+  // hace falta chequear con más frecuencia que una vez por hora.
+  const reengagementIntervalMinutes = parseInt(cleanEnvVar(process.env.REENGAGEMENT_INTERVAL_MINUTES) || '60', 10);
   // KAN-70: límite de tiempo para cada llamada individual a generateContent/chat.completions.create
   // en ai.ts. Default 20s: POST /api/search es un camino síncrono de un request HTTP (el usuario
   // espera la respuesta en el dashboard), así que no puede quedar colgado indefinidamente si el
@@ -214,6 +220,7 @@ export function validateConfig(): Config {
     atlassianApiKey,
     freeTextExtractionEnabled,
     searchExpirationIntervalMinutes,
+    reengagementIntervalMinutes,
     aiRequestTimeoutMs,
     searchRateLimitMax,
     searchRateLimitWindowMs,

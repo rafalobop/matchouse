@@ -6,6 +6,7 @@ import { createApp } from './app';
 import { initRealtimeHub } from './services/realtimeHub';
 import { startDolarService } from './services/dolar';
 import { startSearchExpirationService } from './services/searchExpiration';
+import { startReengagementService } from './services/reengagement';
 import { logger } from './services/logger';
 import { initExcelParsePool } from './services/excelParsePool';
 
@@ -33,6 +34,9 @@ async function main() {
 
   // Iniciar servicio de vencimiento de búsquedas sin match a los 7 días (KAN-41)
   startSearchExpirationService();
+
+  // Iniciar servicio de avisos de reenganche ("¿la renovás?") sobre búsquedas ya vencidas sin match (KAN-58)
+  startReengagementService();
 
   // KAN-137: pool de worker threads para el parseo de Excels subidos — se arranca acá (en vez de
   // lazy en el primer POST /api/upload) para que los workers ya estén levantados y no sumar la

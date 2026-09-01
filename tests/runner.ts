@@ -40,6 +40,7 @@ import './profileValidation.test';
 import './propertyMatchWebhook.test';
 import './rateLimit.test';
 import './realtimeHub.test';
+import './reengagement.test';
 import './routes/auth.route.test';
 import './routes/catalog.route.test';
 import './routes/internal.route.test';

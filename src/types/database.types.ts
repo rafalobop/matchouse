@@ -26,6 +26,7 @@ export type Database = {
           expires_at: string
           id: string
           raw_text: string
+          reengagement_sent: boolean
           status: string
           tenant_id: string
           zone_ids: string[]
@@ -39,6 +40,7 @@ export type Database = {
           expires_at: string
           id?: string
           raw_text: string
+          reengagement_sent?: boolean
           status?: string
           tenant_id: string
           zone_ids?: string[]
@@ -52,6 +54,7 @@ export type Database = {
           expires_at?: string
           id?: string
           raw_text?: string
+          reengagement_sent?: boolean
           status?: string
           tenant_id?: string
           zone_ids?: string[]
