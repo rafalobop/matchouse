@@ -1,6 +1,7 @@
 // Importar todas las pruebas para que el test runner de Node las ejecute en orden
 import './unit-tests';
 import './activeSearches.test';
+import './adminDashboardStatic.test';
 import './addressParser.test';
 import './ai.test';
 import './blindMatching.test';

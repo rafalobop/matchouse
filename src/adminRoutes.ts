@@ -1,6 +1,7 @@
 import express from 'express';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import { supabase } from './services/supabase';
 import { config } from './config/env';
 import { logger } from './services/logger';
@@ -70,6 +71,22 @@ function logAdminRead(adminUserId: string, action: string): void {
 
 function isFiniteInRange(value: unknown, min: number, max: number): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
+}
+
+// KAN-289: `express.static(adminDashboardPath, { maxAge: '1y', immutable: true })` cachea estos
+// assets en el browser por un año sin revalidar — necesita que la URL cambie cuando cambia el
+// contenido, si no un deploy con un fix en app.js nunca llegaría a un cliente con el asset viejo
+// cacheado. Se calcula un hash corto del contenido de cada asset una sola vez al levantar el
+// proceso (mismo ciclo de vida que `adminIndexHtml`, leído una sola vez más abajo) y se lo agrega
+// como query string (`?v=<hash>`) a las referencias en index.html — un contenido distinto produce
+// un hash distinto, y por lo tanto una URL distinta que el browser trata como un recurso nuevo.
+function assetVersion(relativePath: string): string {
+  const absolutePath = path.join(adminDashboardPath, relativePath);
+  if (!fs.existsSync(absolutePath)) {
+    return '';
+  }
+  const contents = fs.readFileSync(absolutePath);
+  return crypto.createHash('sha256').update(contents).digest('hex').slice(0, 8);
 }
 
 /**
@@ -482,7 +499,17 @@ export function mountAdminRouter(app: express.Application): void {
 
   const adminIndexHtmlPath = path.join(adminDashboardPath, 'index.html');
   if (fs.existsSync(adminIndexHtmlPath)) {
-    const adminIndexHtml = fs.readFileSync(adminIndexHtmlPath, 'utf-8');
+    let adminIndexHtml = fs.readFileSync(adminIndexHtmlPath, 'utf-8');
+    // KAN-289: le pega el `?v=<hash>` de versionado a cada asset estático referenciado desde acá
+    // (ver `assetVersion` arriba) — index.html en sí no pasa por express.static (se sirve dinámico
+    // más abajo para poder inyectarle el nonce de CSP en cada request) así que nunca queda cacheado
+    // de forma inmutable, y siempre apunta a la última versión de cada asset.
+    for (const asset of ['/vendor/leaflet/leaflet.css', '/vendor/leaflet/leaflet.js', '/htmlSanitize.js', '/app.js', '/style.css']) {
+      const version = assetVersion(asset.slice(1));
+      if (version) {
+        adminIndexHtml = adminIndexHtml.replace(`"${asset}"`, `"${asset}?v=${version}"`);
+      }
+    }
     adminRouter.get(['/', '/index.html'], (req, res) => {
       // res.locals.cspNonce ya lo fija el middleware global de src/index.ts (antes de que la
       // request llegue acá), consumido también por la directiva CSP de Helmet — mismo patrón
@@ -491,7 +518,11 @@ export function mountAdminRouter(app: express.Application): void {
       res.type('html').send(html);
     });
   }
-  adminRouter.use(express.static(adminDashboardPath));
+  // KAN-289: maxAge 1y + immutable — seguro porque cada asset referenciado desde index.html se
+  // versiona con un query string atado al hash de su contenido (`assetVersion` arriba), así que un
+  // cambio de contenido siempre produce una URL nueva en vez de depender de que el browser
+  // revalide la vieja.
+  adminRouter.use(express.static(adminDashboardPath, { maxAge: '1y', immutable: true }));
 
   // Catch-all: cualquier ruta no reconocida del host admin termina acá, nunca hace next() hacia
   // el resto del pipeline (dashboard/API de tenants).
