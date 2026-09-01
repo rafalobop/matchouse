@@ -3,6 +3,7 @@ import { supabase as serviceRoleSupabase } from './supabase';
 import { logger } from './logger';
 import {
   ExcelMappingField,
+  EXCEL_MAPPING_FIELDS,
   REQUIRED_EXCEL_MAPPING_FIELDS,
   computeHeaderSignature,
   matchHeadersHeuristically,
@@ -247,11 +248,29 @@ export async function confirmColumnMapping(
   const headerSignature = computeHeaderSignature(headers);
   const headersLower = headers.map(h => String(h || '').toLowerCase().trim());
 
-  const resolvedFields: ResolvedFieldMapping[] = Object.entries(fields).map(([field, header]) => {
+  // KAN-302: `resolveColumnMapping` ya persiste (best-effort, sin confirmar) los 11 campos
+  // resueltos por heurística/IA antes de pedirle confirmación al agente — el agente solo corrige
+  // desde la UI los campos puntuales que quedaron mal/sin resolver, no reenvía los 11 de nuevo. Si
+  // acá solo se toman en cuenta las claves presentes en `fields`, cualquier campo que ya estaba
+  // bien resuelto (y por eso no vino en la corrección) se pierde del mapeo confirmado. Se parte
+  // entonces del mapeo ya guardado para esta firma de headers (confirmado o no) y se pisa con lo
+  // que venga explícito en `fields`.
+  const previouslyResolved = await getStoredMapping(tenantId, headerSignature, client);
+  const baseFields = new Map<ExcelMappingField, string | null>(
+    EXCEL_MAPPING_FIELDS.map(field => [field, null])
+  );
+  for (const f of previouslyResolved?.column_mapping ?? []) {
+    baseFields.set(f.field, f.header);
+  }
+  for (const [field, header] of Object.entries(fields)) {
+    baseFields.set(field as ExcelMappingField, header ?? null);
+  }
+
+  const resolvedFields: ResolvedFieldMapping[] = Array.from(baseFields.entries()).map(([field, header]) => {
     const headerIndex = header ? headersLower.indexOf(header.toLowerCase().trim()) : -1;
     const validHeader = headerIndex !== -1 ? headers[headerIndex] : null;
     return {
-      field: field as ExcelMappingField,
+      field,
       header: validHeader,
       confidence: validHeader ? 1 : 0,
       ambiguous: false,

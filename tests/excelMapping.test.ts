@@ -230,6 +230,38 @@ test('confirmColumnMapping - un header confirmado que no existe en la hoja actua
   );
 });
 
+test('confirmColumnMapping - KAN-302: una corrección parcial no pisa los campos ya bien resueltos por la heurística/IA', async () => {
+  // Mapeo previo (best-effort, sin confirmar) que `resolveColumnMapping` ya habría persistido
+  // para esta firma de headers antes de pedirle confirmación al agente: domicilio/precio
+  // resueltos, dormitorios sin resolver.
+  const storedFields = [
+    { field: 'domicilio', header: 'Dirección', confidence: 1, ambiguous: false, candidates: [] },
+    { field: 'precio', header: 'Costo', confidence: 1, ambiguous: false, candidates: [] },
+    { field: 'dormitorios', header: null, confidence: 0, ambiguous: false, candidates: [] }
+  ];
+  const upserts: any[] = [];
+  const client = buildMockClient({
+    storedResult: { data: { column_mapping: storedFields, confirmed: false, source: 'heuristic', confidence: 1 }, error: null },
+    capturedUpserts: upserts
+  });
+
+  // El agente solo corrige el campo que quedó sin resolver, sin reenviar domicilio/precio.
+  const { fields } = await confirmColumnMapping(
+    'tenant-1',
+    ['Dirección', 'Costo', 'Ambientes'],
+    { dormitorios: 'Ambientes' },
+    client
+  );
+
+  const domicilio = fields.find(f => f.field === 'domicilio');
+  const precio = fields.find(f => f.field === 'precio');
+  const dormitorios = fields.find(f => f.field === 'dormitorios');
+  assert.strictEqual(domicilio?.header, 'Dirección', 'domicilio ya resuelto no debe perderse por una corrección parcial');
+  assert.strictEqual(precio?.header, 'Costo', 'precio ya resuelto no debe perderse por una corrección parcial');
+  assert.strictEqual(dormitorios?.header, 'Ambientes');
+  assert.strictEqual(upserts[0].confirmed, true);
+});
+
 test('toColumnMapRecord - convierte el arreglo de fields a un record field->header', () => {
   const record = toColumnMapRecord([
     { field: 'domicilio', header: 'Dirección', confidence: 1, ambiguous: false, candidates: [] },
