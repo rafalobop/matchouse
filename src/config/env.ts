@@ -38,6 +38,9 @@ export interface Config {
   metricsRateLimitWindowMs: number;
   excelParsePoolSize: number;
   excelParseTimeoutMs: number;
+  licensePadronUrl: string;
+  licenseValidationRetryIntervalMinutes: number;
+  licenseDataStaleHours: number;
   /** KAN-122: nombres de las variables de Supabase que faltan (vacío si están todas presentes). */
   missingSupabaseCredentials: string[];
 }
@@ -138,6 +141,20 @@ export function validateConfig(): Config {
   // un bug de xlsx) que deje un worker colgado indefinidamente, sacando ese slot del pool para
   // siempre. 30s es generoso para un Excel de hasta uploadMaxFileSizeBytes (10MB default).
   const excelParseTimeoutMs = parseInt(cleanEnvVar(process.env.EXCEL_PARSE_TIMEOUT_MS) || '30000', 10);
+  // KAN-306: URL pública del padrón de matriculados del Colegio de Corredores Inmobiliarios de
+  // Tucumán (CCIT) — tabla HTML estática sin API, sincronizada periódicamente a `licensed_agents`
+  // (ver src/services/licenseRegistry.ts). Configurable por si cambia de dominio/ruta.
+  const licensePadronUrl = cleanEnvVar(process.env.LICENSE_PADRON_URL) || 'https://ccit.com.ar/padron/';
+  // Frecuencia del servicio en segundo plano que re-sincroniza el padrón y reintenta validar las
+  // cuentas 'pending' (src/services/licenseValidationRetry.ts). Mismo default que el resto de los
+  // jobs periódicos del proyecto (searchExpiration/reengagement, 60 min) — no es una fuente que
+  // cambie con frecuencia.
+  const licenseValidationRetryIntervalMinutes = parseInt(cleanEnvVar(process.env.LICENSE_VALIDATION_RETRY_INTERVAL_MINUTES) || '60', 10);
+  // Umbral de antigüedad de `licensed_agents` a partir del cual se trata el padrón como "fuente
+  // externa caída" (AC5, registro temporal) en vez de usarlo para rechazar una matrícula real.
+  // 48h da margen a que el job de sincronización (que corre cada `licenseValidationRetryIntervalMinutes`)
+  // falle varias corridas seguidas sin que eso se traduzca en rechazos falsos de matrículas válidas.
+  const licenseDataStaleHours = parseInt(cleanEnvVar(process.env.LICENSE_DATA_STALE_HOURS) || '48', 10);
 
   // KAN-122: sin SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY la app queda inservible (todo el acceso a
   // datos pasa por el cliente service-role de src/services/supabase.ts) — antes de este ticket
@@ -234,6 +251,9 @@ export function validateConfig(): Config {
     metricsRateLimitWindowMs,
     excelParsePoolSize,
     excelParseTimeoutMs,
+    licensePadronUrl,
+    licenseValidationRetryIntervalMinutes,
+    licenseDataStaleHours,
     missingSupabaseCredentials
   };
 }

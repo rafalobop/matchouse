@@ -9,6 +9,7 @@ import { matchesRoutes } from './matchesRoutes';
 import { notificationsRoutes } from './notificationsRoutes';
 import { internalRoutes } from './internalRoutes';
 import { systemRoutes } from './systemRoutes';
+import { adminPanelRoutes } from './adminPanelRoutes';
 
 export const routes = Router();
 
@@ -26,3 +27,4 @@ routes.use(matchesRoutes);
 routes.use(notificationsRoutes);
 routes.use(internalRoutes);
 routes.use(systemRoutes);
+routes.use(adminPanelRoutes);

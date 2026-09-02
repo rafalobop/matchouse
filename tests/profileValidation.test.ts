@@ -9,6 +9,7 @@ function baseInput(overrides: Partial<ProfileInput> = {}): ProfileInput {
     phone_number: '+54 381 555-1234',
     agency_name: 'Inmobiliaria del Centro',
     city: 'San Miguel de Tucuman',
+    license_number: '350',
     ...overrides
   };
 }
@@ -73,4 +74,53 @@ test('profileValidation - acepta nombres compuestos, con guion y con apostrofe',
 
 test('profileValidation - acepta nombres con acentos y ñ', () => {
   assert.strictEqual(validateProfileInput(baseInput({ first_name: 'Ñañez', last_name: 'Muñoz' })), null);
+});
+
+// --- KAN-306: license_number ---
+
+test('profileValidation - rechaza license_number faltante', () => {
+  assert.notStrictEqual(validateProfileInput(baseInput({ license_number: undefined })), null);
+});
+
+test('profileValidation - rechaza license_number vacío', () => {
+  assert.notStrictEqual(validateProfileInput(baseInput({ license_number: '   ' })), null);
+});
+
+test('profileValidation - rechaza license_number con letras', () => {
+  assert.notStrictEqual(validateProfileInput(baseInput({ license_number: '35A' })), null);
+});
+
+test('profileValidation - rechaza license_number demasiado largo (mas de 10 dígitos)', () => {
+  assert.notStrictEqual(validateProfileInput(baseInput({ license_number: '1'.repeat(11) })), null);
+});
+
+test('profileValidation - acepta license_number con ceros de relleno', () => {
+  assert.strictEqual(validateProfileInput(baseInput({ license_number: '001' })), null);
+});
+
+// --- KAN-306 (cambio de flujo de colaboradores): requireLicenseNumber=false ---
+
+test('profileValidation - con requireLicenseNumber=false, acepta license_number faltante (colaborador sin matrícula propia)', () => {
+  assert.strictEqual(
+    validateProfileInput(baseInput({ license_number: undefined }), { requireLicenseNumber: false }),
+    null
+  );
+});
+
+test('profileValidation - con requireLicenseNumber=false, acepta license_number vacío', () => {
+  assert.strictEqual(
+    validateProfileInput(baseInput({ license_number: '' }), { requireLicenseNumber: false }),
+    null
+  );
+});
+
+test('profileValidation - con requireLicenseNumber=false, igual valida el formato si se manda un valor (colaborador que también es matriculado)', () => {
+  assert.notStrictEqual(
+    validateProfileInput(baseInput({ license_number: '35A' }), { requireLicenseNumber: false }),
+    null
+  );
+  assert.strictEqual(
+    validateProfileInput(baseInput({ license_number: '350' }), { requireLicenseNumber: false }),
+    null
+  );
 });

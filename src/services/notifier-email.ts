@@ -418,3 +418,45 @@ export async function sendAdminMagicLinkEmail(email: string, link: string): Prom
     return false;
   }
 }
+
+// KAN-306 (cambio de flujo de colaboradores): aviso para el caso "el email invitado ya tenía
+// cuenta" — a diferencia de una cuenta nueva (que recibe el magic link de bienvenida vía
+// `sendMagicLinkEmail`), acá no hace falta ningún link de acceso, solo notificar que ya puede
+// entrar con su login normal.
+export function buildCollaboratorAccessGrantedEmailHtml(): string {
+  const body = `
+    <p style="text-align:center;color:${BRAND.slate};font-size:14px;line-height:1.5;">
+      Un dueño de agencia te dio acceso como colaborador en Brokaza. Ya podés entrar con tu cuenta de siempre.
+    </p>
+    ${buildEmailCtaButton(config.appUrl, 'Ir a Brokaza')}
+    <p style="text-align:center;color:${BRAND.slate};font-size:12px;">
+      Si no esperabas este acceso, podés ignorar este email.
+    </p>`;
+
+  return buildBrandedEmailShell('Te dieron acceso como colaborador', body);
+}
+
+export async function sendCollaboratorAccessGrantedEmail(email: string): Promise<boolean> {
+  const html = buildCollaboratorAccessGrantedEmailHtml();
+
+  try {
+    const resend = getResendClient();
+    const result = await resend.emails.send({
+      from: FROM_ADDRESS,
+      to: email,
+      subject: 'Te dieron acceso como colaborador en Brokaza',
+      html
+    });
+
+    if (result.error) {
+      logger.error({ error: result.error }, '[NOTIFIER-EMAIL] Resend devolvió un error al enviar el aviso de acceso de colaborador.');
+      return false;
+    }
+
+    logger.info({ emailId: result.data?.id }, '[NOTIFIER-EMAIL] Aviso de acceso de colaborador enviado con éxito.');
+    return true;
+  } catch (sendErr: any) {
+    logger.error({ error: sendErr.message || sendErr }, '[NOTIFIER-EMAIL] Error al despachar el aviso de acceso de colaborador.');
+    return false;
+  }
+}

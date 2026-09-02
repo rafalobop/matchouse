@@ -287,39 +287,95 @@ export type Database = {
       profiles: {
         Row: {
           agency_name: string | null
+          agency_owner_id: string | null
           city: string | null
           country: string | null
           created_at: string
           email: string
           full_name: string
           id: string
+          license_number: string | null
+          license_validation_status: string
           phone_number: string | null
           plan: string
           profile_completed: boolean
+          role: string
         }
         Insert: {
           agency_name?: string | null
+          agency_owner_id?: string | null
           city?: string | null
           country?: string | null
           created_at?: string
           email: string
           full_name: string
           id: string
+          license_number?: string | null
+          license_validation_status?: string
           phone_number?: string | null
           plan?: string
           profile_completed?: boolean
+          role?: string
         }
         Update: {
           agency_name?: string | null
+          agency_owner_id?: string | null
           city?: string | null
           country?: string | null
           created_at?: string
           email?: string
           full_name?: string
           id?: string
+          license_number?: string | null
+          license_validation_status?: string
           phone_number?: string | null
           plan?: string
           profile_completed?: boolean
+          role?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "profiles_agency_owner_id_fkey"
+            columns: ["agency_owner_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      licensed_agents: {
+        Row: {
+          address: string | null
+          agency_name: string | null
+          broker_name: string | null
+          cuit: string | null
+          email: string | null
+          id: string
+          license_number: string
+          phones: string | null
+          synced_at: string
+        }
+        Insert: {
+          address?: string | null
+          agency_name?: string | null
+          broker_name?: string | null
+          cuit?: string | null
+          email?: string | null
+          id?: string
+          license_number: string
+          phones?: string | null
+          synced_at?: string
+        }
+        Update: {
+          address?: string | null
+          agency_name?: string | null
+          broker_name?: string | null
+          cuit?: string | null
+          email?: string | null
+          id?: string
+          license_number?: string
+          phones?: string | null
+          synced_at?: string
         }
         Relationships: []
       }

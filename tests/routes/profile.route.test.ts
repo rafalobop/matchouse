@@ -67,6 +67,15 @@ test('KAN-76 - POST /api/profile con cookie válida pero body con campo inespera
   assert.strictEqual(res.status, 400);
 });
 
+// KAN-306 (cambio de flujo de colaboradores): si license_number es obligatorio depende del rol
+// del tenant (`role='owner'` lo exige, `role='collaborator'` no) — updateProfile ahora consulta
+// ese rol con el cliente service-role real ANTES de validar el body, así que ya no hay forma de
+// ejercitar "falta un campo del body → 400" sin tocar Supabase, a diferencia de antes. Mismo
+// límite documentado en tests/routes/search.route.test.ts para el chequeo privilegiado de
+// dueño (singleton service-role sin seam de inyección para tests). La validación de negocio en
+// sí (license_number requerido según el rol) queda cubierta a nivel unitario en
+// tests/profileValidation.test.ts.
+
 test('routes/profileRoutes - teardown', async () => {
   await server.close();
 });
