@@ -32,6 +32,21 @@ export function buildIncomingMatchPushPayload(matchRowIds: string | (string | nu
   };
 }
 
+// KAN-58: aviso de reenganche — la búsqueda del propio tenant venció (7 días, KAN-41) sin haber
+// recibido ningún match (`blind_matches.search_id`, ver `src/services/reengagement.ts`). Mismo
+// criterio de payload genérico que `buildIncomingMatchPushPayload` (sin datos de la búsqueda más
+// allá del id, ya filtrado del lado del canal push) y misma URL de destino ('/') que ya usa
+// `archiveSearch` para volver al dashboard, donde el tenant puede reactivarla
+// (`POST /api/searches/:id/reactivate`, KAN-64).
+export function buildReengagementPushPayload(searchId: string): Record<string, unknown> {
+  return {
+    title: 'Matchouse',
+    body: '¿La renovás? Tu búsqueda venció sin match — tocá para reactivarla',
+    tag: `reengagement-${searchId}`,
+    data: { url: '/' }
+  };
+}
+
 // KAN-48: usado para decidir si el email de respaldo debe dispararse (solo cuando el tenant NO
 // tiene push activo, así los dos canales no se duplican para un mismo evento). Ante un error de
 // red/DB, se devuelve false a propósito (fail-open hacia el email): es preferible arriesgar un

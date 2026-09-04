@@ -14,6 +14,8 @@ import {
   buildAdminMagicLinkEmailHtml,
   sendMagicLinkEmail,
   sendAdminMagicLinkEmail,
+  buildReengagementEmailHtml,
+  sendReengagementEmail,
   __setResendClientForTests
 } from '../src/services/notifier-email';
 
@@ -321,6 +323,68 @@ test('Notifier Email - sendAdminMagicLinkEmail devuelve false si Resend responde
   });
 
   const result = await sendAdminMagicLinkEmail('admin@brokaza.com', 'https://link.example/admin-err');
+
+  assert.strictEqual(result, false);
+});
+
+// KAN-58: aviso de reenganche ("¿la renovás?") — canal de respaldo del push para active_searches
+// vencidas (KAN-41) sin ningún match persistido en blind_matches (ver src/services/reengagement.ts).
+test('Notifier Email - buildReengagementEmailHtml incluye el texto original de la búsqueda y la pregunta de reenganche', () => {
+  const html = buildReengagementEmailHtml('Busco depto 2 dormitorios en alquiler');
+
+  assert.ok(html.includes('Busco depto 2 dormitorios en alquiler'), 'Debe incluir el texto original de la búsqueda.');
+  assert.ok(html.includes('¿La renovás?'), 'Debe usar el copy de reenganche.');
+});
+
+test('Notifier Email - buildReengagementEmailHtml trunca textos de búsqueda muy largos', () => {
+  const longText = 'a'.repeat(200);
+  const html = buildReengagementEmailHtml(longText);
+
+  assert.ok(!html.includes(longText), 'No debe incluir el texto completo sin truncar.');
+  assert.ok(html.includes('...'), 'Debe truncar con puntos suspensivos.');
+});
+
+test('Notifier Email - sendReengagementEmail envía al email del tenant y devuelve true', async () => {
+  let sentTo: string | undefined;
+  let sentSubject: string | undefined;
+  __setResendClientForTests({
+    emails: {
+      send: async (opts: any) => {
+        sentTo = opts.to;
+        sentSubject = opts.subject;
+        return { data: { id: 'mock-id' }, error: null };
+      }
+    }
+  });
+
+  const client = makeProfileClient({ email: 'agente@example.com' });
+  const result = await sendReengagementEmail('tenant-1', 'Busco depto', client as any);
+
+  assert.strictEqual(result, true);
+  assert.strictEqual(sentTo, 'agente@example.com');
+  assert.ok(sentSubject?.toLowerCase().includes('renovás'), 'El asunto debe reflejar el copy de reenganche.');
+});
+
+test('Notifier Email - sendReengagementEmail devuelve false si el tenant no tiene email en profiles', async () => {
+  let sendCalled = false;
+  __setResendClientForTests({
+    emails: { send: async () => { sendCalled = true; return { data: { id: 'x' }, error: null }; } }
+  });
+
+  const client = makeProfileClient({ email: null });
+  const result = await sendReengagementEmail('tenant-1', 'Busco depto', client as any);
+
+  assert.strictEqual(result, false);
+  assert.strictEqual(sendCalled, false, 'No debe intentar enviar si no hay email registrado.');
+});
+
+test('Notifier Email - sendReengagementEmail devuelve false si Resend responde con error', async () => {
+  __setResendClientForTests({
+    emails: { send: async () => ({ data: null, error: { message: 'fallo simulado de Resend' } }) }
+  });
+
+  const client = makeProfileClient({ email: 'agente@example.com' });
+  const result = await sendReengagementEmail('tenant-1', 'Busco depto', client as any);
 
   assert.strictEqual(result, false);
 });

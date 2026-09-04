@@ -1,7 +1,8 @@
 // Panel admin — vanilla JS, sin build step (mismo criterio que src/dashboard/app.js).
 
 const TUCUMAN_DEFAULT = { lat: -26.8241, lng: -65.2226 };
-const METRICS_POLL_MS = 7000;
+// KAN-59: panel de salud del piloto — el AC pide refresco cada 10s explícitamente (antes 7000).
+const METRICS_POLL_MS = 10000;
 const PAGE_SIZE = 50;
 
 const state = {
@@ -129,6 +130,9 @@ async function loadMetrics() {
     el('metric-active').textContent = m.activeUsers;
     el('metric-active-label').title = m.activeUsersDefinition || '';
     el('metric-properties').textContent = m.totalProperties;
+    // KAN-59: panel de salud del piloto.
+    el('metric-agents-portfolio').textContent = m.agentsWithPortfolio;
+    el('metric-agents-search').textContent = m.agentsWithSearch;
     el('metric-mrr').textContent = m.mrr === null ? 'Pendiente' : m.mrr;
     el('metric-churn').textContent = m.churn === null ? 'Pendiente' : m.churn;
   } catch (err) {

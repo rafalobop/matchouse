@@ -1,6 +1,7 @@
 import express from 'express';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import { supabase } from './services/supabase';
 import { config } from './config/env';
 import { logger } from './services/logger';
@@ -70,6 +71,22 @@ function logAdminRead(adminUserId: string, action: string): void {
 
 function isFiniteInRange(value: unknown, min: number, max: number): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
+}
+
+// KAN-289: `express.static(adminDashboardPath, { maxAge: '1y', immutable: true })` cachea estos
+// assets en el browser por un año sin revalidar — necesita que la URL cambie cuando cambia el
+// contenido, si no un deploy con un fix en app.js nunca llegaría a un cliente con el asset viejo
+// cacheado. Se calcula un hash corto del contenido de cada asset una sola vez al levantar el
+// proceso (mismo ciclo de vida que `adminIndexHtml`, leído una sola vez más abajo) y se lo agrega
+// como query string (`?v=<hash>`) a las referencias en index.html — un contenido distinto produce
+// un hash distinto, y por lo tanto una URL distinta que el browser trata como un recurso nuevo.
+function assetVersion(relativePath: string): string {
+  const absolutePath = path.join(adminDashboardPath, relativePath);
+  if (!fs.existsSync(absolutePath)) {
+    return '';
+  }
+  const contents = fs.readFileSync(absolutePath);
+  return crypto.createHash('sha256').update(contents).digest('hex').slice(0, 8);
 }
 
 /**
@@ -227,27 +244,67 @@ export function mountAdminRouter(app: express.Application): void {
     logAdminRead(admin.adminUserId, 'read_metrics');
 
     try {
-      const [propertiesCount, profilesCount, matchesCount, activeSearches] = await Promise.all([
+      const [propertiesCount, profileIds, matchesCount, activeSearches, everSearchedTenants] = await Promise.all([
         supabase.from('properties').select('id', { count: 'exact', head: true }),
-        supabase.from('profiles').select('id', { count: 'exact', head: true }),
+        // KAN-59 (fix de QA): antes se pedía profilesCount con head:true; ahora se necesita la
+        // lista real de tenant_id para poder chequear cartera por tenant sin traer `properties`
+        // entera. Nota (2026-09-04): esto asumía un "tope duro de 10 tenants" que nunca existió
+        // como enforcement real (ver .agent/CONTEXT.md#2) — sin límite de registro de corredores,
+        // este loop de N queries (una por tenant, más abajo) escala linealmente con la cantidad
+        // real de tenants, no con un techo fijo. Revisar si se vuelve un problema de performance
+        // en `/api/metrics` a medida que crece la base de tenants.
+        supabase.from('profiles').select('id'),
         supabase.from('blind_matches').select('id', { count: 'exact', head: true }),
-        supabase.from('active_searches').select('tenant_id').eq('status', 'active')
+        supabase.from('active_searches').select('tenant_id').eq('status', 'active'),
+        // `active_searches` sí es seguro pedirla completa (sin head:true) para sacar el distinct de
+        // tenant_id en JS — expira a los 7 días (trigger `set_active_searches_expires_at`), nunca
+        // acumula sin límite como `properties`. Sin filtro de status a propósito: a diferencia de
+        // activeSearches (arriba, solo 'active'), esto es "alguna vez hizo una búsqueda", así que
+        // cuenta también las expiradas/matcheadas/canceladas.
+        supabase.from('active_searches').select('tenant_id')
       ]);
 
-      const failures = [propertiesCount, profilesCount, matchesCount, activeSearches].filter((r: any) => r.error);
+      const failures = [propertiesCount, profileIds, matchesCount, activeSearches, everSearchedTenants].filter((r: any) => r.error);
       if (failures.length > 0) {
         logger.error({ errors: failures.map((f: any) => f.error?.message) }, '[ADMIN] Error calculando métricas');
         return res.status(500).json({ error: 'No se pudieron calcular las métricas.' });
       }
 
+      // KAN-59 (fix de QA): a diferencia de la primera versión, que traía toda la tabla
+      // `properties` (sin bound — el catálogo de cada agencia puede tener cientos/miles de filas),
+      // acá se hacen N counts indexados y livianos (`head: true`, cero filas transferidas) — uno
+      // por tenant — y se cuenta cuántos tienen al menos una propiedad. Escala con la cantidad de
+      // tenants, no con el tamaño del catálogo — pero sin un techo real de tenants (ver nota más
+      // arriba) este `Promise.all` crece linealmente con el número de registros; si la cantidad de
+      // tenants deja de ser chica conviene reemplazarlo por una sola query agregada.
+      const portfolioChecksPerTenant = await Promise.all(
+        (profileIds.data ?? []).map((p: any) =>
+          supabase.from('properties').select('id', { count: 'exact', head: true }).eq('tenant_id', p.id)
+        )
+      );
+      const portfolioCheckFailures = portfolioChecksPerTenant.filter((r: any) => r.error);
+      if (portfolioCheckFailures.length > 0) {
+        logger.error(
+          { errors: portfolioCheckFailures.map((f: any) => f.error?.message) },
+          '[ADMIN] Error calculando agentsWithPortfolio'
+        );
+        return res.status(500).json({ error: 'No se pudieron calcular las métricas.' });
+      }
+
       const activeTenants = new Set((activeSearches.data ?? []).map((r: any) => r.tenant_id)).size;
+      const agentsWithPortfolio = portfolioChecksPerTenant.filter((r: any) => (r.count ?? 0) > 0).length;
+      const agentsWithSearch = new Set((everSearchedTenants.data ?? []).map((r: any) => r.tenant_id)).size;
 
       res.json({
         totalMatches: matchesCount.count ?? 0,
-        registeredUsers: profilesCount.count ?? 0,
+        registeredUsers: profileIds.data?.length ?? 0,
         activeUsers: activeTenants,
         activeUsersDefinition: 'Tenants con al menos una búsqueda activa (active_searches.status = \'active\')',
         totalProperties: propertiesCount.count ?? 0,
+        // KAN-59: panel de salud del piloto — agentes con cartera cargada y agentes con al menos
+        // una búsqueda realizada (histórico, no solo activas), sumados a totalMatches de arriba.
+        agentsWithPortfolio,
+        agentsWithSearch,
         mrr: null,
         churn: null,
         billingNote: 'Pendiente — sin cobros integrados todavía.'
@@ -482,7 +539,17 @@ export function mountAdminRouter(app: express.Application): void {
 
   const adminIndexHtmlPath = path.join(adminDashboardPath, 'index.html');
   if (fs.existsSync(adminIndexHtmlPath)) {
-    const adminIndexHtml = fs.readFileSync(adminIndexHtmlPath, 'utf-8');
+    let adminIndexHtml = fs.readFileSync(adminIndexHtmlPath, 'utf-8');
+    // KAN-289: le pega el `?v=<hash>` de versionado a cada asset estático referenciado desde acá
+    // (ver `assetVersion` arriba) — index.html en sí no pasa por express.static (se sirve dinámico
+    // más abajo para poder inyectarle el nonce de CSP en cada request) así que nunca queda cacheado
+    // de forma inmutable, y siempre apunta a la última versión de cada asset.
+    for (const asset of ['/vendor/leaflet/leaflet.css', '/vendor/leaflet/leaflet.js', '/htmlSanitize.js', '/app.js', '/style.css']) {
+      const version = assetVersion(asset.slice(1));
+      if (version) {
+        adminIndexHtml = adminIndexHtml.replace(`"${asset}"`, `"${asset}?v=${version}"`);
+      }
+    }
     adminRouter.get(['/', '/index.html'], (req, res) => {
       // res.locals.cspNonce ya lo fija el middleware global de src/index.ts (antes de que la
       // request llegue acá), consumido también por la directiva CSP de Helmet — mismo patrón
@@ -491,7 +558,11 @@ export function mountAdminRouter(app: express.Application): void {
       res.type('html').send(html);
     });
   }
-  adminRouter.use(express.static(adminDashboardPath));
+  // KAN-289: maxAge 1y + immutable — seguro porque cada asset referenciado desde index.html se
+  // versiona con un query string atado al hash de su contenido (`assetVersion` arriba), así que un
+  // cambio de contenido siempre produce una URL nueva en vez de depender de que el browser
+  // revalide la vieja.
+  adminRouter.use(express.static(adminDashboardPath, { maxAge: '1y', immutable: true }));
 
   // Catch-all: cualquier ruta no reconocida del host admin termina acá, nunca hace next() hacia
   // el resto del pipeline (dashboard/API de tenants).

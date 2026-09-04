@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import { hasActivePushSubscriptions, buildIncomingMatchPushPayload } from '../src/services/webPush';
+import { hasActivePushSubscriptions, buildIncomingMatchPushPayload, buildReengagementPushPayload } from '../src/services/webPush';
 
 // Mismo estilo de mock de query builder encadenable usado en tests/searchExpiration.test.ts.
 function makeMockClient(options: { count?: number | null; error?: any } = {}) {
@@ -76,4 +76,20 @@ test('webPush.buildIncomingMatchPushPayload (KAN-303) - sin ningún id válido, 
 
   assert.strictEqual(payload.tag, 'incoming-match-unknown');
   assert.strictEqual((payload.data as any).url, '/matches?highlight=');
+});
+
+test('webPush.buildReengagementPushPayload (KAN-58) - texto fijo "¿la renovás?", tag por búsqueda y sin datos sensibles', () => {
+  const payload = buildReengagementPushPayload('search-1');
+
+  assert.strictEqual(payload.title, 'Matchouse');
+  assert.ok((payload.body as string).includes('renovás'), 'El body debe incluir la pregunta de reenganche.');
+  assert.strictEqual(payload.tag, 'reengagement-search-1');
+  assert.strictEqual((payload.data as any).url, '/');
+});
+
+test('webPush.buildReengagementPushPayload (KAN-58) - el tag varía por búsqueda para no colapsar avisos de búsquedas distintas', () => {
+  const first = buildReengagementPushPayload('search-1');
+  const second = buildReengagementPushPayload('search-2');
+
+  assert.notStrictEqual(first.tag, second.tag);
 });

@@ -250,3 +250,45 @@ CREATE POLICY "blind_matches_matched_tenant_read" ON public.blind_matches
 -- `req.supabaseClient` (patrón "Tenant Context" de KAN-63) sí respeta RLS de verdad en el tráfico
 -- real — sin el REVOKE, un futuro endpoint de edición de perfil que no excluya `plan` del whitelist
 -- dejaría a cualquier tenant auto-asignarse un plan pago. Solo `service_role` puede escribir `plan`.
+--
+-- `public.tenant_excel_mappings` (KAN-84, 2026-07-30 vía mcp__supabase__apply_migration — tabla
+-- que esta doc nunca había llegado a listar, gap real detectado recién en la sesión de KAN-306
+-- continuación de abajo): `tenant_id uuid NOT NULL REFERENCES public.profiles(id)` + el mapeo de
+-- columnas de Excel guardado por tenant, consumida por `src/services/excelMapping.ts`. RLS: hasta
+-- la migración de abajo, misma política `tenant_id = auth.uid()` que el resto de tablas
+-- tenant-scoped (política `tenant_excel_mappings_tenant_isolation`).
+--
+-- ADENDA DE SEGURIDAD (KAN-306, continuación, 2026-09-04) — RLS por agencia compartida:
+-- `docs/evolucion_proyecto/add_agency_shared_tenant_scope_2026-09-04.sql`, aplicada vía
+-- `mcp__supabase__apply_migration`. Hasta acá (KAN-306, primer pase, ver más abajo en
+-- .agent/CONTEXT.md) el panel de administración de agencia (invitar/listar/revocar
+-- colaboradores) solo gateaba el ACCESO al panel — la RLS real de cada tabla tenant-scoped
+-- seguía siendo `tenant_id = auth.uid()`, así que un colaborador logueado veía su dashboard
+-- vacío. Esta migración:
+--
+--   - Agrega `public.current_agency_owner_id()` (SQL, STABLE, SECURITY DEFINER):
+--     `SELECT COALESCE(agency_owner_id, id) FROM public.profiles WHERE id = auth.uid()` — el id
+--     del dueño de la agencia si el que está logueado es colaborador, o su propio id si es dueño.
+--   - `active_searches`, `web_push_subscriptions`, `tenant_excel_mappings`, `blind_matches`
+--     (ambas políticas: `tenant_id` y `matched_tenant_id`): la comparación pasa de `auth.uid()` a
+--     `current_agency_owner_id()`. Mismo `FOR ALL`/`FOR SELECT` que antes, solo cambia contra qué
+--     se compara.
+--   - `properties`: deja de ser una sola política `FOR ALL` — se separa en
+--     `properties_agency_read` (SELECT), `properties_agency_insert` (INSERT) y
+--     `properties_agency_update` (UPDATE), las tres contra `current_agency_owner_id()` (un
+--     colaborador puede leer/cargar/editar la cartera de su agencia), MÁS
+--     `properties_owner_delete` (DELETE), que sigue comparando contra `auth.uid()` directo — un
+--     colaborador nunca puede eliminar propiedades, solo el dueño real (pedido explícito de
+--     negocio). `src/routes/properties.ts` añade además un chequeo de app (`requireOwner`, ver
+--     `src/utils/agencyOwnership.ts`) antes del DELETE, para devolver 403 con mensaje claro en vez
+--     de depender solo del 404 silencioso que deja la RLS.
+--   - `profiles` (política `profiles_self_access`, `id = auth.uid()`) queda **sin tocar** — es la
+--     tabla de identidad propia, no de cartera compartida. `src/controllers/profileController.ts`
+--     y `adminPanelController.ts` leen/escriben el propio perfil vía `req.actorId` (el auth.uid()
+--     real que resuelve `src/middleware/tenantAuth.ts`), nunca vía `req.tenantId` (que desde este
+--     cambio puede resolver al id del dueño de la agencia en vez del propio).
+--
+-- Verificado con `src/test-rls-agency.ts` (script manual, mismo patrón que `src/test-rls.ts` de
+-- KAN-63) contra la base real: dueño+colaborador comparten cartera (lectura/alta/edición), el
+-- colaborador no puede eliminar (bloqueado por `properties_owner_delete`), un tercero sin relación
+-- no ve nada de esa agencia, y revocar al colaborador le corta el acceso de inmediato.

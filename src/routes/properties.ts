@@ -8,12 +8,15 @@ import {
   type PropertyForZoneBatch
 } from '../services/zonesService';
 import { getTenantPlanLimits, countTenantProperties } from '../services/planLimits';
+import { requireOwner } from '../utils/agencyOwnership';
 
 // KAN-273: CRUD de propiedades para la tabla interactiva del dashboard (visualización, edición,
 // filtros/orden, alta y baja desde la UI, sin depender de un re-upload del Excel). Todas las rutas
 // van detrás de tenantAuthMiddleware y usan req.supabaseClient (patrón "Tenant Context" de KAN-63)
-// en vez del cliente service-role: los permisos de acceso son RLS (tenant_id = auth.uid()) más el
-// filtro explícito .eq('tenant_id', tenantId) en cada query, mismo criterio que matches.ts/upload.ts.
+// en vez del cliente service-role: los permisos de acceso son RLS (tenant_id = current_agency_
+// owner_id(), KAN-306 continuación — antes tenant_id = auth.uid()) más el filtro explícito
+// .eq('tenant_id', tenantId) en cada query, mismo criterio que matches.ts/upload.ts. Excepción:
+// el DELETE está restringido al dueño real de la agencia (ver el handler más abajo).
 //
 // Prefijo /api/catalog/properties (no /api/properties): src/adminRoutes.ts ya registra
 // `GET /api/properties` (panel admin, cross-tenant, adminAuthMiddleware) y mountAdminRouter(app) se
@@ -379,12 +382,30 @@ router.patch('/api/catalog/properties/:id', tenantAuthMiddleware, async (req, re
 });
 
 // DELETE /api/catalog/properties/:id
+// KAN-306 (continuación, 2026-09-04): pedido explícito del usuario — un colaborador puede cargar,
+// editar y ver la cartera de su agencia, pero NUNCA eliminar propiedades; solo el dueño real. La
+// RLS (`properties_owner_delete`, `tenant_id = auth.uid()`, ver migración
+// `add_agency_shared_tenant_scope_2026-09-04.sql`) ya lo bloquea a nivel de base, pero sin este
+// chequeo previo un colaborador recibiría un 404 genérico en vez de un error claro — mismo patrón
+// de "chequeo privilegiado antes de mutar" que ya usan archiveSearch/reactivateSearch en
+// searchController.ts. Se usa `req.supabaseClient` (tenant-scoped, no el service-role) para leer
+// el propio `role`: la RLS de `profiles` (`id = auth.uid()`) ya permite a cualquier actor leer su
+// propia fila sin necesidad de privilegios elevados, y de paso este chequeo queda mockeable con
+// el mismo fake client que el resto de esta suite de tests (a diferencia de
+// `adminPanelController.ts`, que sí necesita service-role para las escrituras de `role`/
+// `agency_owner_id`, columnas con `REVOKE UPDATE ... FROM authenticated`).
 router.delete('/api/catalog/properties/:id', tenantAuthMiddleware, async (req, res) => {
   const tenantId = (req as any).tenantId;
+  const actorId = (req as any).actorId;
   const { id } = req.params;
   const supabase = (req as any).supabaseClient;
 
   try {
+    const ownerCheck = await requireOwner(actorId, supabase, 'Solo el dueño de la agencia puede eliminar propiedades.');
+    if (!ownerCheck.ok) {
+      return res.status(ownerCheck.status).json({ error: ownerCheck.error });
+    }
+
     const { data, error } = await supabase
       .from('properties')
       .delete()
@@ -400,7 +421,7 @@ router.delete('/api/catalog/properties/:id', tenantAuthMiddleware, async (req, r
 
     res.json({ success: true });
   } catch (error: any) {
-    logger.error({ error: error.message || error, tenantId, propertyId: id }, '[PROPERTIES] Error al eliminar propiedad');
+    logger.error({ error: error.message || error, tenantId, actorId, propertyId: id }, '[PROPERTIES] Error al eliminar propiedad');
     res.status(500).json({ error: 'Error interno al eliminar la propiedad.' });
   }
 });

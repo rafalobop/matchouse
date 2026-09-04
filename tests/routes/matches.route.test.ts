@@ -88,6 +88,92 @@ test('KAN-76 - POST /api/matches/:id/feedback con status inválido responde 400 
   assert.strictEqual(body.error, 'El estado debe ser ACCEPTED o REJECTED');
 });
 
+// --- KAN-291: paginación real (limit/offset + total) en vez de .limit(50) fijo sin techo ---
+
+test('KAN-291 - GET /api/matches sin query params usa el default (limit 50, offset 0) y expone total/limit/offset', async (t) => {
+  const fakeClient = createFakeSupabaseClient(() => chainableResult({
+    data: [{
+      id: 'match-1', created_at: new Date().toISOString(), raw_search_text: 'depto 2 amb',
+      property_snapshot: { address: 'Calle Falsa 123' }, score: 80, reasons: [],
+      user_review_status: 'PENDING', feedback_reason: null
+    }],
+    error: null,
+    count: 137
+  }));
+  const { cookie } = createFakeTenantSession(fakeClient);
+
+  const res = await fetch(`${server.baseUrl}/api/matches`, { headers: { Cookie: cookie } });
+  assert.strictEqual(res.status, 200);
+  const body = await res.json();
+  assert.strictEqual(body.matches.length, 1);
+  assert.strictEqual(body.total, 137, 'Debe exponer el total real (137), no solo la página actual (1 fila mockeada).');
+  assert.strictEqual(body.limit, 50);
+  assert.strictEqual(body.offset, 0);
+});
+
+test('KAN-291 - GET /api/matches con limit/offset explícitos los devuelve tal cual en la respuesta', async (t) => {
+  const fakeClient = createFakeSupabaseClient(() => chainableResult({ data: [], error: null, count: 0 }));
+  const { cookie } = createFakeTenantSession(fakeClient);
+
+  const res = await fetch(`${server.baseUrl}/api/matches?limit=10&offset=20`, { headers: { Cookie: cookie } });
+  assert.strictEqual(res.status, 200);
+  const body = await res.json();
+  assert.strictEqual(body.limit, 10);
+  assert.strictEqual(body.offset, 20);
+});
+
+test('KAN-291 - GET /api/matches con limit fuera de rango (0, negativo, o > 200) responde 400', async (t) => {
+  const fakeClient = createFakeSupabaseClient(() => chainableResult({ data: [], error: null, count: 0 }));
+  const { cookie } = createFakeTenantSession(fakeClient);
+
+  for (const limit of ['0', '-5', '201', 'no-es-un-numero']) {
+    const res = await fetch(`${server.baseUrl}/api/matches?limit=${limit}`, { headers: { Cookie: cookie } });
+    assert.strictEqual(res.status, 400, `limit=${limit} debe rechazarse.`);
+    const body = await res.json();
+    assert.match(body.error, /"limit"/);
+  }
+});
+
+test('KAN-291 - GET /api/matches con offset negativo o no numérico responde 400', async (t) => {
+  const fakeClient = createFakeSupabaseClient(() => chainableResult({ data: [], error: null, count: 0 }));
+  const { cookie } = createFakeTenantSession(fakeClient);
+
+  for (const offset of ['-1', 'no-es-un-numero']) {
+    const res = await fetch(`${server.baseUrl}/api/matches?offset=${offset}`, { headers: { Cookie: cookie } });
+    assert.strictEqual(res.status, 400, `offset=${offset} debe rechazarse.`);
+    const body = await res.json();
+    assert.match(body.error, /"offset"/);
+  }
+});
+
+test('KAN-291 - GET /api/matches/incoming soporta la misma paginación (limit/offset/total)', async (t) => {
+  const fakeClient = createFakeSupabaseClient(() => chainableResult({
+    data: [{
+      id: 'match-2', created_at: new Date().toISOString(), raw_search_text: 'busco depto en venta',
+      property_snapshot: { address: 'Calle Falsa 123' }, searcher_snapshot: { full_name: 'Juan Pérez' },
+      score: 75, reasons: []
+    }],
+    error: null,
+    count: 64
+  }));
+  const { cookie } = createFakeTenantSession(fakeClient);
+
+  const res = await fetch(`${server.baseUrl}/api/matches/incoming?limit=25&offset=25`, { headers: { Cookie: cookie } });
+  assert.strictEqual(res.status, 200);
+  const body = await res.json();
+  assert.strictEqual(body.total, 64);
+  assert.strictEqual(body.limit, 25);
+  assert.strictEqual(body.offset, 25);
+});
+
+test('KAN-291 - GET /api/matches/incoming con limit inválido responde 400', async (t) => {
+  const fakeClient = createFakeSupabaseClient(() => chainableResult({ data: [], error: null, count: 0 }));
+  const { cookie } = createFakeTenantSession(fakeClient);
+
+  const res = await fetch(`${server.baseUrl}/api/matches/incoming?limit=500`, { headers: { Cookie: cookie } });
+  assert.strictEqual(res.status, 400);
+});
+
 test('routes/matchesRoutes - teardown', async () => {
   await server.close();
 });
