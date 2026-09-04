@@ -6,7 +6,8 @@ function baseInput(overrides: Partial<ProfileInput> = {}): ProfileInput {
   return {
     first_name: 'Juan',
     last_name: 'Pérez',
-    phone_number: '+54 381 555-1234',
+    phone_country_code: '+54',
+    phone_local_number: '38155512',
     agency_name: 'Inmobiliaria del Centro',
     city: 'San Miguel de Tucuman',
     license_number: '350',
@@ -18,16 +19,29 @@ test('profileValidation - acepta un perfil completo valido', () => {
   assert.strictEqual(validateProfileInput(baseInput()), null);
 });
 
-test('profileValidation - rechaza phone_number faltante', () => {
-  assert.notStrictEqual(validateProfileInput(baseInput({ phone_number: '' })), null);
+test('profileValidation - rechaza phone_country_code faltante', () => {
+  assert.notStrictEqual(validateProfileInput(baseInput({ phone_country_code: '' })), null);
 });
 
-test('profileValidation - rechaza phone_number con letras', () => {
-  assert.notStrictEqual(validateProfileInput(baseInput({ phone_number: '381-ABCD' })), null);
+test('profileValidation - rechaza phone_country_code sin el formato "+dígitos"', () => {
+  assert.notStrictEqual(validateProfileInput(baseInput({ phone_country_code: '54' })), null);
+  assert.notStrictEqual(validateProfileInput(baseInput({ phone_country_code: '+54A' })), null);
 });
 
-test('profileValidation - rechaza phone_number demasiado largo', () => {
-  assert.notStrictEqual(validateProfileInput(baseInput({ phone_number: '1'.repeat(21) })), null);
+test('profileValidation - rechaza phone_local_number faltante', () => {
+  assert.notStrictEqual(validateProfileInput(baseInput({ phone_local_number: '' })), null);
+});
+
+test('profileValidation - rechaza phone_local_number con letras', () => {
+  assert.notStrictEqual(validateProfileInput(baseInput({ phone_local_number: '381ABCD' })), null);
+});
+
+test('profileValidation - rechaza phone_local_number con menos de 8 dígitos', () => {
+  assert.notStrictEqual(validateProfileInput(baseInput({ phone_local_number: '3815551' })), null);
+});
+
+test('profileValidation - rechaza phone_local_number con más de 8 dígitos', () => {
+  assert.notStrictEqual(validateProfileInput(baseInput({ phone_local_number: '123456789' })), null);
 });
 
 test('profileValidation - rechaza agency_name faltante', () => {
@@ -123,4 +137,18 @@ test('profileValidation - con requireLicenseNumber=false, igual valida el format
     validateProfileInput(baseInput({ license_number: '350' }), { requireLicenseNumber: false }),
     null
   );
+});
+
+// --- Punto 2 del pase de UI (2026-09-04): requireAgencyName=false, colaborador hereda la
+// inmobiliaria del dueño en vez de mandarla en el body ---
+
+test('profileValidation - con requireAgencyName=false, acepta agency_name faltante (colaborador hereda la del dueño)', () => {
+  assert.strictEqual(
+    validateProfileInput(baseInput({ agency_name: undefined }), { requireAgencyName: false }),
+    null
+  );
+});
+
+test('profileValidation - agency_name sigue siendo obligatorio por default (dueño)', () => {
+  assert.notStrictEqual(validateProfileInput(baseInput({ agency_name: undefined })), null);
 });

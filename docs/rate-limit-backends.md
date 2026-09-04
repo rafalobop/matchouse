@@ -18,7 +18,7 @@ cuanto se agrega una segunda instancia para manejar más tráfico.
 |---|---|---|
 | Infraestructura nueva | Ninguna — reusa el mismo proyecto Supabase que ya sostiene todo lo demás | Servicio nuevo a provisionar, monitorear y (eventualmente) pagar; nueva credencial en `.env` |
 | Latencia por check | ~20-80ms (red hacia Supabase, mismo costo que cualquier query existente de la app) | ~1-5ms — diseñado específicamente para contadores efímeros de alta frecuencia |
-| Throughput | Sobra para la escala actual (10 tenants tope, límites de 5-10 req/min por tenant) — decenas de checks por minuto en el peor caso realista | Pensado para decenas de miles de ops/seg; no es un techo relevante ni a mucha más escala |
+| Throughput | Sobra para la escala actual (base de tenants chica, límites de 5-10 req/min por tenant) — decenas de checks por minuto en el peor caso realista | Pensado para decenas de miles de ops/seg; no es un techo relevante ni a mucha más escala |
 | Atomicidad | `UPSERT ... ON CONFLICT` (ver función `rate_limit_check`, migración `create_rate_limit_counters_table`) — Postgres serializa la fila entre transacciones concurrentes. Correcto, pero cada check es una transacción de escritura real | `INCR` + `EXPIRE` atómicos nativos — pensado exactamente para este caso de uso |
 | Punto de falla adicional | Ninguno — si Postgres cae, la mayoría de las operaciones que el rate limiter protege (search, upload, auth) ya dependen de Postgres y fallarían igual | Uno más: un servicio extra que puede caerse independientemente del resto de la app |
 | Costo | $0 adicional (ya pago por Supabase) | Free tier de Upstash cubre volúmenes bajos, pero es un límite/cuenta más para administrar |
@@ -31,10 +31,12 @@ cuanto se agrega una segunda instancia para manejar más tráfico.
    en `.agent/CONTEXT.md` y en `src/config/env.ts` — no hay ninguna variable `REDIS_*`/`UPSTASH_*`).
    Agregar un servicio nuevo solo para esto, con la escala actual, es sumar superficie operativa sin
    necesidad real.
-2. **La escala actual no necesita la latencia de Redis.** Con 10 tenants tope y límites de 5-10
-   req/min, el volumen total de checks es de decenas por minuto en el peor caso. La diferencia entre
-   ~50ms y ~3ms por check es imperceptible a ese volumen — el rate limiter no es un cuello de botella
-   ni con Postgres.
+2. **La escala actual no necesita la latencia de Redis.** Con la base de tenants actual (sin
+   registro limitado, ver `.agent/CONTEXT.md#2` — no hay un tope duro de tenants como este documento
+   asumía antes) y límites de 5-10 req/min por tenant, el volumen total de checks sigue siendo bajo.
+   La diferencia entre ~50ms y ~3ms por check es imperceptible a ese volumen — el rate limiter no es
+   un cuello de botella ni con Postgres, mientras el número de tenants no crezca varios órdenes de
+   magnitud (ver sección de abajo).
 3. **Un solo backend para todo.** El mismo cliente `supabase` (service-role) que ya usa el resto de
    la app para todo lo demás sirve para esto — no hay que aprender/mantener un cliente de Redis
    aparte, ni manejar sus propios reintentos/timeouts/fallos de conexión como un caso separado.
@@ -44,7 +46,8 @@ cuanto se agrega una segunda instancia para manejar más tráfico.
 
 ## Cuándo reconsiderar Redis/Upstash
 
-- Si el volumen de tráfico crece varios órdenes de magnitud (ya no 10 tenants, sino cientos/miles) y
+- Si el volumen de tráfico crece varios órdenes de magnitud (cientos/miles de tenants, sin el tope
+  que este documento asumía antes) y
   el rate limiter empieza a competir de forma medible con el resto de las queries de la app por
   conexiones/capacidad de Postgres.
 - Si aparece una necesidad de rate limiting sub-milisegundo real (ej. frente a un ataque de scraping
@@ -53,6 +56,21 @@ cuanto se agrega una segunda instancia para manejar más tráfico.
 - Si el proyecto ya termina agregando Redis por otro motivo (ej. cache de sesión, colas) — en ese
   caso, reusar esa misma infraestructura para rate limiting sería la elección obvia, por el mismo
   criterio de "no dupliques infraestructura" que hoy favorece a Postgres.
+
+## Estado actual de la migración (revisado 2026-09-04)
+
+`createDistributedRateLimiter` solo está en uso hoy en `adminRoutes.ts` (`admin-auth`,
+`admin-metrics`, `admin-api`). El resto de los limiters de la app —
+`authIpRateLimiter`/`authEmailRateLimiter` (`routes/authRoutes.ts`), `searchRateLimiter`
+(`routes/searchRoutes.ts`), `uploadRateLimiter` (`routes/uploadRoutes.ts`) y
+`dashboardMetricsRateLimiter` (`routes/systemRoutes.ts`) — siguen en `createRateLimiter` (en
+memoria). Mientras la app corra como una única instancia Node esto es correcto, pero si en algún
+momento se agrega un segundo proceso/instancia detrás de un balanceador de carga (necesario para
+escalar horizontalmente a medida que crece la cantidad de tenants, ver nota sobre el registro sin
+límite en `.agent/CONTEXT.md#2`), estos cuatro límites dejan de ser efectivos tal como se explica
+arriba. Migrarlos a `createDistributedRateLimiter` es mecánico (mismo patrón que ya usa
+`adminRoutes.ts`) pero no se hizo todavía — evaluarlo si/cuando se planee correr más de una
+instancia.
 
 ## Verificación de carga realizada
 

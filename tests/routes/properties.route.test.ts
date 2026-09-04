@@ -79,10 +79,11 @@ test('KAN-76 (QA follow-up) - PATCH /api/catalog/properties/:id con cookie váli
   assert.strictEqual(body.error, 'El campo "expectedUpdatedAt" es requerido para editar una propiedad.');
 });
 
-test('KAN-76 (QA follow-up) - DELETE /api/catalog/properties/:id con cookie válida elimina la propiedad (integración con auth real, DB fake)', async () => {
+test('KAN-76 (QA follow-up) - DELETE /api/catalog/properties/:id con cookie válida de un dueño elimina la propiedad (integración con auth real, DB fake)', async () => {
   const fakeClient = createFakeSupabaseClient((table: string) => {
-    if (table !== 'properties') throw new Error(`tabla inesperada: ${table}`);
-    return chainableResult({ data: [{ id: 'property-1' }], error: null });
+    if (table === 'profiles') return chainableResult({ data: { role: 'owner' }, error: null });
+    if (table === 'properties') return chainableResult({ data: [{ id: 'property-1' }], error: null });
+    throw new Error(`tabla inesperada: ${table}`);
   });
   const { cookie } = createFakeTenantSession(fakeClient);
 
@@ -90,6 +91,21 @@ test('KAN-76 (QA follow-up) - DELETE /api/catalog/properties/:id con cookie vál
   assert.strictEqual(res.status, 200);
   const body = await res.json();
   assert.deepStrictEqual(body, { success: true });
+});
+
+// KAN-306 (continuación, 2026-09-04): un colaborador (role='collaborator') nunca puede eliminar
+// propiedades, aunque su `tenantId` resuelva al scope de agencia del dueño — solo el dueño real.
+test('KAN-306 - DELETE /api/catalog/properties/:id con cookie de un colaborador responde 403 sin llegar a intentar el delete', async () => {
+  const fakeClient = createFakeSupabaseClient((table: string) => {
+    if (table === 'profiles') return chainableResult({ data: { role: 'collaborator' }, error: null });
+    throw new Error(`tabla inesperada para un colaborador: ${table}`);
+  });
+  const { cookie } = createFakeTenantSession(fakeClient, 'owner-1', 'collaborator-1');
+
+  const res = await fetch(`${server.baseUrl}/api/catalog/properties/property-1`, { method: 'DELETE', headers: { Cookie: cookie } });
+  assert.strictEqual(res.status, 403);
+  const body = await res.json();
+  assert.strictEqual(body.error, 'Solo el dueño de la agencia puede eliminar propiedades.');
 });
 
 test('routes/properties - teardown', async () => {

@@ -16,9 +16,16 @@ import { __setTenantClientForTests } from '../../src/services/supabase';
 // esas ramas con este helper terminaría pegándole a Supabase de verdad. No se cubre acá a
 // propósito (ver tests/routes/search.route.test.ts): habilitarlo requeriría agregar un
 // `__setServiceRoleClientForTests` análogo, cambio de mayor alcance que se dejó fuera de este pase.
-export function createFakeTenantSession(tenantSupabaseClient: any, tenantId: string = crypto.randomUUID()) {
+// KAN-306 (continuación, 2026-09-04): `actorId` opcional — por defecto igual a `tenantId` (caso
+// dueño, el comportamiento de siempre). Los tests de colaboradores lo pasan explícito y distinto
+// del `tenantId` (que en ese caso simula el scope ya resuelto al dueño de la agencia).
+export function createFakeTenantSession(
+  tenantSupabaseClient: any,
+  tenantId: string = crypto.randomUUID(),
+  actorId: string = tenantId
+) {
   const token = crypto.randomUUID();
-  __setCachedSessionForTests(token, tenantId);
+  __setCachedSessionForTests(token, tenantId, actorId);
   __setTenantClientForTests(token, tenantSupabaseClient);
-  return { token, tenantId, cookie: `brokaza_session=${token}` };
+  return { token, tenantId, actorId, cookie: `brokaza_session=${token}` };
 }

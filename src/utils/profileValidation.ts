@@ -8,16 +8,20 @@
 export interface ProfileInput {
   first_name?: unknown;
   last_name?: unknown;
-  phone_number?: unknown;
+  phone_country_code?: unknown;
+  phone_local_number?: unknown;
   agency_name?: unknown;
   city?: unknown;
   license_number?: unknown;
 }
 
-const MAX_PHONE_LENGTH = 20;
 const MAX_TEXT_FIELD_LENGTH = 150;
-// Digitos, espacios y los simbolos comunes de un telefono de contacto (+, -, parentesis).
-const PHONE_ALLOWED_CHARS_REGEX = /^[\d+\-() ]+$/;
+// Codigo de pais tipo "+54"/"+1" (selector del formulario, no texto libre).
+const PHONE_COUNTRY_CODE_REGEX = /^\+\d{1,4}$/;
+// Numero local: siempre 8 digitos exactos (regla de negocio explicita, independiente del pais
+// elegido en el selector).
+const PHONE_LOCAL_NUMBER_LENGTH = 8;
+const PHONE_LOCAL_NUMBER_REGEX = /^\d{8}$/;
 
 // KAN-90: reglas de formato para nombre/apellido (documentadas también en README.md). Mínimo 2
 // caracteres (evita iniciales sueltas tipo "J"), máximo 100 (más chico que MAX_TEXT_FIELD_LENGTH
@@ -77,24 +81,41 @@ function validateLicenseNumber(value: unknown, required: boolean): string | null
   return null;
 }
 
+// KAN-306 (continuación): un colaborador no elige su propia inmobiliaria (hereda la del dueño de
+// su agencia, ver adminPanelController.ts#inviteCollaborator/profileController.ts#updateProfile)
+// — el campo directamente no llega en el body para ese rol, mismo criterio que license_number.
+function validateAgencyName(value: unknown, required: boolean): string | null {
+  if (!required && (value === undefined || value === null)) {
+    return null;
+  }
+  return validateRequiredText(value, 'agency_name', MAX_TEXT_FIELD_LENGTH);
+}
+
 export function validateProfileInput(
   input: ProfileInput,
-  options: { requireLicenseNumber?: boolean } = {}
+  options: { requireLicenseNumber?: boolean; requireAgencyName?: boolean } = {}
 ): string | null {
   const requireLicenseNumber = options.requireLicenseNumber ?? true;
+  const requireAgencyName = options.requireAgencyName ?? true;
   const firstNameError = validateName(input.first_name, 'first_name');
   if (firstNameError) return firstNameError;
 
   const lastNameError = validateName(input.last_name, 'last_name');
   if (lastNameError) return lastNameError;
 
-  const phoneError = validateRequiredText(input.phone_number, 'phone_number', MAX_PHONE_LENGTH);
-  if (phoneError) return phoneError;
-  if (!PHONE_ALLOWED_CHARS_REGEX.test((input.phone_number as string).trim())) {
-    return 'El campo phone_number contiene caracteres no permitidos.';
+  const countryCodeError = validateRequiredText(input.phone_country_code, 'phone_country_code', 5);
+  if (countryCodeError) return countryCodeError;
+  if (!PHONE_COUNTRY_CODE_REGEX.test((input.phone_country_code as string).trim())) {
+    return 'El campo phone_country_code debe tener el formato "+" seguido de 1 a 4 dígitos.';
   }
 
-  const agencyError = validateRequiredText(input.agency_name, 'agency_name', MAX_TEXT_FIELD_LENGTH);
+  const localNumberError = validateRequiredText(input.phone_local_number, 'phone_local_number', PHONE_LOCAL_NUMBER_LENGTH);
+  if (localNumberError) return localNumberError;
+  if (!PHONE_LOCAL_NUMBER_REGEX.test((input.phone_local_number as string).trim())) {
+    return `El campo phone_local_number debe tener exactamente ${PHONE_LOCAL_NUMBER_LENGTH} dígitos.`;
+  }
+
+  const agencyError = validateAgencyName(input.agency_name, requireAgencyName);
   if (agencyError) return agencyError;
 
   const cityError = validateRequiredText(input.city, 'city', MAX_TEXT_FIELD_LENGTH);

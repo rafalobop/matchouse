@@ -22,7 +22,11 @@ export async function getTucumanLocalitiesHandler(req: express.Request, res: exp
 }
 
 export async function getProfile(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
+  // KAN-306 (continuación, 2026-09-04): siempre `req.actorId` (el auth.uid() real), nunca
+  // `req.tenantId` — este controller opera sobre "mi propio perfil". `tenantId` ahora puede
+  // resolver al id del DUEÑO de la agencia (ver tenantAuthMiddleware); usarlo acá haría que un
+  // colaborador intentara leer/editar el perfil de su dueño en vez del propio.
+  const tenantId = (req as any).actorId;
   const tenantSupabase = (req as any).supabaseClient;
 
   try {
@@ -42,7 +46,8 @@ export async function getProfile(req: express.Request, res: express.Response) {
 }
 
 export async function updateProfile(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
+  // KAN-306 (continuación, 2026-09-04): `req.actorId`, mismo motivo que en getProfile de arriba.
+  const tenantId = (req as any).actorId;
   // KAN-90: first_name/last_name no tienen columnas propias en `profiles` (solo existe
   // `full_name`, un campo combinado desde SPEC-0012) — se piden separados en el formulario para
   // que queden marcados como dos campos obligatorios distintos (AC1), y acá se combinan en
@@ -51,11 +56,11 @@ export async function updateProfile(req: express.Request, res: express.Response)
   // habilitado hasta tener un producto local sólido (decisión documentada en .agent/CONTEXT.md),
   // así que se hardcodea acá en vez de confiar en lo que mande el body (defensa en profundidad,
   // ni un payload manipulado puede setear otro país).
-  const { first_name, last_name, phone_number, agency_name, city, license_number } = req.body;
+  const { first_name, last_name, phone_country_code, phone_local_number, agency_name, city, license_number } = req.body;
 
   // KAN-134: whitelist de campos del body — rechaza cualquier key inesperada antes de validar
   // el contenido de las esperadas.
-  const bodyWhitelistError = validateBodyWhitelist(req.body, ['first_name', 'last_name', 'phone_number', 'agency_name', 'city', 'license_number']);
+  const bodyWhitelistError = validateBodyWhitelist(req.body, ['first_name', 'last_name', 'phone_country_code', 'phone_local_number', 'agency_name', 'city', 'license_number']);
   if (bodyWhitelistError) {
     return res.status(400).json({ error: bodyWhitelistError });
   }
@@ -67,29 +72,48 @@ export async function updateProfile(req: express.Request, res: express.Response)
   try {
     const { data: currentProfile, error: roleFetchError } = await supabase
       .from('profiles')
-      .select('role')
+      .select('role, agency_owner_id')
       .eq('id', tenantId)
       .single();
     if (roleFetchError) throw roleFetchError;
 
     const isCollaborator = currentProfile.role === 'collaborator';
+    // Telefono combinado (codigo de pais + numero local) para la unica columna `phone_number`
+    // de la base — no requiere migracion, el formato ya validado alcanza como texto.
+    const phoneNumber = `${(phone_country_code as string ?? '').trim()}${(phone_local_number as string ?? '').trim()}`;
 
     const validationError = validateProfileInput(
-      { first_name, last_name, phone_number, agency_name, city, license_number },
-      { requireLicenseNumber: !isCollaborator }
+      { first_name, last_name, phone_country_code, phone_local_number, agency_name, city, license_number },
+      { requireLicenseNumber: !isCollaborator, requireAgencyName: !isCollaborator }
     );
     if (validationError) {
       return res.status(400).json({ error: validationError });
     }
 
     if (isCollaborator) {
+      // El colaborador no elige su inmobiliaria (el campo no llega en el body, ver whitelist) —
+      // se hereda del dueño de la agencia al momento de guardar, nunca de lo que mande el
+      // cliente (defensa en profundidad, mismo criterio que `country: 'Argentina'` más abajo).
+      // `agency_owner_id` es NOT NULL en la práctica para `role='collaborator'` (siempre se
+      // setea al invitar, ver adminPanelController.ts#inviteCollaborator) — el chequeo acá es
+      // solo para satisfacer el tipo (`string | null` a nivel de columna), no un caso de negocio
+      // esperado.
+      const { data: ownerProfile, error: ownerFetchError } = currentProfile.agency_owner_id
+        ? await supabase
+            .from('profiles')
+            .select('agency_name')
+            .eq('id', currentProfile.agency_owner_id)
+            .maybeSingle()
+        : { data: null, error: null };
+      if (ownerFetchError) throw ownerFetchError;
+
       const fullName = `${(first_name as string).trim()} ${(last_name as string).trim()}`.trim();
       const { data: profile, error } = await supabase
         .from('profiles')
         .update({
           full_name: fullName,
-          phone_number: (phone_number as string).trim(),
-          agency_name: (agency_name as string).trim(),
+          phone_number: phoneNumber,
+          agency_name: ownerProfile?.agency_name ?? null,
           city: (city as string).trim(),
           country: 'Argentina',
           // license_number/license_validation_status: no se tocan — un colaborador no pasa por
@@ -133,7 +157,7 @@ export async function updateProfile(req: express.Request, res: express.Response)
       .from('profiles')
       .update({
         full_name: fullName,
-        phone_number: (phone_number as string).trim(),
+        phone_number: phoneNumber,
         agency_name: (agency_name as string).trim(),
         city: (city as string).trim(),
         country: 'Argentina',

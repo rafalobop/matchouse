@@ -14,3 +14,4 @@ export const adminPanelRoutes = Router();
 adminPanelRoutes.get('/api/admin-panel/collaborators', tenantAuthMiddleware, adminPanelController.listCollaborators);
 adminPanelRoutes.post('/api/admin-panel/collaborators', tenantAuthMiddleware, adminPanelController.inviteCollaborator);
 adminPanelRoutes.delete('/api/admin-panel/collaborators/:id', tenantAuthMiddleware, adminPanelController.revokeCollaborator);
+adminPanelRoutes.post('/api/admin-panel/collaborators/:id/reactivate', tenantAuthMiddleware, adminPanelController.reactivateCollaborator);

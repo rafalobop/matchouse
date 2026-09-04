@@ -66,6 +66,22 @@ test('KAN-306 - DELETE /api/admin-panel/collaborators/:id con cookie válida per
   assert.strictEqual(body.error, 'El ID del colaborador está mal formado.');
 });
 
+// Punto 6 del pase de UI (2026-09-04): reactivar un colaborador revocado — mismo límite de
+// cobertura que el resto de este archivo (service-role singleton sin seam), solo el gate de
+// sesión y las validaciones que cortan antes de tocar Supabase.
+test('KAN-306 - POST /api/admin-panel/collaborators/:id/reactivate sin cookie responde 401', async () => {
+  const res = await fetch(`${server.baseUrl}/api/admin-panel/collaborators/some-id/reactivate`, { method: 'POST' });
+  assert.strictEqual(res.status, 401);
+});
+
+test('KAN-306 - POST /api/admin-panel/collaborators/:id/reactivate con cookie válida pero id mal formado responde 400 (corta antes de tocar Supabase)', async () => {
+  const { cookie } = createFakeTenantSession(createFakeSupabaseClient(() => chainableResult({ data: null, error: null })));
+  const res = await fetch(`${server.baseUrl}/api/admin-panel/collaborators/no-es-un-uuid/reactivate`, { method: 'POST', headers: { Cookie: cookie } });
+  assert.strictEqual(res.status, 400);
+  const body = await res.json();
+  assert.strictEqual(body.error, 'El ID del colaborador está mal formado.');
+});
+
 test('routes/adminPanelRoutes - teardown', async () => {
   await server.close();
 });

@@ -63,6 +63,7 @@ import './searchValidation.test';
 import './sentryDataCollection.test';
 import './sentryForwarding.test';
 import './supabase.test';
+import './tenantAuth.test';
 import './truncatedProfileDetector.test';
 import './uploadController.test';
 import './webPush.test';
