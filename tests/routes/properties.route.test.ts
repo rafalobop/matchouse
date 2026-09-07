@@ -108,6 +108,45 @@ test('KAN-306 - DELETE /api/catalog/properties/:id con cookie de un colaborador 
   assert.strictEqual(body.error, 'Solo el dueño de la agencia puede eliminar propiedades.');
 });
 
+// KAN-314: PATCH usa `.eq('id', id).eq('tenant_id', tenantId).eq('updated_at', expectedUpdatedAt)`.
+// Si el id es de otro tenant, ese `.eq('tenant_id', ...)` filtra la fila igual que si no existiera
+// — la segunda lectura (sin el filtro de updated_at, para distinguir 404 de 409) también respeta
+// `tenant_id`, así que debe dar 404 limpio, sin filtrar ni el estado actual de la propiedad ajena.
+test('KAN-314 - PATCH /api/catalog/properties/:id con id de una propiedad que no es del tenant responde 404 (no filtra datos ni cae en 409)', async () => {
+  const fakeClient = createFakeSupabaseClient((table: string) => {
+    if (table !== 'properties') throw new Error(`tabla inesperada: ${table}`);
+    // El update filtrado por tenant_id devuelve 0 filas; el fallback (.maybeSingle(), sin el
+    // filtro de updated_at) también respeta tenant_id y no encuentra la fila ajena -> null.
+    return chainableResult({ data: null, error: null });
+  });
+  const { cookie } = createFakeTenantSession(fakeClient);
+
+  const res = await fetch(`${server.baseUrl}/api/catalog/properties/otro-tenant-property-id`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ price: 100, expectedUpdatedAt: new Date().toISOString() })
+  });
+  assert.strictEqual(res.status, 404);
+  const body = await res.json();
+  assert.strictEqual(body.error, 'Propiedad no encontrada.');
+});
+
+// KAN-314: DELETE también filtra por `tenant_id` además del chequeo de dueño — un id de otro
+// tenant no debe borrar nada ni devolver éxito, aunque el actor sea dueño de SU propia agencia.
+test('KAN-314 - DELETE /api/catalog/properties/:id con id de una propiedad que no es del tenant responde 404 (el .eq tenant_id la filtra)', async () => {
+  const fakeClient = createFakeSupabaseClient((table: string) => {
+    if (table === 'profiles') return chainableResult({ data: { role: 'owner' }, error: null });
+    if (table === 'properties') return chainableResult({ data: [], error: null }); // filtrada por tenant_id, 0 filas
+    throw new Error(`tabla inesperada: ${table}`);
+  });
+  const { cookie } = createFakeTenantSession(fakeClient);
+
+  const res = await fetch(`${server.baseUrl}/api/catalog/properties/otro-tenant-property-id`, { method: 'DELETE', headers: { Cookie: cookie } });
+  assert.strictEqual(res.status, 404);
+  const body = await res.json();
+  assert.strictEqual(body.error, 'Propiedad no encontrada.');
+});
+
 test('routes/properties - teardown', async () => {
   await server.close();
 });
