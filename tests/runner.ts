@@ -16,6 +16,7 @@ import './excelHeaderMatcher.test';
 import './excelMapping.test';
 import './excelParsePool.test';
 import './excelParseWorker.test';
+import './excelValidation.test';
 import './geocoding.test';
 import './graph-em.test';
 import './graph-integration.test';

@@ -1,5 +1,6 @@
 import * as express from 'express';
 import { processExcelBufferWithColumnMap, peekExcelHeaders, syncPropertiesToDatabase, Property, PriceParseError, SkippedSheet, PropertyGeocodeFailure } from '../services/excel';
+import { validateExcelFile } from '../services/excelValidation';
 import { resolveColumnMapping, confirmColumnMapping, toColumnMapRecord, ExcelMappingServiceError } from '../services/excelMapping';
 import { ExcelMappingField, EXCEL_MAPPING_FIELDS, REQUIRED_EXCEL_MAPPING_FIELDS, EXCEL_MAPPING_FIELDS_VERSION } from '../utils/excelHeaderMatcher';
 import { logger } from '../services/logger';
@@ -66,6 +67,12 @@ export async function uploadCatalog(req: express.Request, res: express.Response)
   const tenantSupabase = (req as any).supabaseClient;
   if (!req.file) {
     return res.status(400).json({ error: 'No se subió ningún archivo' });
+  }
+
+  // KAN-308: valida tamaño/filas ANTES de parsear el archivo completo (mitigación de zip bomb).
+  const validation = validateExcelFile({ buffer: req.file.buffer, fileSizeBytes: req.file.size }, tenantId);
+  if (!validation.valid) {
+    return res.status(400).json({ error: validation.reason });
   }
 
   try {
@@ -160,6 +167,12 @@ export async function confirmMapping(req: express.Request, res: express.Response
   const tenantSupabase = (req as any).supabaseClient;
   if (!req.file) {
     return res.status(400).json({ error: 'No se subió ningún archivo' });
+  }
+
+  // KAN-308: valida tamaño/filas ANTES de parsear el archivo completo (mitigación de zip bomb).
+  const validation = validateExcelFile({ buffer: req.file.buffer, fileSizeBytes: req.file.size }, tenantId);
+  if (!validation.valid) {
+    return res.status(400).json({ error: validation.reason });
   }
 
   let mappingsBySheet: Record<string, Partial<Record<ExcelMappingField, string | null>>>;

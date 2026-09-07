@@ -38,6 +38,7 @@ export interface Config {
   metricsRateLimitWindowMs: number;
   excelParsePoolSize: number;
   excelParseTimeoutMs: number;
+  excelMaxRows: number;
   licensePadronUrl: string;
   licenseValidationRetryIntervalMinutes: number;
   licenseDataStaleHours: number;
@@ -141,6 +142,11 @@ export function validateConfig(): Config {
   // un bug de xlsx) que deje un worker colgado indefinidamente, sacando ese slot del pool para
   // siempre. 30s es generoso para un Excel de hasta uploadMaxFileSizeBytes (10MB default).
   const excelParseTimeoutMs = parseInt(cleanEnvVar(process.env.EXCEL_PARSE_TIMEOUT_MS) || '30000', 10);
+  // KAN-308: límite de filas por hoja de un Excel subido — mitigación de "zip bomb" (un .xlsx
+  // pequeño que decomprime a una cantidad desproporcionada de filas). No evita la decompresión
+  // inicial que ya hace `xlsx.read()` (inherente a la librería), pero corta ANTES del paso más caro
+  // (`sheet_to_json`, que materializa cada celda en un array de JS) — ver excelValidation.ts.
+  const excelMaxRows = parseInt(cleanEnvVar(process.env.EXCEL_MAX_ROWS) || '5000', 10);
   // KAN-306: URL pública del padrón de matriculados del Colegio de Corredores Inmobiliarios de
   // Tucumán (CCIT) — tabla HTML estática sin API, sincronizada periódicamente a `licensed_agents`
   // (ver src/services/licenseRegistry.ts). Configurable por si cambia de dominio/ruta.
@@ -251,6 +257,7 @@ export function validateConfig(): Config {
     metricsRateLimitWindowMs,
     excelParsePoolSize,
     excelParseTimeoutMs,
+    excelMaxRows,
     licensePadronUrl,
     licenseValidationRetryIntervalMinutes,
     licenseDataStaleHours,

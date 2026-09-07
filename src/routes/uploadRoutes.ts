@@ -38,6 +38,10 @@ function handleUpload(req: express.Request, res: express.Response, next: express
     if (err) {
       if (err.code === 'LIMIT_FILE_SIZE') {
         const maxMb = Math.floor(config.uploadMaxFileSizeBytes / (1024 * 1024));
+        logger.warn(
+          { tenantId: (req as any).tenantId },
+          '[UPLOAD] Archivo rechazado: supera el tamaño máximo permitido.'
+        );
         return res.status(413).json({ error: `El archivo supera el tamaño máximo permitido (${maxMb}MB).` });
       }
       logger.error({ error: err.message, tenantId: (req as any).tenantId }, '[UPLOAD] Error de multer al procesar el archivo subido');
