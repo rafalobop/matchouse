@@ -136,6 +136,15 @@ CREATE POLICY "blind_matches_matched_tenant_read" ON public.blind_matches
 --   taxonomía/datos, no el reemplazo del motor de matching en vivo).
 --   - spatial_ref_sys: deliberadamente NO se tocó (catálogo del sistema PostGIS,
 --     no datos de la app; algunas funciones de PostGIS lo consultan internamente).
+--     Re-evaluado en KAN-309 (2026-09-07, item de la auditoría de seguridad que pedía
+--     habilitar RLS acá): se decidió NO aplicarlo. Contenido de la tabla (~8500 filas de
+--     definiciones públicas de SRID/EPSG, ej. "4326 = WGS84") es información pública de
+--     estándares geodésicos, sin ningún dato de tenants/usuarios — el lint de Supabase
+--     Security Advisor marca cualquier tabla de `public` sin RLS por default, sin
+--     distinguir tablas de la app de tablas de sistema que trae una extensión. Fuga de
+--     información real si se deja como está: ninguna. Riesgo real de tocarla: sí (rompe
+--     potencialmente funciones internas de PostGIS como ST_Transform que la consultan).
+--     Decisión: costo/riesgo de aplicar > beneficio de seguridad real, se descarta.
 --
 -- IMPORTANTE — hallazgo real detectado al auditar esto: `tenantAuthMiddleware`
 -- (src/index.ts) usa el cliente SERVICE-ROLE para todo (nunca `getTenantClient()`,

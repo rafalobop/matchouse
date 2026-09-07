@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import { createRateLimiter, createDistributedRateLimiter } from '../src/utils/rateLimit';
+import { createRateLimiter, createDistributedRateLimiter, DistributedRateLimiter } from '../src/utils/rateLimit';
 
 // KAN-127: mock mínimo de un cliente Supabase — mismo patrón que tests/zonesService.test.ts.
 // Simula la tabla `rate_limit_counters` en memoria dentro del propio test (no pega a la red),
@@ -99,8 +99,12 @@ function simulateSearchRateLimitedHandler(limiter: ReturnType<typeof createRateL
   return { statusCode: 200, body: { success: true } };
 }
 
-function simulateUploadRateLimitedHandler(limiter: ReturnType<typeof createRateLimiter>, tenantId: string): SimulatedResponse {
-  if (!limiter.check(tenantId)) {
+// KAN-311: uploadRoutes.ts migró su rate limiter de `createRateLimiter` a
+// `createDistributedRateLimiter` — este simulador se actualiza junto para seguir reflejando el
+// bloque real (`checkUploadRateLimit`), ahora async, en vez de quedar probando una implementación
+// que la ruta real ya no usa.
+async function simulateUploadRateLimitedHandler(limiter: DistributedRateLimiter, tenantId: string): Promise<SimulatedResponse> {
+  if (!(await limiter.check(tenantId))) {
     return { statusCode: 429, body: { error: 'Demasiadas subidas de archivo. Esperá un minuto e intentá de nuevo.' } };
   }
   return { statusCode: 200, body: { success: true } };
@@ -118,9 +122,11 @@ test('rateLimit (KAN-71) - POST /api/search responde 429 al superar el límite c
   assert.match((undecima.body as { error: string }).error, /Demasiadas búsquedas/);
 });
 
-test('rateLimit (KAN-71) - POST /api/upload responde 429 al superar el límite configurado (5/min) y 200 por debajo', () => {
-  const limiter = createRateLimiter(5, 60_000);
-  const respuestas = Array.from({ length: 6 }, () => simulateUploadRateLimitedHandler(limiter, 'tenant-upload'));
+test('rateLimit (KAN-311) - POST /api/upload responde 429 al superar el límite configurado (5/min) y 200 por debajo', async () => {
+  const client = makeMockRateLimitClient();
+  const limiter = createDistributedRateLimiter('upload', 5, 60_000, client as any);
+  const respuestas: SimulatedResponse[] = [];
+  for (let i = 0; i < 6; i++) respuestas.push(await simulateUploadRateLimitedHandler(limiter, 'tenant-upload'));
 
   const primeras5 = respuestas.slice(0, 5);
   const sexta = respuestas[5];
@@ -130,15 +136,24 @@ test('rateLimit (KAN-71) - POST /api/upload responde 429 al superar el límite c
   assert.match((sexta.body as { error: string }).error, /Demasiadas subidas/);
 });
 
-test('rateLimit (KAN-71) - el rate limit es por tenant: un tenant bloqueado no afecta a otro tenant en el mismo endpoint', () => {
-  const limiter = createRateLimiter(5, 60_000);
-  for (let i = 0; i < 5; i++) simulateUploadRateLimitedHandler(limiter, 'tenant-abusivo');
+test('rateLimit (KAN-311) - el rate limit de upload es por tenant: un tenant bloqueado no afecta a otro tenant en el mismo endpoint', async () => {
+  const client = makeMockRateLimitClient();
+  const limiter = createDistributedRateLimiter('upload', 5, 60_000, client as any);
+  for (let i = 0; i < 5; i++) await simulateUploadRateLimitedHandler(limiter, 'tenant-abusivo');
 
-  const bloqueado = simulateUploadRateLimitedHandler(limiter, 'tenant-abusivo');
-  const otroTenant = simulateUploadRateLimitedHandler(limiter, 'tenant-legitimo');
+  const bloqueado = await simulateUploadRateLimitedHandler(limiter, 'tenant-abusivo');
+  const otroTenant = await simulateUploadRateLimitedHandler(limiter, 'tenant-legitimo');
 
   assert.strictEqual(bloqueado.statusCode, 429);
   assert.strictEqual(otroTenant.statusCode, 200, 'Un tenant distinto no debe verse afectado por el abuso de otro.');
+});
+
+test('rateLimit (KAN-311) - el rate limit de upload sigue fail-open si Postgres devuelve un error (no bloquea uploads legítimos por una falla de infraestructura)', async () => {
+  const erroringClient = makeErroringMockClient('timeout simulado');
+  const limiter = createDistributedRateLimiter('upload', 1, 60_000, erroringClient as any);
+
+  const respuesta = await simulateUploadRateLimitedHandler(limiter, 'tenant-cualquiera');
+  assert.strictEqual(respuesta.statusCode, 200, 'Con Postgres caído, la subida debe permitirse (fail-open), no bloquearse.');
 });
 
 // --- KAN-127: createDistributedRateLimiter (backend Postgres, cliente mockeado) ---

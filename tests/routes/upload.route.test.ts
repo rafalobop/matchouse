@@ -30,7 +30,17 @@ test('KAN-76 - POST /api/upload/confirm-mapping sin cookie responde 401', async 
   assert.strictEqual(body.error, 'No autenticado.');
 });
 
-test('KAN-76 (QA follow-up) - POST /api/upload con cookie válida pero sin archivo responde 400 (integración con auth real, sin tocar Supabase)', async () => {
+// KAN-311: `checkUploadRateLimit` (uploadRoutes.ts) migró a `createDistributedRateLimiter`, que
+// usa por default el singleton service-role (`services/supabase.ts`, sin seam de inyección para
+// tests — mismo gap ya documentado en tests/helpers/fakeSession.ts para otros controllers). Los
+// dos tests de abajo YA NO evitan del todo pegarle a Supabase: antes de llegar al 400 de "sin
+// archivo", pasan por el RPC real `rate_limit_check` contra el proyecto configurado en `.env`
+// (fail-open si falla, ver rateLimit.ts, así que el 400 sigue siendo determinístico igual). El
+// nombre quedó desactualizado a propósito para dejar visible el motivo del cambio de duración
+// (de unos pocos ms a ~250ms, round-trip de red real) — no se agregó un seam de inyección nuevo,
+// fuera de alcance de este ticket (que era mecánico: migrar el rate limiter, no resolver el gap
+// de testing de client singletons del resto del repo).
+test('KAN-76 (QA follow-up) - POST /api/upload con cookie válida pero sin archivo responde 400 (integración con auth real; el rate limiter distribuido SÍ pega a Supabase real desde KAN-311, ver comentario arriba)', async () => {
   const { cookie } = createFakeTenantSession(createFakeSupabaseClient(() => chainableResult({ data: null, error: null })));
   const res = await fetch(`${server.baseUrl}/api/upload`, {
     method: 'POST',
@@ -42,7 +52,7 @@ test('KAN-76 (QA follow-up) - POST /api/upload con cookie válida pero sin archi
   assert.strictEqual(body.error, 'No se subió ningún archivo');
 });
 
-test('KAN-76 (QA follow-up) - POST /api/upload/confirm-mapping con cookie válida pero sin archivo responde 400 (integración con auth real, sin tocar Supabase)', async () => {
+test('KAN-76 (QA follow-up) - POST /api/upload/confirm-mapping con cookie válida pero sin archivo responde 400 (integración con auth real; el rate limiter distribuido SÍ pega a Supabase real desde KAN-311, ver comentario arriba)', async () => {
   const { cookie } = createFakeTenantSession(createFakeSupabaseClient(() => chainableResult({ data: null, error: null })));
   const res = await fetch(`${server.baseUrl}/api/upload/confirm-mapping`, {
     method: 'POST',
