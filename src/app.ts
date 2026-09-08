@@ -6,7 +6,7 @@ import * as path from 'path';
 import { routes } from './routes';
 import { mountAdminRouter } from './adminRoutes';
 import { globalErrorHandler } from './utils/errorHandler';
-import { buildHealthPayload } from './utils/health';
+import { buildHealthPayload, checkSupabaseConnectivity } from './utils/health';
 import { JSON_BODY_SIZE_LIMIT, jsonBodyParseErrorHandler } from './utils/bodyWhitelist';
 
 // KAN-316: Política de CORS actual — mismo origen, sin CORS por diseño. Esta API no
@@ -80,6 +80,19 @@ export function createApp(): express.Application {
   // compatibilidad con lo que ya devolvía este endpoint.
   app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', ...buildHealthPayload() });
+  });
+
+  // KAN-321: readiness check — a diferencia de /health de arriba, este SÍ depende de un servicio
+  // externo (Supabase) a propósito: le sirve a Railway/un orquestador para decidir si el proceso
+  // puede recibir tráfico real, no solo si el proceso Node está vivo. Sin auth (mismo criterio que
+  // /health — es un healthcheck de infraestructura, no un endpoint de negocio).
+  app.get('/health/ready', async (req, res) => {
+    const { ok, error } = await checkSupabaseConnectivity();
+    if (ok) {
+      res.status(200).json({ status: 'ok', supabase: 'up' });
+    } else {
+      res.status(503).json({ status: 'error', supabase: 'down', error });
+    }
   });
 
   app.use(express.static(path.join(process.cwd(), 'public')));
