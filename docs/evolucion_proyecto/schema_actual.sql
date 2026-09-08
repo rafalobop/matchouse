@@ -135,6 +135,12 @@ CREATE POLICY "blind_matches_matched_tenant_read" ON public.blind_matches
 --   SQL SECURITY DEFINER, solo EXECUTE para service_role): resuelve qué neighborhood contiene
 --   un punto vía ST_Contains, consumida por zonesService.ts#findNeighborhoodByPoint(). Sin
 --   invocadores en src/ todavía más allá de zonesService — no está enganchada a
+--   **Refuerzo (KAN-319, 2026-09-08):** hallazgo de auditoría de que `anon` seguía teniendo (o
+--   podía tener por drift) EXECUTE sobre esta función y sobre `current_agency_owner_id()`/
+--   `rate_limit_check()`, las tres SECURITY DEFINER. Ver
+--   docs/evolucion_proyecto/revoke_anon_execute_security_definer_kan319_2026-09-08.sql — igual que
+--   KAN-318, migración lista pero **no aplicada a la base real** (sin MCP de Supabase disponible
+--   en esta sesión).
 --   resolvePropertyZoneId()/matcher.ts (ver deuda técnica "Matching espacial PostGIS" en
 --   CONTEXT.md sección 5, deliberadamente fuera de alcance de KAN-85, que es solo
 --   taxonomía/datos, no el reemplazo del motor de matching en vivo).
