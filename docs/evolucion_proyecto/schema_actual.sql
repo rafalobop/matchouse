@@ -297,7 +297,7 @@ CREATE POLICY "blind_matches_matched_tenant_read" ON public.blind_matches
 --     real que resuelve `src/middleware/tenantAuth.ts`), nunca vía `req.tenantId` (que desde este
 --     cambio puede resolver al id del dueño de la agencia en vez del propio).
 --
--- Verificado con `src/test-rls-agency.ts` (script manual, mismo patrón que `src/test-rls.ts` de
+-- Verificado con `scripts/test-rls-agency.ts` (script manual, mismo patrón que `scripts/test-rls.ts` de
 -- KAN-63) contra la base real: dueño+colaborador comparten cartera (lectura/alta/edición), el
 -- colaborador no puede eliminar (bloqueado por `properties_owner_delete`), un tercero sin relación
 -- no ve nada de esa agencia, y revocar al colaborador le corta el acceso de inmediato.

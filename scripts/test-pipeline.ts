@@ -1,7 +1,10 @@
-import { isRealEstateRequest } from './utils/filter';
-import { checkMatch } from './utils/matcher';
-import { ExtractedRealEstateRequest, ZoneIntentRequest } from './services/ai';
-import { Property } from './services/excel';
+import { isRealEstateRequest } from '../src/utils/filter';
+import { checkMatch } from '../src/utils/matcher';
+import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../src/services/ai';
+import { Property } from '../src/services/excel';
+import { assertDevOnly } from './utils/devOnlyGuard';
+
+assertDevOnly('test-pipeline.ts');
 
 
 // 1. Base de datos de cartera simulada

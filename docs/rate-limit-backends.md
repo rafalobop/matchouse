@@ -97,7 +97,7 @@ los controllers que lo usan directo) es un cambio de mayor alcance, fuera de est
 
 ## Verificación de carga realizada
 
-Ver `src/test-rate-limit-distributed.ts` (script manual, no parte de `npm test` — corre contra la
+Ver `scripts/test-rate-limit-distributed.ts` (script manual, no parte de `npm test` — corre contra la
 base real de Supabase). Simula 3 instancias del proceso Node completamente independientes (sin
 ningún estado en memoria compartido entre ellas) pegándole a la misma tabla, con:
 

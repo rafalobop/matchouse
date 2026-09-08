@@ -1,8 +1,8 @@
 // KAN-306 (continuación, 2026-09-04): script de verificación manual de la RLS por agencia
 // (current_agency_owner_id(), migración add_agency_shared_tenant_scope_2026-09-04.sql). Mismo
-// patrón que src/test-rls.ts (KAN-63) — no es parte de `npm test`, requiere una conexión real a
-// Supabase y crea/borra usuarios reales de auth.users vía Admin API. Se corre manualmente con
-// `ts-node src/test-rls-agency.ts`.
+// patrón que scripts/test-rls.ts (KAN-63) — no es parte de `npm test`, requiere una conexión real
+// a Supabase y crea/borra usuarios reales de auth.users vía Admin API. Se corre manualmente con
+// `ts-node scripts/test-rls-agency.ts`.
 //
 // Escenario: dueño A, colaborador B (agency_owner_id = A), tercero sin relación C. Verifica que:
 // - B ve/inserta/edita la cartera de A (RLS current_agency_owner_id() resuelve el scope de B a A).
@@ -11,8 +11,9 @@
 // - C (sin relación) no ve nada de la cartera de A (aislamiento entre agencias intacto).
 // - Al revocar a B (agency_owner_id = null), pierde acceso a la cartera de A inmediatamente.
 
-import { generateTenantToken, getTenantClient, supabase } from './services/supabase';
+import { generateTenantToken, getTenantClient, supabase } from '../src/services/supabase';
 import { randomUUID } from 'crypto';
+import { assertDevOnly } from './utils/devOnlyGuard';
 
 let failures = 0;
 function check(condition: boolean, okMsg: string, failMsg: string) {
@@ -54,6 +55,8 @@ async function cleanupTestProfile(id: string) {
 }
 
 async function runAgencyRlsTest() {
+  assertDevOnly('test-rls-agency.ts');
+
   console.log('=== INICIANDO PRUEBA DE RLS POR AGENCIA (KAN-306, continuación) ===\n');
 
   console.log('[TEST] Creando dueño A, colaborador B (agency_owner_id = A) y tercero C sin relación...');

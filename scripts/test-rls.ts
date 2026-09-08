@@ -6,13 +6,14 @@
 // sección de prueba de esa tabla se reescribió contra el schema nuevo (ver más abajo).
 //
 // No es parte de `npm test` (requiere una conexión real a Supabase y crea/borra usuarios
-// reales de auth.users vía Admin API) — se corre manualmente con `ts-node src/test-rls.ts`.
+// reales de auth.users vía Admin API) — se corre manualmente con `ts-node scripts/test-rls.ts`.
 // Crea 2 tenants de prueba desechables (auth.users + profiles), ejercita getTenantClient()
 // (el mismo mecanismo que ahora usa tenantAuthMiddleware en producción) y limpia todo al
 // final, corra como corra el resultado de los checks.
 
-import { generateTenantToken, getTenantClient, supabase } from './services/supabase';
+import { generateTenantToken, getTenantClient, supabase } from '../src/services/supabase';
 import { randomUUID } from 'crypto';
+import { assertDevOnly } from './utils/devOnlyGuard';
 
 let failures = 0;
 function check(condition: boolean, okMsg: string, failMsg: string) {
@@ -54,6 +55,8 @@ async function cleanupTestTenant(tenantId: string) {
 }
 
 async function runRlsTest() {
+  assertDevOnly('test-rls.ts');
+
   console.log('=== INICIANDO PRUEBA DE ROW LEVEL SECURITY (RLS) — KAN-63 ===\n');
 
   console.log('[TEST] Creando Tenant A y Tenant B (auth.users + profiles reales, desechables)...');
