@@ -1,15 +1,18 @@
 // Helper de LLM genérico para los nodos del grafo de equipo de desarrollo.
-// Generaliza el patrón Strategy de src/services/ai.ts (que ahí está fijado a
-// 3 métodos de negocio puntuales) para que cualquier nodo pida output JSON
-// estructurado con el mismo fallback Gemini -> OpenAI ya probado en producción.
+// Standalone (KAN-320): ya no depende de src/services/ai.ts de Brokaza — logFallbackWarning
+// se reimplementa acá mismo para que este workspace no importe código del producto.
 
 import { GoogleGenAI } from '@google/genai';
 import { OpenAI } from 'openai';
-import { config } from '../config/env';
-import { logFallbackWarning } from '../services/ai';
+import { config } from './env';
 
 const genAI = new GoogleGenAI({ apiKey: config.geminiApiKey });
 const openai = config.openaiApiKey ? new OpenAI({ apiKey: config.openaiApiKey }) : null;
+
+function logFallbackWarning(strategyName: string, error: any): void {
+  const errMsg = error?.message || String(error);
+  console.warn(`[LLM FALLBACK] ${strategyName} falló, cambiando de modelo: ${errMsg}`);
+}
 
 export type LLMProvider = 'gemini' | 'openai';
 

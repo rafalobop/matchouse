@@ -2,7 +2,7 @@
 // usado por poNode) y escritura (createJiraIssue/updateJiraIssue, usado por
 // taskCreationNode — ver Paso 2 de la skill langgraph-dev-team-scaffolder).
 
-import { config } from '../config/env';
+import { config } from './env';
 
 function requireJiraAuthConfig(): { domain: string; email: string; apiKey: string } {
   if (!config.jiraDomain || !config.jiraEmail || !config.atlassianApiKey) {

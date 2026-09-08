@@ -10,7 +10,7 @@ import { runProposerOpposerReconcile, formatSpecSummary } from '../debate';
 // para que el comportamiento evolucione junto con .agent/skills/project_manager/SKILL.md.
 const PROJECT_MANAGER_SKILL_PATH = path.join(
   __dirname,
-  '../../../.agent/skills/project_manager/SKILL.md'
+  '../../../../.agent/skills/project_manager/SKILL.md'
 );
 
 function loadProjectManagerSkill(): string {

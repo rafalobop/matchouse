@@ -18,10 +18,6 @@ export interface Config {
   appUrl: string;
   resendApiKey: string;
   notificationIntervalMinutes: number;
-  jiraDomain?: string;
-  jiraEmail?: string;
-  jiraProjectKey?: string;
-  atlassianApiKey?: string;
   freeTextExtractionEnabled: boolean;
   searchExpirationIntervalMinutes: number;
   reengagementIntervalMinutes: number;
@@ -65,12 +61,6 @@ export function validateConfig(): Config {
   // SENDER_API_KEY es la API key de Resend (nombre histórico de la variable en .env)
   const resendApiKey = cleanEnvVar(process.env.SENDER_API_KEY);
   const notificationIntervalMinutes = parseInt(cleanEnvVar(process.env.NOTIFICATION_INTERVAL_MINUTES) || '20', 10);
-  // Jira es solo para el grafo LangGraph de equipo de desarrollo (src/graph/), no para
-  // la app de Brokaza en sí — opcional a propósito, no debe romper el arranque del bot.
-  const jiraDomain = cleanEnvVar(process.env.JIRA_DOMAIN);
-  const jiraEmail = cleanEnvVar(process.env.JIRA_EMAIL);
-  const jiraProjectKey = cleanEnvVar(process.env.JIRA_PROJECT_KEY);
-  const atlassianApiKey = cleanEnvVar(process.env.ATLASSIAN_API_KEY);
   // KAN-36/KAN-38: extracción de texto libre de formulario (matching ciego), consumida por
   // POST /api/search. Habilitada por default desde KAN-38: hace falta
   // FREE_TEXT_EXTRACTION_ENABLED=false explícito para apagarla. No afecta a
@@ -237,10 +227,6 @@ export function validateConfig(): Config {
     appUrl,
     resendApiKey,
     notificationIntervalMinutes,
-    jiraDomain,
-    jiraEmail,
-    jiraProjectKey,
-    atlassianApiKey,
     freeTextExtractionEnabled,
     searchExpirationIntervalMinutes,
     reengagementIntervalMinutes,

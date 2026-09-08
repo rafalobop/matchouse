@@ -9,7 +9,7 @@ import { formatSpecSummary } from '../debate';
 
 const JUDGE_SKILL_PATH = path.join(
   __dirname,
-  '../../../.agent/skills/judge/SKILL.md'
+  '../../../../.agent/skills/judge/SKILL.md'
 );
 
 function loadJudgeSkill(): string {
