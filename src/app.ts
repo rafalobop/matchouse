@@ -9,6 +9,28 @@ import { globalErrorHandler } from './utils/errorHandler';
 import { buildHealthPayload } from './utils/health';
 import { JSON_BODY_SIZE_LIMIT, jsonBodyParseErrorHandler } from './utils/bodyWhitelist';
 
+// KAN-316: Política de CORS actual — mismo origen, sin CORS por diseño. Esta API no
+// registra ningún middleware `cors` ni setea cabeceras Access-Control-* a mano, porque
+// ningún cliente legítimo de hoy necesita cruzar orígenes contra ella:
+//   - Dashboard de tenant y panel admin (src/adminRoutes.ts) se sirven como estáticos
+//     desde este mismo Express (`express.static`, más abajo) — mismo origen por definición.
+//   - `brokaza-frontend` (Next.js, KAN-144/150) no le pega a esta API desde el browser:
+//     `next.config.ts#rewrites()` proxea /api/*, /internal/*, /health hacia BACKEND_ORIGIN
+//     server-side, así que el browser del usuario final solo ve al servidor de Next y
+//     nunca dispara un preflight CORS contra este puerto.
+// Sin middleware CORS, la same-origin policy default del navegador ya bloquea cualquier
+// fetch desde un origen no autorizado — no hay nada que este servidor deba permitir.
+//
+// Escenarios futuros que sí requerirían agregar CORS explícito acá:
+//   - Un cliente nativo (móvil/desktop) que le pegue directo a esta API desde otro origen.
+//   - Exponer esta API a un tercero externo (partner/API pública).
+//   - Que `brokaza-frontend` deje de proxear server-side y pase a llamar a esta API
+//     directo desde el browser (invalidaría el segundo punto de arriba).
+//
+// Si se da alguno de estos casos: agregar el middleware `cors` con un allowlist explícito
+// de orígenes (nunca `origin: '*'` — esta API usa cookies de sesión, y `credentials: true`
+// combinado con wildcard es inválido/inseguro), decidir `credentials` a propósito, y
+// actualizar este comentario para que siga reflejando la política real.
 export function createApp(): express.Application {
   const app = express();
 
