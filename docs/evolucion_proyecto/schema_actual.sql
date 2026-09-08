@@ -97,7 +97,11 @@ CREATE POLICY "blind_matches_matched_tenant_read" ON public.blind_matches
 --     sin políticas (deny-all) — leídas solo por src/services/zonesService.ts (KAN-85, ver
 --     entry en CONTEXT.md sección 5) con el cliente service-role, que bypassea RLS. No son
 --     datos de tenant: es taxonomía compartida de solo lectura, deny-all es intencional para
---     bloquear acceso directo vía anon/authenticated key.
+--     bloquear acceso directo vía anon/authenticated key. **Documentado en detalle (KAN-318,
+--     2026-09-08):** ver docs/rls-deny-all-tables-README.md (contexto + proceso de revisión
+--     periódica) y docs/evolucion_proyecto/add_deny_all_rls_comments_kan318_2026-09-08.sql
+--     (COMMENT ON TABLE aplicado al catálogo real de Postgres). Mismo tratamiento para
+--     public.licensed_agents (KAN-306, ver add_license_validation_2026-09-01.sql).
 --
 -- public.neighborhood_groups (KAN-85, poblada — 4 filas): id uuid PK, name text UNIQUE,
 --   description text nullable, created_at. Agrupa neighborhoods por heurística de prefijo de
