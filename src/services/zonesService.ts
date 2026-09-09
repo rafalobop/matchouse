@@ -170,6 +170,13 @@ interface ZoneKeyword {
   neighborhoodName: string;
 }
 
+// KAN-337: normaliza el nombre técnico de una zona (guión bajo, mayúsculas) a la forma en que
+// alguien lo escribiría en texto libre — solo espacios/minúsculas, sin tocar el orden ni quitar
+// prefijos (`ZONA_CENTRO` -> "zona centro", nunca solo "centro").
+function normalizeZoneKeyword(name: string): string {
+  return String(name).toLowerCase().replace(/_/g, ' ').trim();
+}
+
 // Referencia compartida entre tenants, baja tasa de cambio (151 zonas / 21 alias a la fecha) —
 // mismo criterio de cacheo en memoria que sessionCache en src/index.ts, TTL más largo porque acá
 // no hay riesgo de servir una sesión vencida, solo datos de catálogo.
@@ -209,7 +216,14 @@ async function getZoneKeywordIndex(client: SupabaseClient): Promise<ZoneKeyword[
     }
 
     const entries: ZoneKeyword[] = [
-      ...(neighborhoods ?? []).map((n: any) => ({ keyword: String(n.name).toLowerCase(), neighborhoodId: n.id, neighborhoodName: n.name })),
+      // KAN-337: `name` es el nombre técnico con guión bajo (ej. "ZONA_CENTRO") — nadie escribe
+      // eso en texto libre. Normalizar a espacios ("zona centro") sube el piso de resolución para
+      // las 143/151 zonas que no tienen ningún alias curado en `neighborhood_aliases` (solo 8 lo
+      // tenían al momento de este ticket), sin necesitar curar esas 143 filas a mano. No se le
+      // quita el prefijo `ZONA_`/`BARRIO_` a propósito (ver alias reales ya curados como "barrio
+      // sur", nunca solo "sur") — un token así de genérico como keyword sería un falso positivo
+      // esperando a pasar contra cualquier texto que mencione ese punto cardinal de pasada.
+      ...(neighborhoods ?? []).map((n: any) => ({ keyword: normalizeZoneKeyword(n.name), neighborhoodId: n.id, neighborhoodName: n.name })),
       ...(aliases ?? [])
         .filter((a: any) => a.neighborhoods)
         .map((a: any) => ({ keyword: String(a.alias).toLowerCase(), neighborhoodId: a.neighborhood_id, neighborhoodName: a.neighborhoods.name }))
