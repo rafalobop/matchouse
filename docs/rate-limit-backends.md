@@ -57,24 +57,47 @@ cuanto se agrega una segunda instancia para manejar más tráfico.
   caso, reusar esa misma infraestructura para rate limiting sería la elección obvia, por el mismo
   criterio de "no dupliques infraestructura" que hoy favorece a Postgres.
 
-## Estado actual de la migración (revisado 2026-09-04)
+## Estado actual de la migración (revisado 2026-09-07, KAN-311)
 
-`createDistributedRateLimiter` solo está en uso hoy en `adminRoutes.ts` (`admin-auth`,
-`admin-metrics`, `admin-api`). El resto de los limiters de la app —
+`createDistributedRateLimiter` está en uso en `adminRoutes.ts` (`admin-auth`, `admin-metrics`,
+`admin-api`) y, desde KAN-311, en `uploadRateLimiter` (`routes/uploadRoutes.ts`, limiterId
+`'upload'`, mismo límite por `tenantId` que ya tenía — `config.uploadRateLimitMax`/
+`uploadRateLimitWindowMs` — sin cambio de comportamiento observable para el usuario, solo de
+dónde vive el contador). El resto de los limiters de la app —
 `authIpRateLimiter`/`authEmailRateLimiter` (`routes/authRoutes.ts`), `searchRateLimiter`
-(`routes/searchRoutes.ts`), `uploadRateLimiter` (`routes/uploadRoutes.ts`) y
-`dashboardMetricsRateLimiter` (`routes/systemRoutes.ts`) — siguen en `createRateLimiter` (en
-memoria). Mientras la app corra como una única instancia Node esto es correcto, pero si en algún
-momento se agrega un segundo proceso/instancia detrás de un balanceador de carga (necesario para
-escalar horizontalmente a medida que crece la cantidad de tenants, ver nota sobre el registro sin
-límite en `.agent/CONTEXT.md#2`), estos cuatro límites dejan de ser efectivos tal como se explica
-arriba. Migrarlos a `createDistributedRateLimiter` es mecánico (mismo patrón que ya usa
-`adminRoutes.ts`) pero no se hizo todavía — evaluarlo si/cuando se planee correr más de una
-instancia.
+(`routes/searchRoutes.ts`) y `dashboardMetricsRateLimiter` (`routes/systemRoutes.ts`) — siguen en
+`createRateLimiter` (en memoria). Mientras la app corra como una única instancia Node esto es
+correcto, pero si en algún momento se agrega un segundo proceso/instancia detrás de un balanceador
+de carga (necesario para escalar horizontalmente a medida que crece la cantidad de tenants, ver
+nota sobre el registro sin límite en `.agent/CONTEXT.md#2`), estos tres límites restantes dejan de
+ser efectivos tal como se explica arriba. Migrarlos es mecánico (mismo patrón que ya usa
+`adminRoutes.ts`/`uploadRoutes.ts`) pero no se hizo todavía — evaluarlo si/cuando se planee correr
+más de una instancia.
+
+**Rollback de la migración de `uploadRateLimiter` (KAN-311):** revertir el commit que cambió
+`routes/uploadRoutes.ts` (import + instanciación de `uploadRateLimiter` + `checkUploadRateLimit`
+vuelta a síncrona) restablece el rate limiter en memoria sin ningún otro cambio de código — no
+hay migración de esquema que revertir (la tabla `rate_limit_counters` ya existía de KAN-127, no
+se creó nada nuevo para este ticket) ni estado que migrar de un backend al otro (son contadores
+efímeros de ventana corta, perder el conteo acumulado al hacer rollback no tiene impacto real).
+Sin downtime: es un cambio de código puro, se aplica con un deploy normal.
+
+**Gap de testing conocido (KAN-311):** `checkUploadRateLimit` ahora depende de
+`createDistributedRateLimiter`, que usa por default el singleton service-role
+(`services/supabase.ts`) sin seam de inyección para tests — mismo gap ya documentado en
+`tests/helpers/fakeSession.ts` para otros controllers que importan ese singleton directo. Los
+tests HTTP de `tests/routes/upload.route.test.ts` que llegan hasta `checkUploadRateLimit` (los
+que sí tienen sesión válida) ahora hacen un round-trip real contra el RPC `rate_limit_check` del
+proyecto Supabase configurado en `.env` (~250ms en vez de unos pocos ms) antes de resolver el 400
+de "sin archivo" — fail-open si ese RPC falla, así que el resultado del test sigue siendo
+determinístico, pero deja de ser 100% aislado de la red/DB real. No se agregó un seam de
+inyección nuevo para esto: es el mismo trade-off que ya aceptan `adminRoutes.ts`
+y sus limiters distribuidos, y resolverlo de raíz (inyección del cliente service-role en todos
+los controllers que lo usan directo) es un cambio de mayor alcance, fuera de este ticket.
 
 ## Verificación de carga realizada
 
-Ver `src/test-rate-limit-distributed.ts` (script manual, no parte de `npm test` — corre contra la
+Ver `scripts/test-rate-limit-distributed.ts` (script manual, no parte de `npm test` — corre contra la
 base real de Supabase). Simula 3 instancias del proceso Node completamente independientes (sin
 ningún estado en memoria compartido entre ellas) pegándole a la misma tabla, con:
 

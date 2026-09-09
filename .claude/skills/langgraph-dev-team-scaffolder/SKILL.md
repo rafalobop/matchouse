@@ -13,7 +13,7 @@ No escribas lógica de negocio del producto del usuario. Esta skill es sobre la 
 
 Antes de generar nada, revisá el repo (si estás corriendo en Claude Code):
 
-1. Buscá si ya existe un archivo de estado del grafo (`graph/state.ts`, `agents/state.ts`, etc.) o un `CONTEXT.md` / `.agent/skills/*` con convenciones ya definidas. Si existe, **extendé ese archivo, no lo dupliques.**
+1. Buscá si ya existe un archivo de estado del grafo (`graph/state.ts`, `agents/state.ts`, etc.) o un `CONTEXT.md` / `.agent/skills/*` con convenciones ya definidas. Si existe, **extendé ese archivo, no lo dupliques.** En este repo el grafo vive en `langgraph-tools/src/graph/` (workspace separado del producto, ver KAN-320) — no lo generes dentro de `src/` de `brokaza`.
 2. Confirmá el lenguaje/módulo del proyecto (por defecto: TypeScript, CommonJS, `pnpm`, LangGraph.js — si el `tsconfig.json` dice otra cosa, seguí eso).
 3. Si no hay nada todavía, esto es la primera pieza del grafo: empezá por el state schema (paso 1) antes que por cualquier nodo.
 4. Este proyecto corre 100% local y no se sube a git — no agregues advertencias de "no comitear credenciales" ni generes `.env.example`; las claves ya viven en `.env` local y se referencian por nombre de variable, nada más.

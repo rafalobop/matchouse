@@ -8,9 +8,12 @@ import { generateStructuredJSON } from '../llm';
 import { formatSpecSummary } from '../debate';
 import { buildTaskDescriptionAdf, createJiraIssue, updateJiraIssue } from '../jira';
 
+// KAN-320: este archivo vive un nivel más profundo que antes (langgraph-tools/src/graph/nodes/
+// en vez de src/graph/nodes/), pero la skill de task_creation sigue centralizada en la raíz del
+// repo (.agent/skills/) junto con el resto de las personas — no se duplicó acá.
 const TASK_CREATION_SKILL_PATH = path.join(
   __dirname,
-  '../../../.agent/skills/task_creation/SKILL.md'
+  '../../../../.agent/skills/task_creation/SKILL.md'
 );
 
 function loadTaskCreationSkill(): string {

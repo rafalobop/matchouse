@@ -6,19 +6,15 @@
   "scripts": {
     "start": "node -r ./instrument.js dist/index.js",
     "dev": "ts-node -r ./instrument.js src/index.ts",
-    "test-pipeline": "ts-node src/test-pipeline.ts",
+    "test-pipeline": "ts-node scripts/test-pipeline.ts",
     "build": "tsc",
-    "test": "ts-node tests/runner.ts",
-    "graph:run": "ts-node src/graph/run.ts",
-    "load-test:dashboard": "ts-node scripts/load-test-dashboard.ts"
+    "test": "ts-node tests/runner.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "@google/genai": "^2.8.0",
-    "@langchain/core": "^1.2.1",
-    "@langchain/langgraph": "^1.4.7",
     "@sentry/node": "^10.69.0",
     "@supabase/supabase-js": "^2.108.2",
     "cookie-parser": "^1.4.7",

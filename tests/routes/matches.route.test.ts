@@ -174,6 +174,24 @@ test('KAN-291 - GET /api/matches/incoming con limit inválido responde 400', asy
   assert.strictEqual(res.status, 400);
 });
 
+// KAN-314: confirma que el filtro `.eq('tenant_id', tenantId)` de submitFeedback realmente evita
+// que un tenant pise el feedback de un match ajeno — si el id pertenece a otro tenant, el `.eq`
+// filtra la fila y Supabase devuelve `data: []` (0 filas afectadas), que el controller debe leer
+// como 404, nunca como éxito.
+test('KAN-314 - POST /api/matches/:id/feedback con id de un match que no es del tenant responde 404 (no un 200 falso positivo)', async () => {
+  const fakeClient = createFakeSupabaseClient(() => chainableResult({ data: [], error: null }));
+  const { cookie } = createFakeTenantSession(fakeClient);
+
+  const res = await fetch(`${server.baseUrl}/api/matches/otro-tenant-match-id/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ status: 'ACCEPTED' })
+  });
+  assert.strictEqual(res.status, 404);
+  const body = await res.json();
+  assert.strictEqual(body.error, 'Match no encontrado.');
+});
+
 test('routes/matchesRoutes - teardown', async () => {
   await server.close();
 });

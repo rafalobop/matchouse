@@ -9,10 +9,11 @@ import { fetchJiraIssue } from '../jira';
 
 // Se lee en cada carga del módulo (no se embebe como string) para que el
 // comportamiento del nodo evolucione junto con .agent/skills/product_engineer/SKILL.md
-// sin tener que tocar este archivo cuando cambie esa skill.
+// sin tener que tocar este archivo cuando cambie esa skill. KAN-320: un nivel más profundo
+// que antes (langgraph-tools/src/graph/nodes/), la skill sigue centralizada en la raíz del repo.
 const PRODUCT_ENGINEER_SKILL_PATH = path.join(
   __dirname,
-  '../../../.agent/skills/product_engineer/SKILL.md'
+  '../../../../.agent/skills/product_engineer/SKILL.md'
 );
 
 function loadProductEngineerSkill(): string {

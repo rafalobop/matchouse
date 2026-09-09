@@ -103,8 +103,10 @@ export function startDolarService(): void {
   }
 
   // Intervalo de 1 hora (3600000 ms)
-  dolarInterval = setInterval(async () => {
-    await updateDolarRate();
+  dolarInterval = setInterval(() => {
+    updateDolarRate().catch(e => {
+      logger.error(e);
+    });
   }, 3600000);
 
   logger.info('[DOLAR] Servicio de actualización horaria iniciado.');

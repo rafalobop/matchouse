@@ -8,7 +8,7 @@ import { runProposerOpposerReconcile, formatSpecSummary } from '../debate';
 
 const ENGINEERING_MANAGER_SKILL_PATH = path.join(
   __dirname,
-  '../../../.agent/skills/engineering_manager/SKILL.md'
+  '../../../../.agent/skills/engineering_manager/SKILL.md'
 );
 
 function loadEngineeringManagerSkill(): string {

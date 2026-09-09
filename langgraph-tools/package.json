@@ -1,0 +1,26 @@
+{
+  "name": "langgraph-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Andamiaje de LangGraph (grafo de equipo de desarrollo) y script de load-test del dashboard, separados del código de producto de Brokaza (KAN-320).",
+  "scripts": {
+    "graph:run": "ts-node src/graph/run.ts",
+    "load-test:dashboard": "ts-node scripts/load-test-dashboard.ts",
+    "test": "ts-node tests/runner.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@google/genai": "^2.8.0",
+    "@langchain/core": "^1.2.1",
+    "@langchain/langgraph": "^1.4.7",
+    "dotenv": "^17.4.2",
+    "openai": "^6.42.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "@types/ws": "^8.18.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3"
+  }
+}

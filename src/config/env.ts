@@ -18,10 +18,6 @@ export interface Config {
   appUrl: string;
   resendApiKey: string;
   notificationIntervalMinutes: number;
-  jiraDomain?: string;
-  jiraEmail?: string;
-  jiraProjectKey?: string;
-  atlassianApiKey?: string;
   freeTextExtractionEnabled: boolean;
   searchExpirationIntervalMinutes: number;
   reengagementIntervalMinutes: number;
@@ -38,6 +34,7 @@ export interface Config {
   metricsRateLimitWindowMs: number;
   excelParsePoolSize: number;
   excelParseTimeoutMs: number;
+  excelMaxRows: number;
   licensePadronUrl: string;
   licenseValidationRetryIntervalMinutes: number;
   licenseDataStaleHours: number;
@@ -64,12 +61,6 @@ export function validateConfig(): Config {
   // SENDER_API_KEY es la API key de Resend (nombre histórico de la variable en .env)
   const resendApiKey = cleanEnvVar(process.env.SENDER_API_KEY);
   const notificationIntervalMinutes = parseInt(cleanEnvVar(process.env.NOTIFICATION_INTERVAL_MINUTES) || '20', 10);
-  // Jira es solo para el grafo LangGraph de equipo de desarrollo (src/graph/), no para
-  // la app de Brokaza en sí — opcional a propósito, no debe romper el arranque del bot.
-  const jiraDomain = cleanEnvVar(process.env.JIRA_DOMAIN);
-  const jiraEmail = cleanEnvVar(process.env.JIRA_EMAIL);
-  const jiraProjectKey = cleanEnvVar(process.env.JIRA_PROJECT_KEY);
-  const atlassianApiKey = cleanEnvVar(process.env.ATLASSIAN_API_KEY);
   // KAN-36/KAN-38: extracción de texto libre de formulario (matching ciego), consumida por
   // POST /api/search. Habilitada por default desde KAN-38: hace falta
   // FREE_TEXT_EXTRACTION_ENABLED=false explícito para apagarla. No afecta a
@@ -141,6 +132,11 @@ export function validateConfig(): Config {
   // un bug de xlsx) que deje un worker colgado indefinidamente, sacando ese slot del pool para
   // siempre. 30s es generoso para un Excel de hasta uploadMaxFileSizeBytes (10MB default).
   const excelParseTimeoutMs = parseInt(cleanEnvVar(process.env.EXCEL_PARSE_TIMEOUT_MS) || '30000', 10);
+  // KAN-308: límite de filas por hoja de un Excel subido — mitigación de "zip bomb" (un .xlsx
+  // pequeño que decomprime a una cantidad desproporcionada de filas). No evita la decompresión
+  // inicial que ya hace `xlsx.read()` (inherente a la librería), pero corta ANTES del paso más caro
+  // (`sheet_to_json`, que materializa cada celda en un array de JS) — ver excelValidation.ts.
+  const excelMaxRows = parseInt(cleanEnvVar(process.env.EXCEL_MAX_ROWS) || '5000', 10);
   // KAN-306: URL pública del padrón de matriculados del Colegio de Corredores Inmobiliarios de
   // Tucumán (CCIT) — tabla HTML estática sin API, sincronizada periódicamente a `licensed_agents`
   // (ver src/services/licenseRegistry.ts). Configurable por si cambia de dominio/ruta.
@@ -231,10 +227,6 @@ export function validateConfig(): Config {
     appUrl,
     resendApiKey,
     notificationIntervalMinutes,
-    jiraDomain,
-    jiraEmail,
-    jiraProjectKey,
-    atlassianApiKey,
     freeTextExtractionEnabled,
     searchExpirationIntervalMinutes,
     reengagementIntervalMinutes,
@@ -251,6 +243,7 @@ export function validateConfig(): Config {
     metricsRateLimitWindowMs,
     excelParsePoolSize,
     excelParseTimeoutMs,
+    excelMaxRows,
     licensePadronUrl,
     licenseValidationRetryIntervalMinutes,
     licenseDataStaleHours,

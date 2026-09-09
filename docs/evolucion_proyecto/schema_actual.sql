@@ -97,7 +97,11 @@ CREATE POLICY "blind_matches_matched_tenant_read" ON public.blind_matches
 --     sin políticas (deny-all) — leídas solo por src/services/zonesService.ts (KAN-85, ver
 --     entry en CONTEXT.md sección 5) con el cliente service-role, que bypassea RLS. No son
 --     datos de tenant: es taxonomía compartida de solo lectura, deny-all es intencional para
---     bloquear acceso directo vía anon/authenticated key.
+--     bloquear acceso directo vía anon/authenticated key. **Documentado en detalle (KAN-318,
+--     2026-09-08):** ver docs/rls-deny-all-tables-README.md (contexto + proceso de revisión
+--     periódica) y docs/evolucion_proyecto/add_deny_all_rls_comments_kan318_2026-09-08.sql
+--     (COMMENT ON TABLE aplicado al catálogo real de Postgres). Mismo tratamiento para
+--     public.licensed_agents (KAN-306, ver add_license_validation_2026-09-01.sql).
 --
 -- public.neighborhood_groups (KAN-85, poblada — 4 filas): id uuid PK, name text UNIQUE,
 --   description text nullable, created_at. Agrupa neighborhoods por heurística de prefijo de
@@ -131,11 +135,26 @@ CREATE POLICY "blind_matches_matched_tenant_read" ON public.blind_matches
 --   SQL SECURITY DEFINER, solo EXECUTE para service_role): resuelve qué neighborhood contiene
 --   un punto vía ST_Contains, consumida por zonesService.ts#findNeighborhoodByPoint(). Sin
 --   invocadores en src/ todavía más allá de zonesService — no está enganchada a
+--   **Refuerzo (KAN-319, 2026-09-08):** hallazgo de auditoría de que `anon` seguía teniendo (o
+--   podía tener por drift) EXECUTE sobre esta función y sobre `current_agency_owner_id()`/
+--   `rate_limit_check()`, las tres SECURITY DEFINER. Ver
+--   docs/evolucion_proyecto/revoke_anon_execute_security_definer_kan319_2026-09-08.sql — igual que
+--   KAN-318, migración lista pero **no aplicada a la base real** (sin MCP de Supabase disponible
+--   en esta sesión).
 --   resolvePropertyZoneId()/matcher.ts (ver deuda técnica "Matching espacial PostGIS" en
 --   CONTEXT.md sección 5, deliberadamente fuera de alcance de KAN-85, que es solo
 --   taxonomía/datos, no el reemplazo del motor de matching en vivo).
 --   - spatial_ref_sys: deliberadamente NO se tocó (catálogo del sistema PostGIS,
 --     no datos de la app; algunas funciones de PostGIS lo consultan internamente).
+--     Re-evaluado en KAN-309 (2026-09-07, item de la auditoría de seguridad que pedía
+--     habilitar RLS acá): se decidió NO aplicarlo. Contenido de la tabla (~8500 filas de
+--     definiciones públicas de SRID/EPSG, ej. "4326 = WGS84") es información pública de
+--     estándares geodésicos, sin ningún dato de tenants/usuarios — el lint de Supabase
+--     Security Advisor marca cualquier tabla de `public` sin RLS por default, sin
+--     distinguir tablas de la app de tablas de sistema que trae una extensión. Fuga de
+--     información real si se deja como está: ninguna. Riesgo real de tocarla: sí (rompe
+--     potencialmente funciones internas de PostGIS como ST_Transform que la consultan).
+--     Decisión: costo/riesgo de aplicar > beneficio de seguridad real, se descarta.
 --
 -- IMPORTANTE — hallazgo real detectado al auditar esto: `tenantAuthMiddleware`
 -- (src/index.ts) usa el cliente SERVICE-ROLE para todo (nunca `getTenantClient()`,
@@ -288,7 +307,7 @@ CREATE POLICY "blind_matches_matched_tenant_read" ON public.blind_matches
 --     real que resuelve `src/middleware/tenantAuth.ts`), nunca vía `req.tenantId` (que desde este
 --     cambio puede resolver al id del dueño de la agencia en vez del propio).
 --
--- Verificado con `src/test-rls-agency.ts` (script manual, mismo patrón que `src/test-rls.ts` de
+-- Verificado con `scripts/test-rls-agency.ts` (script manual, mismo patrón que `scripts/test-rls.ts` de
 -- KAN-63) contra la base real: dueño+colaborador comparten cartera (lectura/alta/edición), el
 -- colaborador no puede eliminar (bloqueado por `properties_owner_delete`), un tercero sin relación
 -- no ve nada de esa agencia, y revocar al colaborador le corta el acceso de inmediato.

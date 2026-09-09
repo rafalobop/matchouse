@@ -5,11 +5,12 @@
 // conteos, incluso bajo concurrencia real (Promise.all, no un loop secuencial).
 //
 // No es parte de `npm test` (requiere una conexión real a Supabase) — se corre manualmente con
-// `ts-node src/test-rate-limit-distributed.ts`. Usa una key descartable (con timestamp) y la
+// `ts-node scripts/test-rate-limit-distributed.ts`. Usa una key descartable (con timestamp) y la
 // borra al final, corra como corra el resultado de los checks.
 
-import { createDistributedRateLimiter } from './utils/rateLimit';
-import { supabase } from './services/supabase';
+import { createDistributedRateLimiter } from '../src/utils/rateLimit';
+import { supabase } from '../src/services/supabase';
+import { assertDevOnly } from './utils/devOnlyGuard';
 
 let failures = 0;
 function check(condition: boolean, okMsg: string, failMsg: string) {
@@ -22,6 +23,8 @@ function check(condition: boolean, okMsg: string, failMsg: string) {
 }
 
 async function main() {
+  assertDevOnly('test-rate-limit-distributed.ts');
+
   const testTenantId = `test-kan127-${Date.now()}`;
   const MAX_REQUESTS = 5;
   const WINDOW_MS = 60_000;

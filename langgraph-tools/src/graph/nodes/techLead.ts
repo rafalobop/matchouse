@@ -8,7 +8,7 @@ import { runProposerOpposerReconcile, formatSpecSummary } from '../debate';
 
 const TECH_LEAD_SKILL_PATH = path.join(
   __dirname,
-  '../../../.agent/skills/tech_lead/SKILL.md'
+  '../../../../.agent/skills/tech_lead/SKILL.md'
 );
 
 function loadTechLeadSkill(): string {
