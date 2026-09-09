@@ -242,6 +242,32 @@ test('resolveNeighborhoodIdByText (AC KAN-22) - Barrio Norte y Barrio Sur resuel
   assert.notStrictEqual(norte, sur, 'Barrio Norte y Barrio Sur deben resolver a zonas distintas.');
 });
 
+// --- KAN-337: nombres técnicos con guión bajo deben resolver sin depender de un alias curado ---
+
+test('resolveNeighborhoodIdByText (KAN-337) - resuelve el nombre técnico con guión bajo normalizado a espacios, sin ningún alias curado', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-centro', name: 'ZONA_CENTRO' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const result = await resolveNeighborhoodIdByText('busco casa en zona centro, san miguel de tucuman', mockClient as any);
+
+  assert.strictEqual(result, 'n-centro');
+});
+
+test('resolveNeighborhoodIdByText (KAN-337) - no genera un keyword genérico al normalizar (no matchea por "centro" suelto)', async () => {
+  __clearZoneKeywordCacheForTests();
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-centro', name: 'ZONA_CENTRO' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const result = await resolveNeighborhoodIdByText('vivo cerca del centro comercial, pero busco en otro lado', mockClient as any);
+
+  assert.strictEqual(result, null, 'El keyword normalizado debe seguir siendo "zona centro" completo, no solo "centro".');
+});
+
 // --- KAN-92: resolveNeighborhoodByText expone también el nombre legible, no solo el id ---
 
 test('resolveNeighborhoodByText (KAN-92) - devuelve id y nombre legible cuando resuelve por el nombre canónico', async () => {
