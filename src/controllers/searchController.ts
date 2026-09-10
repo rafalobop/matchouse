@@ -1,5 +1,5 @@
 import * as express from 'express';
-import { segmentSearchRequests, ZoneIntentRequest, AITimeoutError } from '../services/ai';
+import { segmentSearchRequests, ZoneIntentRequest, AITimeoutError, AIExtractionFailedError } from '../services/ai';
 import { findCrossTenantMatches } from '../services/blindMatching';
 import { validateFreeSearchText } from '../utils/searchValidation';
 import { calculateDaysRemaining } from '../utils/activeSearches';
@@ -67,22 +67,30 @@ export async function createSearch(req: express.Request, res: express.Response) 
   // mismo criterio de "un timeout/error puntual no aborta el resto del lote" que ya tenía el catch
   // del loop secuencial, solo que ahora corren concurrentemente en vez de en serie.
   const segmentOutcomes = await Promise.all(
-    segmentsToProcess.map(async (segmentText): Promise<{ result: SearchSegmentResult; aiTimeout: boolean }> => {
+    segmentsToProcess.map(async (segmentText): Promise<{ result: SearchSegmentResult; aiTimeout: boolean; aiExtractionFailed: boolean }> => {
       try {
         const result = await processSingleSearchSegment(tenantId, tenantSupabase, segmentText);
-        return { result, aiTimeout: false };
+        return { result, aiTimeout: false, aiExtractionFailed: false };
       } catch (error: any) {
         if (error instanceof AITimeoutError) {
-          return { result: { success: false, raw_text: segmentText, error: error.message, code: 'AI_TIMEOUT' }, aiTimeout: true };
+          return { result: { success: false, raw_text: segmentText, error: error.message, code: 'AI_TIMEOUT' }, aiTimeout: true, aiExtractionFailed: false };
+        }
+        // KAN-339: fallo real (no timeout) de AMBAS estrategias de IA al extraer la búsqueda —
+        // antes esto no existía como caso distinguible, `extractFromTextInput` degradaba en
+        // silencio a criterios comodín y la búsqueda se publicaba igual (ver ai.ts). Mismo
+        // tratamiento que AITimeoutError: código distinguible para el cliente, no un 500 genérico.
+        if (error instanceof AIExtractionFailedError) {
+          return { result: { success: false, raw_text: segmentText, error: error.message, code: 'AI_EXTRACTION_FAILED' }, aiTimeout: false, aiExtractionFailed: true };
         }
         logger.error({ error: error.message || error, tenantId, segmentText }, '[BUSQUEDA] Error al procesar un segmento de búsqueda.');
-        return { result: { success: false, raw_text: segmentText, error: 'Error interno al procesar este segmento.' }, aiTimeout: false };
+        return { result: { success: false, raw_text: segmentText, error: 'Error interno al procesar este segmento.' }, aiTimeout: false, aiExtractionFailed: false };
       }
     })
   );
 
   const results: SearchSegmentResult[] = segmentOutcomes.map(o => o.result);
   const anyAITimeout = segmentOutcomes.some(o => o.aiTimeout);
+  const anyAIExtractionFailed = segmentOutcomes.some(o => o.aiExtractionFailed);
 
   const anyQuotaExceeded = segmentsOverQuota.length > 0;
   for (const segmentText of segmentsOverQuota) {
@@ -95,7 +103,9 @@ export async function createSearch(req: express.Request, res: express.Response) 
   }
 
   const allFailed = results.every(r => !r.success);
-  const httpStatus = allFailed ? (anyAITimeout ? 504 : anyQuotaExceeded ? 403 : 500) : 200;
+  const httpStatus = allFailed
+    ? (anyAITimeout ? 504 : anyAIExtractionFailed ? 502 : anyQuotaExceeded ? 403 : 500)
+    : 200;
 
   res.status(httpStatus).json({
     success: !allFailed,

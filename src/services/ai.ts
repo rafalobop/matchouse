@@ -19,6 +19,20 @@ export class AITimeoutError extends Error {
   }
 }
 
+// KAN-339: antes, si TODAS las estrategias de IA fallaban por un motivo que no era timeout (cuota
+// agotada, respuesta con schema inválido, etc.), `extractFromTextInput` devolvía en silencio un
+// objeto "comodín" (`operation: 'desconocido'`, `property_type: 'otro'`) que el matcher trata como
+// "matchea con cualquier cosa" — la búsqueda se publicaba igual, sin que el buscador se enterara de
+// que la extracción real había fallado. Este error, distinguible (`instanceof
+// AIExtractionFailedError`/`error.name`), reemplaza ese fallback silencioso — mismo criterio que
+// `AITimeoutError` para el caso de timeout, ver comentario de `extractFromTextInput`.
+export class AIExtractionFailedError extends Error {
+  constructor(message: string = 'No pudimos interpretar tu búsqueda. Probá reformularla o intentá de nuevo en unos minutos.') {
+    super(message);
+    this.name = 'AIExtractionFailedError';
+  }
+}
+
 // --- DEFINICIONES DE TIPOS ---
 
 export interface ExtractedRealEstateRequest {
@@ -631,14 +645,16 @@ class AIExtractorContext {
     };
   }
 
-  // KAN-70: único método de AIExtractorContext con un llamador síncrono de un request HTTP
+  // KAN-70/KAN-339: único método de AIExtractorContext con un llamador síncrono de un request HTTP
   // (POST /api/search, ver src/index.ts) — el usuario está esperando la respuesta en el
-  // dashboard. Si TODAS las estrategias agotaron su timeout (ninguna falló por otro motivo,
-  // ej. cuota o respuesta inválida), se relanza un AITimeoutError distinguible en vez de
-  // devolver el objeto por defecto en silencio, para que el endpoint pueda responder algo más
-  // específico que "no pudimos clasificar el texto" (que sonaría a error del usuario, no del
-  // proveedor de IA). Si hubo al menos un fallo de otro tipo, se mantiene el comportamiento
-  // previo (fallback silencioso) sin cambios.
+  // dashboard. Si TODAS las estrategias fallan, SIEMPRE se lanza un error distinguible en vez de
+  // devolver el objeto "comodín" por defecto en silencio. KAN-339: antes esto solo pasaba si el
+  // fallo era por timeout (`AITimeoutError`) — un fallo por otro motivo (cuota agotada, respuesta
+  // con schema inválido, etc.) degradaba en silencio a `operation: 'desconocido'`/`property_type:
+  // 'otro'`, que el matcher trata como comodín ("matchea con cualquier cosa") — la búsqueda se
+  // publicaba igual, matcheando de más, sin que el buscador se enterara de que la extracción real
+  // había fallado. El motivo del fallo (timeout vs. cualquier otro) solo cambia el mensaje/código
+  // de error (`AITimeoutError` vs. `AIExtractionFailedError`), nunca si hay que avisar o no.
   async extractFromTextInput(freeText: string): Promise<ExtractedRealEstateRequest> {
     let allFailuresWereTimeouts = this.strategies.length > 0;
 
@@ -660,16 +676,7 @@ class AIExtractorContext {
     }
 
     logger.error('[AI STRATEGY] Todas las estrategias de extracción de texto libre fallaron.');
-    return {
-      operation: 'desconocido',
-      property_type: 'otro',
-      zones: [],
-      max_budget: null,
-      currency: 'desconocido',
-      bedrooms: null,
-      key_features: [],
-      country: 'indiferente'
-    };
+    throw new AIExtractionFailedError();
   }
 
   async extractZoneIntent(messageTexto: string, operacion?: string): Promise<ZoneIntentRequest> {
@@ -687,6 +694,19 @@ class AIExtractorContext {
     // Fallo total del LLM (ambas estrategias) — no hay evidencia de que el usuario mencionara una
     // zona real, solo que el LLM no respondió, así que se degrada a INDEFINIDA (no bloqueante) y
     // no DESCONOCIDA (que sí bloquea matches).
+    //
+    // KAN-339 (revisión de consistencia, sin cambio de comportamiento): a primera vista esto
+    // parece el mismo problema que `extractFromTextInput` (Agente 1) tenía — un fallo total de IA
+    // degradando en silencio a un valor permisivo. Se decidió NO alinearlo a lanzar
+    // `AIExtractionFailedError` como el Agente 1, por una diferencia real de riesgo entre ambos:
+    // el Agente 1 arriesgaba publicar una búsqueda con `operation`/`property_type` comodín — un
+    // estado que NUNCA es válido como intención real del usuario (siempre implica que algo salió
+    // mal). El Agente 2 (zona), en cambio, degrada al mismo estado (`INDEFINIDA`) que ya usa
+    // legítimamente cualquier búsqueda real donde el usuario simplemente no mencionó ninguna zona
+    // — no hay forma de distinguir "la IA falló" de "no había zona que extraer" sin la IA misma,
+    // y tratar ambos casos como bloqueantes rechazaría de forma agresiva búsquedas válidas sin
+    // zona. Bloquear acá cambiaría el comportamiento ya aceptado de "sin zona = búsqueda abierta a
+    // toda la ciudad", no solo el caso de fallo real de IA — alcance mayor al de este ticket.
     logger.error('[AI STRATEGY] Todas las estrategias de zona fallaron.');
     return {
       zone_status: 'INDEFINIDA',

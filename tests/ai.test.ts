@@ -10,7 +10,8 @@ import {
   normalizeAgent1,
   GeminiStrategy,
   OpenAIStrategy,
-  AITimeoutError
+  AITimeoutError,
+  AIExtractionFailedError
 } from '../src/services/ai';
 import { TimeoutError } from '../src/utils/withTimeout';
 import { config, validateConfig } from '../src/config/env';
@@ -216,7 +217,7 @@ test('AI Service (KAN-70) - extractFromTextInput lanza AITimeoutError cuando TOD
 });
 
 test(
-  'AI Service (KAN-70) - extractFromTextInput NO lanza AITimeoutError si al menos una estrategia falló por un motivo distinto a timeout (comportamiento previo intacto)',
+  'AI Service (KAN-70/KAN-339) - extractFromTextInput lanza AIExtractionFailedError (no AITimeoutError) si al menos una estrategia falló por un motivo distinto a timeout',
   { skip: !config.openaiApiKey ? 'OPENAI_API_KEY no configurada en este entorno (no hay una segunda estrategia para simular una falla mixta)' : false },
   async () => {
     const originalGemini = GeminiStrategy.prototype.extractFromFreeText;
@@ -228,8 +229,44 @@ test(
     config.freeTextExtractionEnabled = true;
 
     try {
-      const result = await extractFromTextInput('busco depto 2 dorm en yerba buena hasta 80000 usd');
-      assert.strictEqual(result.operation, 'desconocido', 'Debe caer al objeto por defecto silencioso (comportamiento previo de la regla de negocio), no lanzar AITimeoutError.');
+      await assert.rejects(
+        () => extractFromTextInput('busco depto 2 dorm en yerba buena hasta 80000 usd'),
+        (error: any) => {
+          assert.ok(
+            error instanceof AIExtractionFailedError,
+            'KAN-339: un fallo real (no timeout) de todas las estrategias debe lanzar AIExtractionFailedError, no degradar en silencio a criterios comodín.',
+          );
+          return true;
+        },
+      );
+    } finally {
+      GeminiStrategy.prototype.extractFromFreeText = originalGemini;
+      OpenAIStrategy.prototype.extractFromFreeText = originalOpenAI;
+      config.freeTextExtractionEnabled = originalFlag;
+    }
+  }
+);
+
+test(
+  'AI Service (KAN-339) - extractFromTextInput lanza AIExtractionFailedError cuando TODAS las estrategias fallan por un motivo que no es timeout',
+  async () => {
+    const originalGemini = GeminiStrategy.prototype.extractFromFreeText;
+    const originalOpenAI = OpenAIStrategy.prototype.extractFromFreeText;
+    const originalFlag = config.freeTextExtractionEnabled;
+
+    GeminiStrategy.prototype.extractFromFreeText = async () => { throw new Error('Cuota excedida (no es timeout)'); };
+    OpenAIStrategy.prototype.extractFromFreeText = async () => { throw new Error('Respuesta con schema inválido (no es timeout)'); };
+    config.freeTextExtractionEnabled = true;
+
+    try {
+      await assert.rejects(
+        () => extractFromTextInput('busco depto 2 dorm en yerba buena hasta 80000 usd'),
+        (error: any) => {
+          assert.ok(error instanceof AIExtractionFailedError);
+          assert.ok(!(error instanceof AITimeoutError), 'No debe confundirse con un timeout — ninguna estrategia agotó el timeout acá.');
+          return true;
+        },
+      );
     } finally {
       GeminiStrategy.prototype.extractFromFreeText = originalGemini;
       OpenAIStrategy.prototype.extractFromFreeText = originalOpenAI;
