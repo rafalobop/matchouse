@@ -360,8 +360,10 @@ export function mountAdminRouter(app: express.Application): void {
 
       let query = supabase
         .from('properties')
+        // KAN-305: needs_coordinate_review se agrega acá para que el admin vea qué propiedades
+        // tienen un pedido de corrección pendiente del tenant sin tener que cruzarlo a mano.
         .select(
-          'id, address, sheet_name, features, latitude, longitude, tenant_id, zone_id, neighborhoods!properties_zone_id_fkey(id, name, group_id)',
+          'id, address, sheet_name, features, latitude, longitude, needs_coordinate_review, tenant_id, zone_id, neighborhoods!properties_zone_id_fkey(id, name, group_id)',
           { count: 'exact' }
         )
         .order('address', { ascending: true })
@@ -396,6 +398,7 @@ export function mountAdminRouter(app: express.Application): void {
           address: p.address,
           latitude: p.latitude,
           longitude: p.longitude,
+          needsCoordinateReview: p.needs_coordinate_review,
           zone: zoneInfo.zone,
           zoneSource: zoneInfo.source,
           textSuggestedZone: zoneInfo.textSuggestedZone,
@@ -501,9 +504,11 @@ export function mountAdminRouter(app: express.Application): void {
 
       const before = { latitude: existing.latitude, longitude: existing.longitude };
 
+      // KAN-305: guardar una corrección real es la señal de que el pedido del tenant (si lo hubo)
+      // quedó resuelto — se apaga el flag acá mismo, sin depender de un segundo request separado.
       const { error: updateError } = await supabase
         .from('properties')
-        .update({ latitude, longitude })
+        .update({ latitude, longitude, needs_coordinate_review: false })
         .eq('id', id);
 
       if (updateError) {

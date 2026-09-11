@@ -147,6 +147,62 @@ test('KAN-314 - DELETE /api/catalog/properties/:id con id de una propiedad que n
   assert.strictEqual(body.error, 'Propiedad no encontrada.');
 });
 
+// KAN-305: latitude/longitude salieron de UPDATE_FIELDS — un tenant que las manda en el PATCH
+// debe cortar en 400 por la whitelist, antes de tocar Supabase (nunca llega a pisar el geocoding).
+test('KAN-305 - PATCH /api/catalog/properties/:id con latitude en el body responde 400 (whitelist, ya no es un campo editable por el tenant)', async () => {
+  const { cookie } = createFakeTenantSession(createFakeSupabaseClient(() => chainableResult({ data: null, error: null })));
+  const res = await fetch(`${server.baseUrl}/api/catalog/properties/property-1`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ latitude: -26.8, expectedUpdatedAt: new Date().toISOString() })
+  });
+  assert.strictEqual(res.status, 400);
+  const body = await res.json();
+  assert.strictEqual(body.error, 'El body contiene campos no permitidos: latitude.');
+});
+
+test('KAN-305 - POST /api/catalog/properties/:id/request_correction sin cookie responde 401', async () => {
+  const res = await fetch(`${server.baseUrl}/api/catalog/properties/some-id/request_correction`, { method: 'POST' });
+  assert.strictEqual(res.status, 401);
+});
+
+test('KAN-305 - POST /api/catalog/properties/:id/request_correction con cookie válida marca needs_coordinate_review sin tocar las coordenadas', async () => {
+  const fakeClient = createFakeSupabaseClient((table: string) => {
+    if (table !== 'properties') throw new Error(`tabla inesperada: ${table}`);
+    return chainableResult({
+      data: { id: 'property-1', address: 'Calle Falsa 123', latitude: -26.8, longitude: -65.2, needs_coordinate_review: true },
+      error: null
+    });
+  });
+  const { cookie } = createFakeTenantSession(fakeClient);
+
+  const res = await fetch(`${server.baseUrl}/api/catalog/properties/property-1/request_correction`, {
+    method: 'POST',
+    headers: { Cookie: cookie }
+  });
+  assert.strictEqual(res.status, 200);
+  const body = await res.json();
+  assert.strictEqual(body.property.needs_coordinate_review, true);
+  assert.strictEqual(body.property.latitude, -26.8);
+  assert.strictEqual(body.property.longitude, -65.2);
+});
+
+test('KAN-305 - POST /api/catalog/properties/:id/request_correction con id de una propiedad que no es del tenant responde 404', async () => {
+  const fakeClient = createFakeSupabaseClient((table: string) => {
+    if (table !== 'properties') throw new Error(`tabla inesperada: ${table}`);
+    return chainableResult({ data: null, error: null }); // filtrada por tenant_id, 0 filas
+  });
+  const { cookie } = createFakeTenantSession(fakeClient);
+
+  const res = await fetch(`${server.baseUrl}/api/catalog/properties/otro-tenant-property-id/request_correction`, {
+    method: 'POST',
+    headers: { Cookie: cookie }
+  });
+  assert.strictEqual(res.status, 404);
+  const body = await res.json();
+  assert.strictEqual(body.error, 'Propiedad no encontrada.');
+});
+
 test('routes/properties - teardown', async () => {
   await server.close();
 });

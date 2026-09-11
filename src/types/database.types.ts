@@ -398,6 +398,7 @@ export type Database = {
           longitude: number | null
           lot: string | null
           maintenance_fees: number
+          needs_coordinate_review: boolean
           operation: string
           price: number
           property_type: string
@@ -422,6 +423,7 @@ export type Database = {
           longitude?: number | null
           lot?: string | null
           maintenance_fees?: number
+          needs_coordinate_review?: boolean
           operation: string
           price: number
           property_type: string
@@ -446,6 +448,7 @@ export type Database = {
           longitude?: number | null
           lot?: string | null
           maintenance_fees?: number
+          needs_coordinate_review?: boolean
           operation?: string
           price?: number
           property_type?: string

@@ -34,15 +34,26 @@ const SORTABLE_FIELDS = [
 ] as const;
 type SortableField = typeof SORTABLE_FIELDS[number];
 
+// KAN-305: latitude/longitude salieron de UPDATE_FIELDS — un tenant ya no puede pisar el
+// geocoding curado editando la fila (antes viajaban igual que cualquier otro campo editable).
+// Siguen aceptándose en CREATE_FIELDS (alta, POST) porque ahí no hay nada "curado" todavía que
+// proteger: es la primera coordenada que carga el propio tenant o el resultado del geocoding
+// automático del upload. La corrección posterior de una coordenada ya cargada queda exclusivamente
+// del lado admin (`PATCH /admin/api/properties/:id/coordinates`, KAN-130) — el tenant solo puede
+// pedirla vía el nuevo POST .../request_correction más abajo.
 const CREATE_FIELDS = [
   'address', 'floor', 'unit', 'block', 'lot', 'price', 'currency', 'maintenance_fees',
   'bedrooms', 'features', 'contact_info', 'operation', 'property_type', 'latitude', 'longitude'
 ] as const;
-const UPDATE_FIELDS = [...CREATE_FIELDS, 'expectedUpdatedAt'] as const;
+const UPDATE_FIELDS = [
+  'address', 'floor', 'unit', 'block', 'lot', 'price', 'currency', 'maintenance_fees',
+  'bedrooms', 'features', 'contact_info', 'operation', 'property_type', 'expectedUpdatedAt'
+] as const;
 
 const PROPERTY_SELECT = 'id, address, floor, unit, block, lot, price, currency, maintenance_fees, ' +
   'bedrooms, features, contact_info, operation, property_type, sheet_name, latitude, longitude, ' +
-  'zone_id, neighborhoods!properties_zone_id_fkey(id, name, group_id), created_at, updated_at';
+  'needs_coordinate_review, zone_id, neighborhoods!properties_zone_id_fkey(id, name, group_id), ' +
+  'created_at, updated_at';
 
 interface ValidationResult {
   error?: string;
@@ -363,21 +374,51 @@ router.patch('/api/catalog/properties/:id', tenantAuthMiddleware, async (req, re
       });
     }
 
-    const updated = data[0];
-    if ('latitude' in fields || 'longitude' in fields) {
-      try {
-        await refreshZoneId(supabase, id, updated.latitude, updated.longitude, updated.address, updated.features, updated.sheet_name);
-        const { data: refreshed } = await supabase.from('properties').select(PROPERTY_SELECT).eq('id', id).single();
-        if (refreshed) return res.json({ property: toPropertyResponse(refreshed) });
-      } catch (zoneError: any) {
-        logger.error({ err: zoneError.message, propertyId: id }, '[PROPERTIES] No se pudo refrescar la zona al actualizar coordenadas');
-      }
-    }
-
-    res.json({ property: toPropertyResponse(updated) });
+    // KAN-305: latitude/longitude ya no están en UPDATE_FIELDS, así que este PATCH nunca las toca
+    // — el refresh de zona por cambio de coordenadas queda solo del lado admin
+    // (`PATCH /admin/api/properties/:id/coordinates`, ver adminRoutes.ts).
+    res.json({ property: toPropertyResponse(data[0]) });
   } catch (error: any) {
     logger.error({ error: error.message || error, tenantId, propertyId: id }, '[PROPERTIES] Error al actualizar propiedad');
     res.status(500).json({ error: 'Error interno al actualizar la propiedad.' });
+  }
+});
+
+// POST /api/catalog/properties/:id/request_correction (KAN-305): el tenant ya no puede editar
+// latitude/longitude directamente (ver UPDATE_FIELDS más arriba) — esta es la única vía que le
+// queda para señalar una coordenada mal ubicada. Solo prende el flag `needs_coordinate_review`;
+// las coordenadas actuales quedan sin tocar (siguen activas para matching/mapa) hasta que un admin
+// las corrija de verdad vía `PATCH /admin/api/properties/:id/coordinates` (KAN-130), que ahora
+// apaga el flag al guardar (ver adminRoutes.ts). Nota de path: el AC del ticket menciona
+// `POST /api/properties/request_correction`, pero ese prefijo ya lo usa el panel admin
+// (`GET /api/properties`, cross-tenant, mountAdminRouter se monta antes) — se sigue el mismo
+// criterio ya documentado arriba para el resto de estas rutas y queda bajo
+// `/api/catalog/properties/:id/request_correction` para no colisionar.
+router.post('/api/catalog/properties/:id/request_correction', tenantAuthMiddleware, async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const id = req.params.id as string;
+  const supabase = (req as any).supabaseClient;
+
+  try {
+    const { data, error } = await supabase
+      .from('properties')
+      .update({ needs_coordinate_review: true })
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .select(PROPERTY_SELECT)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    if (!data) {
+      return res.status(404).json({ error: 'Propiedad no encontrada.' });
+    }
+
+    logger.info({ tenantId, propertyId: id }, '[PROPERTIES] Corrección de coordenadas solicitada');
+    res.json({ property: toPropertyResponse(data) });
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId, propertyId: id }, '[PROPERTIES] Error al solicitar corrección de coordenadas');
+    res.status(500).json({ error: 'Error interno al solicitar la corrección de coordenadas.' });
   }
 });
 
