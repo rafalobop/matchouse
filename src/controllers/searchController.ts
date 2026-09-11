@@ -17,8 +17,8 @@ import { getTenantPlanLimits, countTenantSearchesThisMonth } from '../services/p
 // (Agente 0, ver ai.ts#segmentSearchRequests) y cada segmento se procesa por separado, generando
 // su propia fila de active_searches y su propio set de matches/notificaciones.
 export async function createSearch(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
-  const tenantSupabase = (req as any).supabaseClient;
+  const tenantId = req.tenantId;
+  const tenantSupabase = req.supabaseClient;
   const { text } = req.body;
 
   if (!text || typeof text !== 'string' || !text.trim()) {
@@ -128,8 +128,8 @@ export async function createSearch(req: express.Request, res: express.Response) 
 // Incluye 'expired' además de 'active' (antes solo traía 'active') para que el dashboard pueda
 // ofrecer "Reactivar" sobre búsquedas vencidas — 'matched'/'cancelled' (archivadas) quedan afuera.
 export async function listSearches(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
-  const tenantSupabase = (req as any).supabaseClient;
+  const tenantId = req.tenantId;
+  const tenantSupabase = req.supabaseClient;
 
   try {
     const { data: searches, error } = await tenantSupabase
@@ -192,8 +192,8 @@ export async function listSearches(req: express.Request, res: express.Response) 
 // status='cancelled' (archivada). El registro se conserva para auditoría/historial y deja de
 // aparecer en GET /api/searches (que solo trae 'active'/'expired').
 export async function archiveSearch(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
-  const tenantSupabase = (req as any).supabaseClient;
+  const tenantId = req.tenantId;
+  const tenantSupabase = req.supabaseClient;
   const { id } = req.params;
 
   if (!isValidUUID(id)) {
@@ -246,8 +246,8 @@ export async function archiveSearch(req: express.Request, res: express.Response)
 // de creación, `set_active_searches_expires_at`, que no aplica en UPDATE). Mismo patrón de
 // "chequeo privilegiado + mutación tenant-scoped" que DELETE de arriba.
 export async function reactivateSearch(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
-  const tenantSupabase = (req as any).supabaseClient;
+  const tenantId = req.tenantId;
+  const tenantSupabase = req.supabaseClient;
   const { id } = req.params;
 
   if (!isValidUUID(id)) {

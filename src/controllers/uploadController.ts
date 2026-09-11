@@ -63,8 +63,8 @@ export function getMappingFields(req: express.Request, res: express.Response) {
 }
 
 export async function uploadCatalog(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
-  const tenantSupabase = (req as any).supabaseClient;
+  const tenantId = req.tenantId;
+  const tenantSupabase = req.supabaseClient;
   if (!req.file) {
     return res.status(400).json({ error: 'No se subió ningún archivo' });
   }
@@ -202,8 +202,8 @@ async function runSyncStageAndRespond(
 // requeridos de cada hoja, persiste el mapeo como confirmado y procesa el archivo completo en la
 // misma request — no hace falta un tercer round-trip.
 export async function confirmMapping(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
-  const tenantSupabase = (req as any).supabaseClient;
+  const tenantId = req.tenantId;
+  const tenantSupabase = req.supabaseClient;
   if (!req.file) {
     return res.status(400).json({ error: 'No se subió ningún archivo' });
   }

@@ -90,58 +90,72 @@ export async function processPropertyUploaded(
   // búsquedas del mismo tenant, y no tiene sentido mandarle el mismo evento repetido.
   const tenantsToNotifyRealtime = new Set<string>();
 
-  for (const match of matches) {
-    const isDuplicate = await blindMatchAlreadyExists(match.search_id, propertyId, client);
-    if (isDuplicate) {
-      matchesSkippedDuplicate++;
+  // Se procesan los matches en paralelo (allSettled: un fallo puntual no aborta el resto, mismo
+  // criterio best-effort que antes) en vez de secuencial — cada match hace varios round-trips
+  // independientes entre sí.
+  const outcomes = await Promise.allSettled(
+    matches.map(async (match) => {
+      const isDuplicate = await blindMatchAlreadyExists(match.search_id, propertyId, client);
+      if (isDuplicate) {
+        return { inserted: false, duplicate: true, tenants: [] as string[] };
+      }
+
+      const searcherSnapshot = await fetchSearcherSnapshot(match.tenant_id, client);
+      const row = buildIncomingPropertyMatchInsertRow(
+        match.tenant_id,
+        match.search_id,
+        match.raw_text,
+        searcherSnapshot,
+        propertyOwnerTenantId,
+        propertyId,
+        propertySnapshot,
+        match.score,
+        match.reasons
+      );
+
+      const { data: insertedRow, error: insertErr } = await client.from('blind_matches').insert(row).select('id').single();
+
+      if (insertErr) {
+        logger.error({ error: insertErr.message, propertyId, searchId: match.search_id }, '[PROPERTY MATCH WEBHOOK] Error al persistir un match cartera→búsqueda (se continúa con el resto).');
+        return { inserted: false, duplicate: false, tenants: [] as string[] };
+      }
+
+      const mappedMatchForNotify = {
+        tenant_id: propertyOwnerTenantId,
+        score: match.score,
+        reasons: match.reasons,
+        property: propertySnapshot
+      };
+
+      // Decisión de producto (2026-08-21) — el buscador (match.tenant_id) ya NO se notifica acá
+      // tampoco (mismo criterio que POST /api/search, ver src/routes/search.ts): solo el dueño de
+      // la propiedad nueva se entera, porque es quien tiene que contactar al buscador. El WS de
+      // abajo le sigue avisando al buscador que su conteo cambió (nudge inocuo), pero sin push/email
+      // con contenido.
+
+      // Al dueño de la propiedad nueva: mismo mecanismo recíproco que KAN-78.
+      notifyMatchFound({
+        hasActivePush: () => hasActivePushSubscriptions(propertyOwnerTenantId, client),
+        sendPush: () => sendWebPushToTenant(propertyOwnerTenantId, buildIncomingMatchPushPayload(insertedRow.id)),
+        sendEmailFallback: () => sendIncomingMatchEmailFallback(propertyOwnerTenantId, searcherSnapshot, match.raw_text, [mappedMatchForNotify], client)
+      }).catch((notifyErr: any) => {
+        logger.error({ error: notifyErr.message || notifyErr, tenantId: propertyOwnerTenantId, searchId: match.search_id }, '[PROPERTY MATCH WEBHOOK] Error al notificar al dueño de la propiedad nueva (no afecta el match ya persistido).');
+      });
+
+      return { inserted: true, duplicate: false, tenants: [match.tenant_id, propertyOwnerTenantId] };
+    })
+  );
+
+  for (const outcome of outcomes) {
+    if (outcome.status === 'rejected') {
+      logger.error({ error: outcome.reason?.message || outcome.reason, propertyId }, '[PROPERTY MATCH WEBHOOK] Error inesperado procesando un match (se continúa con el resto).');
       continue;
     }
 
-    const searcherSnapshot = await fetchSearcherSnapshot(match.tenant_id, client);
-    const row = buildIncomingPropertyMatchInsertRow(
-      match.tenant_id,
-      match.search_id,
-      match.raw_text,
-      searcherSnapshot,
-      propertyOwnerTenantId,
-      propertyId,
-      propertySnapshot,
-      match.score,
-      match.reasons
-    );
-
-    const { data: insertedRow, error: insertErr } = await client.from('blind_matches').insert(row).select('id').single();
-
-    if (insertErr) {
-      logger.error({ error: insertErr.message, propertyId, searchId: match.search_id }, '[PROPERTY MATCH WEBHOOK] Error al persistir un match cartera→búsqueda (se continúa con el resto).');
-      continue;
-    }
-
-    matchesInserted++;
-    tenantsToNotifyRealtime.add(match.tenant_id);
-    tenantsToNotifyRealtime.add(propertyOwnerTenantId);
-
-    const mappedMatchForNotify = {
-      tenant_id: propertyOwnerTenantId,
-      score: match.score,
-      reasons: match.reasons,
-      property: propertySnapshot
-    };
-
-    // Decisión de producto (2026-08-21) — el buscador (match.tenant_id) ya NO se notifica acá
-    // tampoco (mismo criterio que POST /api/search, ver src/routes/search.ts): solo el dueño de
-    // la propiedad nueva se entera, porque es quien tiene que contactar al buscador. El WS de
-    // abajo le sigue avisando al buscador que su conteo cambió (nudge inocuo), pero sin push/email
-    // con contenido.
-
-    // Al dueño de la propiedad nueva: mismo mecanismo recíproco que KAN-78.
-    notifyMatchFound({
-      hasActivePush: () => hasActivePushSubscriptions(propertyOwnerTenantId, client),
-      sendPush: () => sendWebPushToTenant(propertyOwnerTenantId, buildIncomingMatchPushPayload(insertedRow.id)),
-      sendEmailFallback: () => sendIncomingMatchEmailFallback(propertyOwnerTenantId, searcherSnapshot, match.raw_text, [mappedMatchForNotify], client)
-    }).catch((notifyErr: any) => {
-      logger.error({ error: notifyErr.message || notifyErr, tenantId: propertyOwnerTenantId, searchId: match.search_id }, '[PROPERTY MATCH WEBHOOK] Error al notificar al dueño de la propiedad nueva (no afecta el match ya persistido).');
-    });
+    const { inserted, duplicate, tenants } = outcome.value;
+    if (duplicate) matchesSkippedDuplicate++;
+    if (inserted) matchesInserted++;
+    tenants.forEach((tenantId) => tenantsToNotifyRealtime.add(tenantId));
   }
 
   if (tenantsToNotifyRealtime.size > 0) {

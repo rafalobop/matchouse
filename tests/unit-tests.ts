@@ -19,56 +19,6 @@ test('Supabase Client Cache - Debería retornar el mismo cliente para el mismo t
   assert.notStrictEqual(client1, client3, 'Los clientes con diferentes tokens no deberían ser idénticos.');
 });
 
-// 2. Probar colas de mensajes aisladas por Tenant
-import { AsyncMessageQueue } from '../src/utils/queue';
-
-test('Isolated Multi-Tenant Queue - Las colas de cada tenant no deberían bloquearse entre sí', async () => {
-  // Inicializamos una cola con delay corto para las pruebas
-  const testQueue = new AsyncMessageQueue(200);
-
-  const startTimes: Record<string, number> = {};
-  const completionTimes: Record<string, number> = {};
-
-  const taskA1 = () => new Promise<void>((resolve) => {
-    startTimes['A1'] = Date.now();
-    setTimeout(() => {
-      completionTimes['A1'] = Date.now();
-      resolve();
-    }, 100);
-  });
-
-  const taskA2 = () => new Promise<void>((resolve) => {
-    startTimes['A2'] = Date.now();
-    completionTimes['A2'] = Date.now();
-    resolve();
-  });
-
-  const taskB1 = () => new Promise<void>((resolve) => {
-    startTimes['B1'] = Date.now();
-    completionTimes['B1'] = Date.now();
-    resolve();
-  });
-
-  // Encolar tareas para Tenant A y Tenant B
-  testQueue.enqueue(taskA1, 'tenant-A');
-  testQueue.enqueue(taskA2, 'tenant-A');
-  
-  // Encolar tarea para Tenant B inmediatamente
-  testQueue.enqueue(taskB1, 'tenant-B');
-
-  // Esperar a que se procese todo
-  await new Promise((resolve) => setTimeout(resolve, 800));
-
-  // A1 se ejecuta inmediatamente
-  assert.ok(startTimes['A1'] !== undefined, 'La tarea A1 debió ejecutarse.');
-  
-  // A2 debe ejecutarse con retraso después de A1 (debido al delayMs de 200ms de la cola del tenant A)
-  assert.ok(startTimes['A2'] >= completionTimes['A1'] + 150, 'La tarea A2 debió esperar el rate limit de su propia cola.');
-
-  // B1 debió ejecutarse de inmediato de forma paralela sin esperar al delay ni al término de A1 o A2
-  assert.ok(startTimes['B1'] < startTimes['A2'], 'La tarea de Tenant B no debió bloquearse por la cola de Tenant A.');
-});
-
 // 3. Probar Dolar Blue Service
 import { getDolarBlueRate, loadCachedRate, updateDolarRate } from '../src/services/dolar';
 

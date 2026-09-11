@@ -1,7 +1,7 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 
 // KAN-306 (continuación, 2026-09-04): extraído de adminPanelController.ts para reutilizarlo
-// también en routes/properties.ts (DELETE de propiedades, restringido al dueño real de la
+// también en controllers/propertiesController.ts (DELETE de propiedades, restringido al dueño real de la
 // agencia). Siempre recibe `actorId` (el auth.uid() real del que está logueado, no el
 // `tenantId`/scope de agencia resuelto por tenantAuthMiddleware) — un colaborador nunca debe
 // poder pasar este chequeo aunque su `tenantId` resuelva al id del dueño.

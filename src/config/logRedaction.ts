@@ -13,8 +13,10 @@
  *   (geocoding.ts) — ambos contienen el domicilio en texto libre.
  * - `texto`: texto de ubicación tal cual lo escribió el usuario (ai.ts, resolución de zona).
  * - `segmentText`: segmento de búsqueda en texto libre del usuario (index.ts).
+ * - `licenseNumber`: matrícula profesional del agente (licenseRegistry.ts).
+ * - `latitude`/`longitude`: coordenadas geocodificadas de una propiedad (excel.ts).
  */
-export const PII_LOG_FIELDS = ['email', 'adminEmail', 'ip', 'address', 'query', 'raw', 'texto', 'segmentText'];
+export const PII_LOG_FIELDS = ['email', 'adminEmail', 'ip', 'address', 'query', 'raw', 'texto', 'segmentText', 'licenseNumber', 'latitude', 'longitude'];
 
 export const PII_REDACT_CENSOR = '[REDACTED]';
 

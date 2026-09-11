@@ -2,8 +2,8 @@ import * as express from 'express';
 import { logger } from '../services/logger';
 
 export async function getCatalogCount(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
-  const tenantSupabase = (req as any).supabaseClient;
+  const tenantId = req.tenantId;
+  const tenantSupabase = req.supabaseClient;
   try {
     const { count, error } = await tenantSupabase
       .from('properties')

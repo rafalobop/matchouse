@@ -26,8 +26,8 @@ export async function getProfile(req: express.Request, res: express.Response) {
   // `req.tenantId` — este controller opera sobre "mi propio perfil". `tenantId` ahora puede
   // resolver al id del DUEÑO de la agencia (ver tenantAuthMiddleware); usarlo acá haría que un
   // colaborador intentara leer/editar el perfil de su dueño en vez del propio.
-  const tenantId = (req as any).actorId;
-  const tenantSupabase = (req as any).supabaseClient;
+  const tenantId = req.actorId;
+  const tenantSupabase = req.supabaseClient;
 
   try {
     const { data: profile, error } = await tenantSupabase
@@ -47,7 +47,7 @@ export async function getProfile(req: express.Request, res: express.Response) {
 
 export async function updateProfile(req: express.Request, res: express.Response) {
   // KAN-306 (continuación, 2026-09-04): `req.actorId`, mismo motivo que en getProfile de arriba.
-  const tenantId = (req as any).actorId;
+  const tenantId = req.actorId;
   // KAN-90: first_name/last_name no tienen columnas propias en `profiles` (solo existe
   // `full_name`, un campo combinado desde SPEC-0012) — se piden separados en el formulario para
   // que queden marcados como dos campos obligatorios distintos (AC1), y acá se combinan en

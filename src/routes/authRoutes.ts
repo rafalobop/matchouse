@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { createRateLimiter } from '../utils/rateLimit';
-import { getClientIp } from '../utils/getClientIp';
+import { getClientIp } from '../utils/clientIp';
 import { logger } from '../services/logger';
 import * as authController from '../controllers/authController';
 

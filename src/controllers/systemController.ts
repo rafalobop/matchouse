@@ -17,7 +17,7 @@ export function getConfigStatus(req: express.Request, res: express.Response) {
 // quedan consultables como cualquier otro log en Railway/Sentry sin agregar una dependencia nueva
 // de infraestructura.
 export function reportDashboardMetrics(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
+  const tenantId = req.tenantId;
   const body = req.body || {};
   logger.info({
     tenantId,

@@ -84,7 +84,7 @@ export async function adminAuthMiddleware(req: express.Request, res: express.Res
 
   const cached = getCachedAdminSession(token);
   if (cached) {
-    (req as any).admin = cached;
+    req.admin = cached;
     return next();
   }
 
@@ -111,7 +111,7 @@ export async function adminAuthMiddleware(req: express.Request, res: express.Res
     }
 
     adminSessionCache.set(token, { ...identity, expiresAt: Date.now() + ADMIN_SESSION_CACHE_TTL_MS });
-    (req as any).admin = identity;
+    req.admin = identity;
     next();
   } catch (err: any) {
     logger.error({ err: err.message }, '[ADMIN AUTH] Error inesperado en adminAuthMiddleware');

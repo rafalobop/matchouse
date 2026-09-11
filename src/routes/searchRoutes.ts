@@ -14,7 +14,7 @@ export const searchRoutes = Router();
 const searchRateLimiter = createRateLimiter(config.searchRateLimitMax, config.searchRateLimitWindowMs);
 
 function checkSearchRateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const tenantId = (req as any).tenantId;
+  const tenantId = req.tenantId;
   if (!searchRateLimiter.check(tenantId)) {
     logger.warn({ tenantId }, '[BUSQUEDA] Rate limit excedido en POST /api/search');
     return res.status(429).json({ error: 'Demasiadas búsquedas. Esperá un minuto e intentá de nuevo.' });

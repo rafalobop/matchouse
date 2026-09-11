@@ -546,6 +546,7 @@ export async function syncPropertiesToDatabase(
     // 3. Iterar las propiedades frescas, clasificarlas y resolver lat/lng
     const upsertList: any[] = [];
     const matchedIds = new Set<string>();
+    let geocodedCount = 0;
 
     for (const p of properties) {
       const key = `${p.address}_${p.floor || ''}_${p.unit || ''}_${p.block || ''}_${p.lot || ''}_${p.price}_${p.contact_info || ''}_${p.sheet_name}`.toLowerCase().trim();
@@ -567,7 +568,8 @@ export async function syncPropertiesToDatabase(
           if (geocodeResult.success) {
             latitude = geocodeResult.latitude;
             longitude = geocodeResult.longitude;
-            logger.info({ tenantId, address: p.address, latitude, longitude }, '[EXCEL] Propiedad geocodificada correctamente al sincronizar');
+            geocodedCount++;
+            logger.debug({ tenantId, address: p.address, latitude, longitude }, '[EXCEL] Propiedad geocodificada correctamente al sincronizar');
           } else {
             latitude = null;
             longitude = null;
@@ -638,6 +640,8 @@ export async function syncPropertiesToDatabase(
     logger.info({
       upsertedCount: upsertList.length,
       deletedCount: deleteList.length,
+      geocodedCount,
+      geocodeFailedCount: geocodeFailures.length,
       tenantId
     }, '[SUPABASE] Sincronización de propiedades finalizada con éxito.');
 

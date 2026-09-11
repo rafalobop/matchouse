@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from './logger';
+import { createIntervalService } from '../utils/intervalService';
 
 const DOLAR_API_URL = 'https://dolarapi.com/v1/dolares/blue';
 const FALLBACK_RATE = 1200;
@@ -84,7 +85,12 @@ export async function updateDolarRate(): Promise<number> {
   }
 }
 
-let dolarInterval: NodeJS.Timeout | null = null;
+// Intervalo de 1 hora (3600000 ms)
+const dolarIntervalService = createIntervalService({
+  label: 'DOLAR',
+  intervalMs: 3600000,
+  task: updateDolarRate
+});
 
 /**
  * Inicia el servicio de sincronización horaria de cotización
@@ -98,16 +104,7 @@ export function startDolarService(): void {
     logger.error({ err }, '[DOLAR] Error en actualización inicial de dólar.');
   });
 
-  if (dolarInterval) {
-    clearInterval(dolarInterval);
-  }
-
-  // Intervalo de 1 hora (3600000 ms)
-  dolarInterval = setInterval(() => {
-    updateDolarRate().catch(e => {
-      logger.error(e);
-    });
-  }, 3600000);
+  dolarIntervalService.start();
 
   logger.info('[DOLAR] Servicio de actualización horaria iniciado.');
 }
@@ -116,9 +113,6 @@ export function startDolarService(): void {
  * Detiene el servicio (útil para pruebas y apagado limpio)
  */
 export function stopDolarService(): void {
-  if (dolarInterval) {
-    clearInterval(dolarInterval);
-    dolarInterval = null;
-    logger.info('[DOLAR] Servicio de actualización detenido.');
-  }
+  dolarIntervalService.stop();
+  logger.info('[DOLAR] Servicio de actualización detenido.');
 }

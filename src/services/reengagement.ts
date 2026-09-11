@@ -14,9 +14,10 @@
 import { supabase } from './supabase';
 import { logger } from './logger';
 import { config } from '../config/env';
-import { withRetry } from '../utils/withRetry';
+import { sendWithRetry } from '../utils/withRetry';
 import { hasActivePushSubscriptions, sendWebPushToTenant, buildReengagementPushPayload } from './webPush';
 import { sendReengagementEmail } from './notifier-email';
+import { createIntervalService } from '../utils/intervalService';
 
 export interface ReengagementCandidate {
   id: string;
@@ -35,15 +36,6 @@ const defaultDeps: ReengagementDeps = {
   sendPush: (tenantId, searchId) => sendWebPushToTenant(tenantId, buildReengagementPushPayload(searchId)),
   sendEmailFallback: sendReengagementEmail
 };
-
-async function sendWithRetry(action: () => Promise<boolean | void>): Promise<void> {
-  await withRetry(async () => {
-    const result = await action();
-    if (result === false) {
-      throw new Error('La acción de notificación no tuvo éxito (reintentable)');
-    }
-  }, { attempts: 3, baseDelayMs: 150 });
-}
 
 /**
  * Busca las active_searches 'expired' con el flag de reenganche todavía apagado, y descarta las
@@ -116,25 +108,21 @@ export async function runReengagementMessages(client = supabase, deps: Reengagem
   return { processed: candidates.length, sent, failed };
 }
 
-let reengagementInterval: NodeJS.Timeout | null = null;
+const reengagementIntervalService = createIntervalService({
+  label: 'REENGAGEMENT',
+  intervalMs: config.reengagementIntervalMinutes * 60 * 1000,
+  task: () => runReengagementMessages()
+});
 
 export function startReengagementService(): void {
-  const intervalMs = config.reengagementIntervalMinutes * 60 * 1000;
   logger.info(
     { intervalMinutes: config.reengagementIntervalMinutes },
     '[REENGAGEMENT] Iniciando servicio de avisos de reenganche (KAN-58).'
   );
 
-  reengagementInterval = setInterval(() => {
-    runReengagementMessages().catch((err: any) => {
-      logger.error({ error: err.message || err }, '[REENGAGEMENT] Fallo inesperado en la corrida periódica.');
-    });
-  }, intervalMs);
+  reengagementIntervalService.start();
 }
 
 export function stopReengagementService(): void {
-  if (reengagementInterval) {
-    clearInterval(reengagementInterval);
-    reengagementInterval = null;
-  }
+  reengagementIntervalService.stop();
 }

@@ -1,7 +1,6 @@
-import express from 'express';
+import * as express from 'express';
 import { logger } from '../services/logger';
 import { validateBodyWhitelist } from '../utils/bodyWhitelist';
-import { tenantAuthMiddleware } from '../middleware/tenantAuth';
 import {
   resolvePropertiesZoneInfoBatch,
   resolvePropertyZoneInfo,
@@ -9,6 +8,8 @@ import {
 } from '../services/zonesService';
 import { getTenantPlanLimits, countTenantProperties } from '../services/planLimits';
 import { requireOwner } from '../utils/agencyOwnership';
+import { parsePagination } from '../utils/pagination';
+import { isValidUUID } from '../utils/idValidation';
 
 // KAN-273: CRUD de propiedades para la tabla interactiva del dashboard (visualización, edición,
 // filtros/orden, alta y baja desde la UI, sin depender de un re-upload del Excel). Todas las rutas
@@ -17,15 +18,9 @@ import { requireOwner } from '../utils/agencyOwnership';
 // owner_id(), KAN-306 continuación — antes tenant_id = auth.uid()) más el filtro explícito
 // .eq('tenant_id', tenantId) en cada query, mismo criterio que matches.ts/upload.ts. Excepción:
 // el DELETE está restringido al dueño real de la agencia (ver el handler más abajo).
-//
-// Prefijo /api/catalog/properties (no /api/properties): src/adminRoutes.ts ya registra
-// `GET /api/properties` (panel admin, cross-tenant, adminAuthMiddleware) y mountAdminRouter(app) se
-// monta antes que las rutas de tenant en src/index.ts — un tenant pegándole a /api/properties
-// hubiera caído siempre en la ruta admin (401 por no tener sesión de admin), nunca en esta. Se
-// agrupa bajo /api/catalog, mismo dominio que ya usa GET /api/catalog (conteo, ver upload.ts).
 
-const OPERATIONS = ['venta', 'alquiler', 'compra'] as const;
-const PROPERTY_TYPES = ['departamento', 'casa', 'terreno', 'local', 'oficina', 'otro'] as const;
+export const OPERATIONS = ['venta', 'alquiler', 'compra'] as const;
+export const PROPERTY_TYPES = ['departamento', 'casa', 'terreno', 'local', 'oficina', 'otro'] as const;
 const CURRENCIES = ['USD', 'ARS'] as const;
 
 const SORTABLE_FIELDS = [
@@ -41,16 +36,17 @@ type SortableField = typeof SORTABLE_FIELDS[number];
 // automático del upload. La corrección posterior de una coordenada ya cargada queda exclusivamente
 // del lado admin (`PATCH /admin/api/properties/:id/coordinates`, KAN-130) — el tenant solo puede
 // pedirla vía el nuevo POST .../request_correction más abajo.
-const CREATE_FIELDS = [
+export const CREATE_FIELDS = [
   'address', 'floor', 'unit', 'block', 'lot', 'price', 'currency', 'maintenance_fees',
   'bedrooms', 'features', 'contact_info', 'operation', 'property_type', 'latitude', 'longitude'
 ] as const;
-const UPDATE_FIELDS = [
+export const UPDATE_FIELDS = [
   'address', 'floor', 'unit', 'block', 'lot', 'price', 'currency', 'maintenance_fees',
   'bedrooms', 'features', 'contact_info', 'operation', 'property_type', 'expectedUpdatedAt'
 ] as const;
 
-const PROPERTY_SELECT = 'id, address, floor, unit, block, lot, price, currency, maintenance_fees, ' +
+const PROPERTY_SELECT =
+  'id, address, floor, unit, block, lot, price, currency, maintenance_fees, ' +
   'bedrooms, features, contact_info, operation, property_type, sheet_name, latitude, longitude, ' +
   'needs_coordinate_review, zone_id, neighborhoods!properties_zone_id_fkey(id, name, group_id), ' +
   'created_at, updated_at';
@@ -150,15 +146,13 @@ function validateFields(body: any, requireAll: boolean): ValidationResult {
   return {};
 }
 
-const router = express.Router();
-
 // GET /api/catalog/properties: tabla interactiva. Filtros (operation, property_type, search sobre address)
 // y ordenamiento (sort/order) por cualquier columna soportada, con paginación limit/offset — sin
 // esto, una cartera de miles de filas (ver KAN-71, límite real de subida) se traería completa en
 // cada carga de la tabla.
-router.get('/api/catalog/properties', tenantAuthMiddleware, async (req, res) => {
-  const tenantId = (req as any).tenantId;
-  const supabase = (req as any).supabaseClient;
+export async function listProperties(req: express.Request, res: express.Response) {
+  const tenantId = req.tenantId;
+  const supabase = req.supabaseClient;
 
   const { operation, property_type, search, sort, order, limit, offset } = req.query as Record<string, string | undefined>;
 
@@ -173,21 +167,9 @@ router.get('/api/catalog/properties', tenantAuthMiddleware, async (req, res) => 
     : 'created_at';
   const ascending = order === 'asc';
 
-  let parsedLimit = 50;
-  if (limit !== undefined) {
-    const n = parseInt(limit, 10);
-    if (isNaN(n) || n <= 0 || n > 200) {
-      return res.status(400).json({ error: 'El parámetro "limit" debe ser un número entre 1 y 200.' });
-    }
-    parsedLimit = n;
-  }
-  let parsedOffset = 0;
-  if (offset !== undefined) {
-    const n = parseInt(offset, 10);
-    if (isNaN(n) || n < 0) {
-      return res.status(400).json({ error: 'El parámetro "offset" debe ser un número mayor o igual a 0.' });
-    }
-    parsedOffset = n;
+  const { limit: parsedLimit, offset: parsedOffset, error: paginationError } = parsePagination({ limit, offset });
+  if (paginationError) {
+    return res.status(400).json({ error: paginationError });
   }
 
   try {
@@ -231,12 +213,12 @@ router.get('/api/catalog/properties', tenantAuthMiddleware, async (req, res) => 
     logger.error({ error: error.message || error, tenantId }, '[PROPERTIES] Error al listar propiedades');
     res.status(500).json({ error: 'Error interno al listar propiedades.' });
   }
-});
+}
 
 // POST /api/catalog/properties: alta manual desde la UI (además del alta masiva vía Excel en upload.ts).
-router.post('/api/catalog/properties', tenantAuthMiddleware, async (req, res) => {
-  const tenantId = (req as any).tenantId;
-  const supabase = (req as any).supabaseClient;
+export async function createProperty(req: express.Request, res: express.Response) {
+  const tenantId = req.tenantId;
+  const supabase = req.supabaseClient;
 
   const bodyWhitelistError = validateBodyWhitelist(req.body, CREATE_FIELDS);
   if (bodyWhitelistError) {
@@ -279,11 +261,14 @@ router.post('/api/catalog/properties', tenantAuthMiddleware, async (req, res) =>
       tenant_id: tenantId
     };
 
+    // PROPERTY_SELECT se arma con concatenación de strings (no un literal), así que el cliente
+    // tipado de Supabase no puede inferir el shape de la fila y cae a `GenericStringError` — igual
+    // que en `toPropertyResponse`/`refreshZoneId`, se trata como `any` y se confía en el shape real.
     const { data, error } = await supabase
       .from('properties')
       .insert(payload)
       .select(PROPERTY_SELECT)
-      .single();
+      .single() as { data: any; error: any };
 
     if (error) throw error;
 
@@ -302,7 +287,7 @@ router.post('/api/catalog/properties', tenantAuthMiddleware, async (req, res) =>
     logger.error({ error: error.message || error, tenantId }, '[PROPERTIES] Error al crear propiedad');
     res.status(500).json({ error: 'Error interno al crear la propiedad.' });
   }
-});
+}
 
 // PATCH /api/catalog/properties/:id: edición desde la fila expandible. Concurrencia optimista vía
 // expectedUpdatedAt (el updated_at que el cliente vio al leer la fila, ver migración
@@ -310,10 +295,14 @@ router.post('/api/catalog/properties', tenantAuthMiddleware, async (req, res) =>
 // .eq('updated_at', ...) matchea y el trigger de la tabla bumpea updated_at de nuevo al escribir;
 // si otra edición ya pasó por acá, 0 filas afectadas -> 409 con el estado real actual para que el
 // frontend pueda mostrarlo y el usuario decida cómo reconciliar.
-router.patch('/api/catalog/properties/:id', tenantAuthMiddleware, async (req, res) => {
-  const tenantId = (req as any).tenantId;
+export async function updateProperty(req: express.Request, res: express.Response) {
+  const tenantId = req.tenantId;
   const id = req.params.id as string;
-  const supabase = (req as any).supabaseClient;
+  const supabase = req.supabaseClient;
+
+  if (!isValidUUID(id)) {
+    return res.status(400).json({ error: 'El ID de la propiedad está mal formado.' });
+  }
 
   const bodyWhitelistError = validateBodyWhitelist(req.body, UPDATE_FIELDS);
   if (bodyWhitelistError) {
@@ -342,9 +331,12 @@ router.patch('/api/catalog/properties/:id', tenantAuthMiddleware, async (req, re
   }
 
   try {
+    // updatePayload se arma dinámicamente a partir de los campos presentes en el body (Record<string,
+    // any>), así que el cliente tipado no puede verificarlo contra el shape de `properties` en
+    // tiempo de compilación (mismo caso que PROPERTY_SELECT arriba); se confía en `validateFields`.
     const { data, error } = await supabase
       .from('properties')
-      .update(updatePayload)
+      .update(updatePayload as any)
       .eq('id', id)
       .eq('tenant_id', tenantId)
       .eq('updated_at', expectedUpdatedAt)
@@ -382,7 +374,7 @@ router.patch('/api/catalog/properties/:id', tenantAuthMiddleware, async (req, re
     logger.error({ error: error.message || error, tenantId, propertyId: id }, '[PROPERTIES] Error al actualizar propiedad');
     res.status(500).json({ error: 'Error interno al actualizar la propiedad.' });
   }
-});
+}
 
 // POST /api/catalog/properties/:id/request_correction (KAN-305): el tenant ya no puede editar
 // latitude/longitude directamente (ver UPDATE_FIELDS más arriba) — esta es la única vía que le
@@ -394,10 +386,14 @@ router.patch('/api/catalog/properties/:id', tenantAuthMiddleware, async (req, re
 // (`GET /api/properties`, cross-tenant, mountAdminRouter se monta antes) — se sigue el mismo
 // criterio ya documentado arriba para el resto de estas rutas y queda bajo
 // `/api/catalog/properties/:id/request_correction` para no colisionar.
-router.post('/api/catalog/properties/:id/request_correction', tenantAuthMiddleware, async (req, res) => {
-  const tenantId = (req as any).tenantId;
+export async function requestCoordinateCorrection(req: express.Request, res: express.Response) {
+  const tenantId = req.tenantId;
   const id = req.params.id as string;
-  const supabase = (req as any).supabaseClient;
+  const supabase = req.supabaseClient;
+
+  if (!isValidUUID(id)) {
+    return res.status(400).json({ error: 'El ID de la propiedad está mal formado.' });
+  }
 
   try {
     const { data, error } = await supabase
@@ -420,7 +416,7 @@ router.post('/api/catalog/properties/:id/request_correction', tenantAuthMiddlewa
     logger.error({ error: error.message || error, tenantId, propertyId: id }, '[PROPERTIES] Error al solicitar corrección de coordenadas');
     res.status(500).json({ error: 'Error interno al solicitar la corrección de coordenadas.' });
   }
-});
+}
 
 // DELETE /api/catalog/properties/:id
 // KAN-306 (continuación, 2026-09-04): pedido explícito del usuario — un colaborador puede cargar,
@@ -435,11 +431,15 @@ router.post('/api/catalog/properties/:id/request_correction', tenantAuthMiddlewa
 // el mismo fake client que el resto de esta suite de tests (a diferencia de
 // `adminPanelController.ts`, que sí necesita service-role para las escrituras de `role`/
 // `agency_owner_id`, columnas con `REVOKE UPDATE ... FROM authenticated`).
-router.delete('/api/catalog/properties/:id', tenantAuthMiddleware, async (req, res) => {
-  const tenantId = (req as any).tenantId;
-  const actorId = (req as any).actorId;
-  const { id } = req.params;
-  const supabase = (req as any).supabaseClient;
+export async function deleteProperty(req: express.Request, res: express.Response) {
+  const tenantId = req.tenantId;
+  const actorId = req.actorId;
+  const id = req.params.id as string;
+  const supabase = req.supabaseClient;
+
+  if (!isValidUUID(id)) {
+    return res.status(400).json({ error: 'El ID de la propiedad está mal formado.' });
+  }
 
   try {
     const ownerCheck = await requireOwner(actorId, supabase, 'Solo el dueño de la agencia puede eliminar propiedades.');
@@ -465,6 +465,4 @@ router.delete('/api/catalog/properties/:id', tenantAuthMiddleware, async (req, r
     logger.error({ error: error.message || error, tenantId, actorId, propertyId: id }, '[PROPERTIES] Error al eliminar propiedad');
     res.status(500).json({ error: 'Error interno al eliminar la propiedad.' });
   }
-});
-
-export default router;
+}

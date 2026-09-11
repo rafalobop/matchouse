@@ -256,7 +256,7 @@ export function mountAdminRouter(app: express.Application): void {
   // --- API autenticada ---
 
   adminRouter.get('/api/metrics', adminAuthMiddleware, async (req, res) => {
-    const admin = (req as any).admin as { adminUserId: string; email: string };
+    const admin = req.admin as { adminUserId: string; email: string };
 
     if (!(await adminMetricsRateLimiter.check(admin.adminUserId))) {
       return res.status(429).json({ error: 'Demasiadas solicitudes de métricas. Esperá un minuto e intentá de nuevo.' });
@@ -345,7 +345,7 @@ export function mountAdminRouter(app: express.Application): void {
   // Resultado: 1 (SELECT) + a lo sumo 1 (RPC batch) = 2 llamadas a la base por página, sea cual
   // sea la cantidad de propiedades.
   adminRouter.get('/api/properties', adminAuthMiddleware, async (req, res) => {
-    const admin = (req as any).admin as { adminUserId: string; email: string };
+    const admin = req.admin as { adminUserId: string; email: string };
     if (!(await adminApiRateLimiter.check(admin.adminUserId))) {
       return res.status(429).json({ error: 'Demasiadas solicitudes. Esperá un minuto e intentá de nuevo.' });
     }
@@ -420,7 +420,7 @@ export function mountAdminRouter(app: express.Application): void {
   const MAX_ZONE_POINTS_PER_REQUEST = 500;
 
   adminRouter.post('/api/zones', adminAuthMiddleware, async (req, res) => {
-    const zonesAdmin = (req as any).admin as { adminUserId: string; email: string };
+    const zonesAdmin = req.admin as { adminUserId: string; email: string };
     if (!(await adminApiRateLimiter.check(zonesAdmin.adminUserId))) {
       return res.status(429).json({ error: 'Demasiadas solicitudes. Esperá un minuto e intentá de nuevo.' });
     }
@@ -467,7 +467,7 @@ export function mountAdminRouter(app: express.Application): void {
   adminRouter.patch('/api/properties/:id/coordinates', adminAuthMiddleware, async (req, res) => {
     const { id } = req.params;
     const { latitude, longitude } = req.body ?? {};
-    const admin = (req as any).admin as { adminUserId: string; email: string };
+    const admin = req.admin as { adminUserId: string; email: string };
 
     if (!(await adminApiRateLimiter.check(admin.adminUserId))) {
       return res.status(429).json({ error: 'Demasiadas solicitudes. Esperá un minuto e intentá de nuevo.' });

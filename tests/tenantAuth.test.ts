@@ -19,7 +19,7 @@ let server: TestServer;
 test('tenantAuth - setup', async () => {
   const router = express.Router();
   router.get('/whoami', tenantAuthMiddleware, (req, res) => {
-    res.json({ actorId: (req as any).actorId, tenantId: (req as any).tenantId });
+    res.json({ actorId: req.actorId, tenantId: req.tenantId });
   });
   server = await startTestServer(router);
 });

@@ -3,7 +3,7 @@ import { authRoutes } from './authRoutes';
 import { profileRoutes } from './profileRoutes';
 import { uploadRoutes } from './uploadRoutes';
 import { catalogRoutes } from './catalogRoutes';
-import propertiesRoutes from './properties';
+import { propertiesRoutes } from './propertiesRoutes';
 import { searchRoutes } from './searchRoutes';
 import { matchesRoutes } from './matchesRoutes';
 import { notificationsRoutes } from './notificationsRoutes';

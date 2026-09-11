@@ -13,6 +13,10 @@
  * Reproducible (no se borra al terminar el ticket, a diferencia de un script desechable de
  * verificación) — útil para volver a correr en otro ambiente o si reaparecen filas con el mismo
  * patrón por otra causa.
+ *
+ * Idempotente entre corridas: cada perfil notificado queda marcado con
+ * `truncated_name_notified_at`, así que corridas posteriores (antes de que el usuario corrija su
+ * perfil) no le reenvían el email.
  */
 import { Resend } from 'resend';
 import { supabase } from '../src/services/supabase';
@@ -29,7 +33,10 @@ interface AffectedProfile {
 }
 
 async function findAffectedProfiles(): Promise<AffectedProfile[]> {
-  const { data, error } = await supabase.from('profiles').select('id, email, full_name');
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, email, full_name')
+    .is('truncated_name_notified_at', null);
   if (error) {
     throw new Error(`No se pudo leer profiles: ${error.message}`);
   }
@@ -78,7 +85,7 @@ async function main() {
 
       const { error: updateError } = await supabase
         .from('profiles')
-        .update({ profile_completed: false })
+        .update({ profile_completed: false, truncated_name_notified_at: new Date().toISOString() })
         .eq('id', profile.id);
 
       if (updateError) {
