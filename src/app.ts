@@ -46,11 +46,10 @@ export function createApp(): express.Application {
       contentSecurityPolicy: {
         directives: {
           ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-          'script-src': ["'self'", (_req, res) => `'nonce-${(res as express.Response).locals.cspNonce}'`],
-          // Tiles de OpenStreetMap para el mapa interactivo del panel admin (corrección de
-          // coordenadas de propiedades) — Leaflet en sí está vendorizado en src/admin-dashboard/vendor
-          // (sirve como 'self'), solo las imágenes de los tiles vienen de un host externo.
-          'img-src': ["'self'", 'data:', 'https://*.tile.openstreetmap.org']
+          // KAN-342: el mapa Leaflet (tiles de OpenStreetMap) del panel admin ahora lo sirve
+          // brokaza-frontend (Next.js), no este origen — la directiva 'img-src' con el host de
+          // OSM que existía acá para el legacy estático (src/admin-dashboard/) ya no aplica.
+          'script-src': ["'self'", (_req, res) => `'nonce-${(res as express.Response).locals.cspNonce}'`]
         }
       }
     })

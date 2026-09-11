@@ -34,6 +34,13 @@ function createMissingCredentialsStub(): TypedSupabaseClient {
   }) as unknown as TypedSupabaseClient;
 }
 
+// KAN-342 (bug real encontrado en vivo, ver adminRoutes.ts#exchange-token): este singleton es
+// service-role y lo comparte TODA la app — `persistSession: false` solo evita que la sesión se
+// guarde en disco, no evita que una llamada de login (`verifyOtp`/`signInWithPassword`/
+// `setSession`/etc.) sobreescriba el estado interno en memoria del cliente con la identidad de ESE
+// usuario para el resto del proceso. Cualquier operación de login/sesión de un usuario real debe
+// hacerse en un cliente propio y descartable (anon key), nunca acá — `supabase.auth.getUser(jwt)`
+// y `supabase.auth.admin.*` sí son seguros en este singleton porque son stateless (no mutan sesión).
 export const supabase: TypedSupabaseClient = config.missingSupabaseCredentials.length > 0
   ? createMissingCredentialsStub()
   : createClient<Database>(

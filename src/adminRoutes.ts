@@ -1,7 +1,5 @@
 import express from 'express';
-import * as path from 'path';
-import * as fs from 'fs';
-import * as crypto from 'crypto';
+import { createClient } from '@supabase/supabase-js';
 import { supabase } from './services/supabase';
 import { config } from './config/env';
 import { logger } from './services/logger';
@@ -25,10 +23,6 @@ import {
   clearAdminSessionCache
 } from './adminAuth';
 import { sendAdminMagicLinkEmail } from './services/notifier-email';
-
-const adminDashboardPath = fs.existsSync(path.join(__dirname, 'admin-dashboard'))
-  ? path.join(__dirname, 'admin-dashboard')
-  : path.join(process.cwd(), 'src', 'admin-dashboard');
 
 // KAN-127: distribuido (Postgres) — el panel admin puede correr detrás de más de una instancia
 // igual que el resto de la app, ver src/utils/rateLimit.ts.
@@ -71,22 +65,6 @@ function logAdminRead(adminUserId: string, action: string): void {
 
 function isFiniteInRange(value: unknown, min: number, max: number): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
-}
-
-// KAN-289: `express.static(adminDashboardPath, { maxAge: '1y', immutable: true })` cachea estos
-// assets en el browser por un año sin revalidar — necesita que la URL cambie cuando cambia el
-// contenido, si no un deploy con un fix en app.js nunca llegaría a un cliente con el asset viejo
-// cacheado. Se calcula un hash corto del contenido de cada asset una sola vez al levantar el
-// proceso (mismo ciclo de vida que `adminIndexHtml`, leído una sola vez más abajo) y se lo agrega
-// como query string (`?v=<hash>`) a las referencias en index.html — un contenido distinto produce
-// un hash distinto, y por lo tanto una URL distinta que el browser trata como un recurso nuevo.
-function assetVersion(relativePath: string): string {
-  const absolutePath = path.join(adminDashboardPath, relativePath);
-  if (!fs.existsSync(absolutePath)) {
-    return '';
-  }
-  const contents = fs.readFileSync(absolutePath);
-  return crypto.createHash('sha256').update(contents).digest('hex').slice(0, 8);
 }
 
 /**
@@ -133,7 +111,19 @@ export function mountAdminRouter(app: express.Application): void {
         return res.json(genericResponse);
       }
 
-      const redirectTo = config.adminAppUrl || `https://${config.adminHost}`;
+      // KAN-342 (bug encontrado en vivo, primer intento de fix): sin el `/admin` explícito, el
+      // `action_link` hosteado por Supabase (`redirectTo`) caía en la raíz del origen — pero el
+      // problema real resultó más profundo: Supabase solo respeta `redirectTo` si esa URL está en
+      // el allow-list de "Redirect URLs" de su dashboard (Authentication → URL Configuration); sin
+      // eso configurado, cae en silencio a la Site URL (la del tenant), sin importar qué le
+      // mandemos acá. En vez de depender de esa config externa (y de que alguien la mantenga
+      // sincronizada con el dominio real en cada entorno), dejamos de usar `action_link`
+      // (el redirect hosteado de Supabase) del todo: mandamos nuestro propio link con el
+      // `hashed_token` que `generateLink` ya devuelve, y lo canjeamos nosotros mismos server-side
+      // con `verifyOtp` más abajo — la única URL que Supabase necesita conocer es la del propio
+      // proyecto (fija, no depende de `ADMIN_APP_URL`/`ADMIN_HOST` por entorno).
+      const redirectBase = (config.adminAppUrl || `https://${config.adminHost}`).replace(/\/+$/, '');
+      const redirectTo = `${redirectBase}/admin`;
       // 2026-08-22: mismo cambio que el tenant (src/routes/auth.ts) — Supabase ya no manda el
       // email (su template único no puede tener copy propio para admin), generamos el link y lo
       // mandamos nosotros por Resend con el template de admin.
@@ -147,13 +137,14 @@ export function mountAdminRouter(app: express.Application): void {
         return res.json(genericResponse);
       }
 
-      const actionLink = data?.properties?.action_link;
-      if (!actionLink) {
-        logger.error({ ip, email }, '[ADMIN AUTH] Supabase generateLink no devolvió action_link (admin)');
+      const hashedToken = data?.properties?.hashed_token;
+      if (!hashedToken) {
+        logger.error({ ip, email }, '[ADMIN AUTH] Supabase generateLink no devolvió hashed_token (admin)');
         return res.json(genericResponse);
       }
 
-      const sent = await sendAdminMagicLinkEmail(email, actionLink);
+      const ownLink = `${redirectTo}?token_hash=${encodeURIComponent(hashedToken)}&type=magiclink`;
+      const sent = await sendAdminMagicLinkEmail(email, ownLink);
       if (!sent) {
         logger.error({ ip, email }, '[ADMIN AUTH] No se pudo enviar el email de magic link admin');
       } else {
@@ -166,15 +157,45 @@ export function mountAdminRouter(app: express.Application): void {
     }
   });
 
+  // KAN-342: pasa de recibir un `access_token` ya emitido (parseado por el frontend del hash
+  // `#access_token=...` que devolvía el redirect hosteado de Supabase) a recibir el `token_hash`
+  // que nosotros mismos pusimos en el link del email (ver request-magic-link arriba) y canjearlo
+  // acá con `verifyOtp` — la validación contra Supabase pasa a ser explícita en este único punto,
+  // en vez de depender de que el redirect hosteado de Supabase haya llegado a la URL correcta.
   adminRouter.post('/api/auth/exchange-token', async (req, res) => {
-    const { access_token } = req.body ?? {};
-    if (!access_token) return res.status(400).json({ error: 'Token requerido.' });
+    const { token_hash, type } = req.body ?? {};
+    if (!token_hash || typeof token_hash !== 'string') {
+      return res.status(400).json({ error: 'Token requerido.' });
+    }
+    // Único tipo que este endpoint espera — no se acepta ningún otro `type` de OTP de Supabase
+    // (signup/recovery/invite/etc.) aunque el llamador lo pida, este endpoint es solo para el
+    // magic link de admin.
+    if (type !== 'magiclink') {
+      return res.status(400).json({ error: 'Tipo de token inválido.' });
+    }
 
     try {
-      const { data: { user }, error }: any = await withTimeout(
-        supabase.auth.getUser(access_token), 10_000, 'Supabase getUser (admin exchange-token)'
+      // BUG REAL encontrado en vivo (KAN-342): `verifyOtp` es una operación de login — al llamarla
+      // sobre el singleton `supabase` (service-role, importado de `services/supabase.ts` y
+      // COMPARTIDO por toda la app) deja el session interno del cliente seteado al usuario recién
+      // logueado (`role: authenticated`, no `service_role`) para SIEMPRE, no solo para esta
+      // request. Confirmado con los logs de Supabase (Authentication → Logs / edge_logs): el
+      // header `Authorization` de la request siguiente (`isAllowedAdminUser` de más abajo) salía
+      // con el JWT del admin logueado en vez de la service-role key, así que `admin_users` (RLS
+      // deny-all) le devolvía 0 filas — no por falta de permisos reales, sino porque el propio
+      // canje de token pisaba la identidad del cliente compartido. `supabase.auth.getUser(token)`
+      // (lo que usaba el código viejo) NO tiene este problema — es una verificación sin estado, no
+      // hace login. Fix: `verifyOtp` corre en un cliente descartable propio (anon key, el mismo
+      // criterio que un login normal de usuario), nunca en el singleton service-role.
+      const otpClient = createClient(config.supabaseUrl!, config.supabaseAnonKey!, {
+        auth: { persistSession: false, autoRefreshToken: false }
+      });
+      const { data: { session, user }, error }: any = await withTimeout(
+        otpClient.auth.verifyOtp({ token_hash, type: 'magiclink' }),
+        10_000,
+        'Supabase verifyOtp (admin exchange-token)'
       );
-      if (error || !user) {
+      if (error || !session || !user) {
         return res.status(401).json({ error: 'Token inválido o expirado.' });
       }
 
@@ -188,7 +209,7 @@ export function mountAdminRouter(app: express.Application): void {
       // en producción (sin ADMIN_APP_URL, o con https) la cookie exige HTTPS, igual que
       // brokaza_session para tenants (ver src/index.ts).
       const isLocalHttp = !!config.adminAppUrl && config.adminAppUrl.startsWith('http://');
-      res.cookie(ADMIN_SESSION_COOKIE, access_token, {
+      res.cookie(ADMIN_SESSION_COOKIE, session.access_token, {
         httpOnly: true,
         sameSite: 'strict',
         secure: !isLocalHttp,
@@ -535,34 +556,11 @@ export function mountAdminRouter(app: express.Application): void {
     }
   });
 
-  // --- Frontend estático del panel ---
-
-  const adminIndexHtmlPath = path.join(adminDashboardPath, 'index.html');
-  if (fs.existsSync(adminIndexHtmlPath)) {
-    let adminIndexHtml = fs.readFileSync(adminIndexHtmlPath, 'utf-8');
-    // KAN-289: le pega el `?v=<hash>` de versionado a cada asset estático referenciado desde acá
-    // (ver `assetVersion` arriba) — index.html en sí no pasa por express.static (se sirve dinámico
-    // más abajo para poder inyectarle el nonce de CSP en cada request) así que nunca queda cacheado
-    // de forma inmutable, y siempre apunta a la última versión de cada asset.
-    for (const asset of ['/vendor/leaflet/leaflet.css', '/vendor/leaflet/leaflet.js', '/htmlSanitize.js', '/app.js', '/style.css']) {
-      const version = assetVersion(asset.slice(1));
-      if (version) {
-        adminIndexHtml = adminIndexHtml.replace(`"${asset}"`, `"${asset}?v=${version}"`);
-      }
-    }
-    adminRouter.get(['/', '/index.html'], (req, res) => {
-      // res.locals.cspNonce ya lo fija el middleware global de src/index.ts (antes de que la
-      // request llegue acá), consumido también por la directiva CSP de Helmet — mismo patrón
-      // que usa el dashboard de tenants para el script de tema.
-      const html = adminIndexHtml.replace(/__CSP_NONCE__/g, res.locals.cspNonce);
-      res.type('html').send(html);
-    });
-  }
-  // KAN-289: maxAge 1y + immutable — seguro porque cada asset referenciado desde index.html se
-  // versiona con un query string atado al hash de su contenido (`assetVersion` arriba), así que un
-  // cambio de contenido siempre produce una URL nueva en vez de depender de que el browser
-  // revalide la vieja.
-  adminRouter.use(express.static(adminDashboardPath, { maxAge: '1y', immutable: true }));
+  // KAN-342/KAN-258: el frontend estático legacy (`src/admin-dashboard/`, index.html + app.js +
+  // style.css + Leaflet vendorizado) se retiró — el panel admin real ahora es
+  // `brokaza-frontend/src/app/admin` (Next.js), que le pega a estas mismas rutas de API vía el
+  // proxy `/admin/api/*` (ver `next.config.ts` + `admin-api-client.ts`). Este router sigue
+  // existiendo únicamente para exponer esas rutas de API bajo `config.adminHost`.
 
   // Catch-all: cualquier ruta no reconocida del host admin termina acá, nunca hace next() hacia
   // el resto del pipeline (dashboard/API de tenants).
