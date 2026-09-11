@@ -36,7 +36,13 @@ export async function createSearch(req: express.Request, res: express.Response) 
 
   // Fase 1 pre-lanzamiento: cuota mensual de búsquedas del plan (ver src/config/planLimits.ts).
   // Cheque temprano, antes de segmentar, para no gastar la llamada a IA de Agente 0 si ya no queda cuota.
-  const { maxSearchesPerMonth } = await getTenantPlanLimits(tenantId, tenantSupabase);
+  let maxSearchesPerMonth: number;
+  try {
+    ({ maxSearchesPerMonth } = await getTenantPlanLimits(tenantId, tenantSupabase));
+  } catch (error: any) {
+    logger.error({ error: error.message || error, tenantId }, '[BUSQUEDA] Error al leer límites del plan.');
+    return res.status(500).json({ error: 'Error interno al validar el límite de búsquedas de tu plan.' });
+  }
   const searchesThisMonth = await countTenantSearchesThisMonth(tenantId, tenantSupabase);
   if (searchesThisMonth >= maxSearchesPerMonth) {
     return res.status(403).json({

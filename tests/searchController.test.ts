@@ -31,6 +31,22 @@ function makeRes() {
   return res;
 }
 
+test('createSearch - KAN-341: si getTenantPlanLimits lanza (plan no reconocido), responde 500 en vez de dejar el request colgado', async (t) => {
+  t.mock.method(planLimitsService, 'getTenantPlanLimits', async () => { throw new Error('Plan no reconocido: "X" (tenant tenant-1).'); });
+  const countMock = t.mock.method(planLimitsService, 'countTenantSearchesThisMonth', async () => 0);
+  const segmentMock = t.mock.method(aiService, 'segmentSearchRequests', async () => ['busco depto en el centro']);
+
+  const req = makeReq('busco depto en el centro de la ciudad');
+  const res = makeRes();
+
+  await createSearch(req, res as any);
+
+  assert.strictEqual(res.statusCode, 500);
+  assert.ok(res.jsonBody.error);
+  assert.strictEqual(countMock.mock.callCount(), 0, 'No debe seguir el flujo si falló la lectura de límites del plan.');
+  assert.strictEqual(segmentMock.mock.callCount(), 0);
+});
+
 test('createSearch - cuota mensual ya agotada: 403 inmediato sin llamar a segmentSearchRequests ni procesar nada', async (t) => {
   t.mock.method(planLimitsService, 'getTenantPlanLimits', async () => ({ maxProperties: 100, maxSearchesPerMonth: 10 }));
   t.mock.method(planLimitsService, 'countTenantSearchesThisMonth', async () => 10);

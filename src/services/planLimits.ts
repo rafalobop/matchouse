@@ -5,6 +5,12 @@ import { PLAN_LIMITS, PlanLimits, PlanTier } from '../config/planLimits';
 // (req.supabaseClient, patrón "Tenant Context" de KAN-63) más el filtro explícito tenant_id, mismo
 // criterio que ya usan properties.ts/upload.ts para el resto de los conteos por tenant.
 
+// KAN-341: `data.plan` viene de la columna `profiles.plan` (CHECK a nivel BD, ver
+// docs/evolucion_proyecto/add_profiles_plan_2026-08-24.sql) — hoy el único valor posible es
+// 'FREE', pero un drift entre ese CHECK y PLAN_LIMITS (ej. un tier nuevo agregado a uno y no al
+// otro) haría que esto devolviera `undefined` en silencio, y los tres callers (properties.ts,
+// uploadController.ts, searchController.ts) revientan con un TypeError críptico al desestructurar
+// (`Cannot destructure property 'maxProperties' of 'undefined'`) en vez de un error claro.
 export async function getTenantPlanLimits(tenantId: string, supabaseClient: any): Promise<PlanLimits> {
   const { data, error } = await supabaseClient
     .from('profiles')
@@ -14,7 +20,12 @@ export async function getTenantPlanLimits(tenantId: string, supabaseClient: any)
 
   if (error) throw error;
 
-  return PLAN_LIMITS[data.plan as PlanTier];
+  const limits = PLAN_LIMITS[data.plan as PlanTier];
+  if (!limits) {
+    throw new Error(`Plan no reconocido: "${data.plan}" (tenant ${tenantId}). No hay límites definidos en PLAN_LIMITS para este plan.`);
+  }
+
+  return limits;
 }
 
 export async function countTenantProperties(tenantId: string, supabaseClient: any): Promise<number> {
