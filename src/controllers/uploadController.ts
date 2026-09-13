@@ -268,10 +268,13 @@ export async function confirmMapping(req: express.Request, res: express.Response
     await runSyncStageAndRespond(res, tenantId, tenantSupabase, catalog, priceParseErrors, skippedSheets);
   } catch (error: any) {
     broadcastUploadStatus(tenantId, 'error');
-    if (error instanceof ExcelMappingServiceError) {
+    // auditoria.md #7: solo se reenvía `error.message` al cliente cuando el propio error lo marca
+    // `userFacing` (mensaje redactado a mano) — evita filtrar detalle crudo de Postgres/Supabase
+    // (ej. el mapeo guardado del tenant no se pudo leer/guardar) en una respuesta 4xx.
+    if (error instanceof ExcelMappingServiceError && error.userFacing) {
       return res.status(400).json({ error: error.message });
     }
-    logger.error({ tenantId, err: error.message || error }, '[UPLOAD] Error al confirmar mapeo de columnas y procesar Excel');
+    logger.error({ tenantId, err: error.message || error, cause: (error as ExcelMappingServiceError)?.cause }, '[UPLOAD] Error al confirmar mapeo de columnas y procesar Excel');
     res.status(500).json({ error: 'Error interno al procesar el archivo.' });
   }
 }

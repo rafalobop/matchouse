@@ -15,14 +15,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          cache: pnpm
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
-      - run: npm run build
+      - run: pnpm run build
 
       # Ninguno de los tests pega a red real (Supabase/Gemini/OpenAI/Resend quedan mockeados por
       # t.mock.method en cada test, ver .agent/CONTEXT.md) — estos valores son placeholders sin
@@ -31,7 +35,7 @@ jobs:
       # sí necesitan tener el formato real de un par de claves EC (web-push los valida en
       # setVapidDetails al importar src/services/webPush.ts) — este es un par descartable generado
       # con `npx web-push generate-vapid-keys`, no corresponde a ninguna suscripción real.
-      - run: npm test
+      - run: pnpm test
         env:
           GEMINI_API_KEY: dummy-ci-gemini-key
           OPENAI_API_KEY: dummy-ci-openai-key
