@@ -63,8 +63,8 @@ export function getMappingFields(req: express.Request, res: express.Response) {
 }
 
 export async function uploadCatalog(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
-  const tenantSupabase = (req as any).supabaseClient;
+  const tenantId = req.tenantId;
+  const tenantSupabase = req.supabaseClient;
   if (!req.file) {
     return res.status(400).json({ error: 'No se subió ningún archivo' });
   }
@@ -135,8 +135,49 @@ export async function uploadCatalog(req: express.Request, res: express.Response)
       return res.status(400).json({ error: `El archivo tiene ${catalog.length} propiedades y tu plan permite hasta ${maxProperties}.` });
     }
 
-    // Aislamiento por tenant
-    broadcastUploadStatus(tenantId, 'syncing_database');
+    await runSyncStageAndRespond(res, tenantId, tenantSupabase, catalog, priceParseErrors, skippedSheets);
+  } catch (error: any) {
+    logger.error({ tenantId, err: error.message || error }, '[UPLOAD] Error al procesar subida de Excel');
+    broadcastUploadStatus(tenantId, 'error');
+    res.status(500).json({ error: 'Error interno al procesar el archivo.' });
+  }
+}
+
+// KAN-338: hasta acá, `syncPropertiesToDatabase` (geocoding secuencial real, ~1 req/seg contra
+// Nominatim — no se puede paralelizar sin violar su política de uso, ver geocoding.ts) corría
+// DENTRO de la misma respuesta HTTP. Con una cartera nueva de 50+ filas sin coordenadas cacheadas,
+// eso son 55-110+ segundos — más que `UPLOAD_TIMEOUT_MS` (60s) del lado de `brokaza-frontend`,
+// que aborta el fetch pensando que fue un timeout de red cuando en realidad el backend seguía
+// procesando (y probablemente terminaba guardando la cartera igual, sin que el agente se entere).
+//
+// Fix: la respuesta HTTP se manda ACÁ (antes del tramo lento), y el resultado final (o el error)
+// viaja por el WebSocket que ya existía para el progreso (`broadcastUploadStatus`, KAN-137) en la
+// etapa 'done'/'error', con el mismo payload que antes iba en el body de la respuesta síncrona
+// (`count`/`priceParseErrors`/`loaded`/`failed`). Como la función sigue haciendo `await` de todo
+// esto (no es un "fire and forget" desconectado), no hay condición de carrera para testear: los
+// tests pueden seguir haciendo `await uploadCatalog(...)` y ver el resultado final vía el mock de
+// `broadcastUploadStatus`, sin necesidad de sleeps ni de esperar un segundo tick.
+//
+// Pendiente explícito para @frontend (no forma parte de este ticket): `brokaza-frontend` todavía
+// espera el resultado final (`loaded`/`failed`/`count`) en el body de la respuesta HTTP — con este
+// cambio, esa respuesta ahora llega vacía de esos datos (`{ accepted: true }`) apenas arranca el
+// tramo lento. Necesita escuchar la etapa 'done'/'error' del WS (`upload_status`) para el
+// resultado real, no solo para la barra de progreso.
+async function runSyncStageAndRespond(
+  res: express.Response,
+  tenantId: string,
+  tenantSupabase: any,
+  catalog: Property[],
+  priceParseErrors: PriceParseError[],
+  skippedSheets: SkippedSheet[]
+): Promise<void> {
+  broadcastUploadStatus(tenantId, 'syncing_database');
+  res.status(202).json({
+    accepted: true,
+    message: 'Tu cartera se está sincronizando. Te vamos a avisar cuando termine.'
+  });
+
+  try {
     const { geocodeFailures } = await syncPropertiesToDatabase(catalog, tenantId, tenantSupabase);
 
     if (priceParseErrors.length > 0) {
@@ -147,12 +188,10 @@ export async function uploadCatalog(req: express.Request, res: express.Response)
     }
 
     const { loaded, failed } = buildUploadSummary(catalog, priceParseErrors, skippedSheets, geocodeFailures);
-    broadcastUploadStatus(tenantId, 'done');
-    res.json({ success: true, count: catalog.length, priceParseErrors, loaded, failed });
+    broadcastUploadStatus(tenantId, 'done', { count: catalog.length, priceParseErrors, loaded, failed });
   } catch (error: any) {
-    logger.error({ tenantId, err: error.message || error }, '[UPLOAD] Error al procesar subida de Excel');
+    logger.error({ tenantId, err: error.message || error }, '[UPLOAD] Error al sincronizar la cartera tras responder al cliente');
     broadcastUploadStatus(tenantId, 'error');
-    res.status(500).json({ error: 'Error interno al procesar el archivo.' });
   }
 }
 
@@ -163,8 +202,8 @@ export async function uploadCatalog(req: express.Request, res: express.Response)
 // requeridos de cada hoja, persiste el mapeo como confirmado y procesa el archivo completo en la
 // misma request — no hace falta un tercer round-trip.
 export async function confirmMapping(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
-  const tenantSupabase = (req as any).supabaseClient;
+  const tenantId = req.tenantId;
+  const tenantSupabase = req.supabaseClient;
   if (!req.file) {
     return res.status(400).json({ error: 'No se subió ningún archivo' });
   }
@@ -225,25 +264,17 @@ export async function confirmMapping(req: express.Request, res: express.Response
       return res.status(400).json({ error: `El archivo tiene ${catalog.length} propiedades y tu plan permite hasta ${maxProperties}.` });
     }
 
-    broadcastUploadStatus(tenantId, 'syncing_database');
-    const { geocodeFailures } = await syncPropertiesToDatabase(catalog, tenantId, tenantSupabase);
-
-    if (priceParseErrors.length > 0) {
-      logger.warn(
-        { tenantId, priceParseErrors },
-        '[UPLOAD] Filas con precio no parseable detectadas al procesar el Excel'
-      );
-    }
-
-    const { loaded, failed } = buildUploadSummary(catalog, priceParseErrors, skippedSheets, geocodeFailures);
-    broadcastUploadStatus(tenantId, 'done');
-    res.json({ success: true, count: catalog.length, priceParseErrors, loaded, failed });
+    // KAN-338: mismo fix que uploadCatalog — ver comentario de runSyncStageAndRespond.
+    await runSyncStageAndRespond(res, tenantId, tenantSupabase, catalog, priceParseErrors, skippedSheets);
   } catch (error: any) {
     broadcastUploadStatus(tenantId, 'error');
-    if (error instanceof ExcelMappingServiceError) {
+    // auditoria.md #7: solo se reenvía `error.message` al cliente cuando el propio error lo marca
+    // `userFacing` (mensaje redactado a mano) — evita filtrar detalle crudo de Postgres/Supabase
+    // (ej. el mapeo guardado del tenant no se pudo leer/guardar) en una respuesta 4xx.
+    if (error instanceof ExcelMappingServiceError && error.userFacing) {
       return res.status(400).json({ error: error.message });
     }
-    logger.error({ tenantId, err: error.message || error }, '[UPLOAD] Error al confirmar mapeo de columnas y procesar Excel');
+    logger.error({ tenantId, err: error.message || error, cause: (error as ExcelMappingServiceError)?.cause }, '[UPLOAD] Error al confirmar mapeo de columnas y procesar Excel');
     res.status(500).json({ error: 'Error interno al procesar el archivo.' });
   }
 }

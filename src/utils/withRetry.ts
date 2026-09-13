@@ -30,3 +30,16 @@ export async function withRetry<T>(fn: () => Promise<T>, options: WithRetryOptio
 
   throw lastError;
 }
+
+// KAN-79: variante para acciones de notificación (push/email) que señalizan fallo real devolviendo
+// `false` en vez de tirar (sendWebPushToTenant/sendIncomingMatchEmailFallback/sendReengagementEmail
+// ya atrapan sus propios errores de red/proveedor internamente). Se amplía a `Promise<boolean |
+// void>` para que ambos contratos entren.
+export async function sendWithRetry(action: () => Promise<boolean | void>): Promise<void> {
+  await withRetry(async () => {
+    const result = await action();
+    if (result === false) {
+      throw new Error('La acción de notificación no tuvo éxito (reintentable)');
+    }
+  }, { attempts: 3, baseDelayMs: 150 });
+}

@@ -3,7 +3,7 @@ import { supabase } from '../services/supabase';
 import { config } from '../config/env';
 import { logger } from '../services/logger';
 import { withTimeout } from '../utils/withTimeout';
-import { getClientIp } from '../utils/getClientIp';
+import { getClientIp } from '../utils/clientIp';
 import { clearCachedSession } from '../middleware/tenantAuth';
 import { sendMagicLinkEmail } from '../services/notifier-email';
 
@@ -63,7 +63,7 @@ export async function requestMagicLink(req: express.Request, res: express.Respon
         return res.status(503).json({ error: 'No pudimos conectar con el servidor de autenticación. Intentá de nuevo en unos segundos.' });
       }
       logger.warn({ ip, email, supabaseError: error.message }, '[AUTH] Supabase rechazó la solicitud de magic link');
-      return res.status(400).json({ error: error.message });
+      return res.status(400).json({ error: 'No pudimos procesar la solicitud. Verificá el email e intentá de nuevo.' });
     }
 
     const actionLink = data?.properties?.action_link;

@@ -8,6 +8,7 @@ import { logger } from './logger';
 import { config } from '../config/env';
 import { syncLicensedAgents, resolveLicenseValidationStatus } from './licenseRegistry';
 import { sendWebPushToTenant } from './webPush';
+import { createIntervalService } from '../utils/intervalService';
 
 export interface LicenseValidationRetryResult {
   validated: string[];
@@ -34,9 +35,9 @@ export async function runLicenseValidationRetry(client = supabase): Promise<Lice
   const validated: string[] = [];
   const rejected: string[] = [];
 
-  for (const profile of pendingProfiles || []) {
+  const results = await Promise.allSettled((pendingProfiles || []).map(async (profile) => {
     const status = await resolveLicenseValidationStatus(profile.license_number as string, client);
-    if (status === 'pending') continue; // el padrón sigue desactualizado; se reintenta en la próxima corrida
+    if (status === 'pending') return; // el padrón sigue desactualizado; se reintenta en la próxima corrida
 
     const { error: updateError } = await client
       .from('profiles')
@@ -45,7 +46,7 @@ export async function runLicenseValidationRetry(client = supabase): Promise<Lice
 
     if (updateError) {
       logger.error({ error: updateError.message, tenantId: profile.id }, '[LICENSE-RETRY] Error al actualizar el estado de validación.');
-      continue;
+      return;
     }
 
     if (status === 'validated') {
@@ -60,6 +61,12 @@ export async function runLicenseValidationRetry(client = supabase): Promise<Lice
     sendWebPushToTenant(profile.id as string, payload).catch((err: any) => {
       logger.error({ error: err.message || err, tenantId: profile.id }, '[LICENSE-RETRY] Error al enviar la notificación de resultado de validación.');
     });
+  }));
+
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      logger.error({ error: result.reason?.message || result.reason }, '[LICENSE-RETRY] Error inesperado al procesar un perfil pendiente.');
+    }
   }
 
   if (validated.length > 0 || rejected.length > 0) {
@@ -69,7 +76,11 @@ export async function runLicenseValidationRetry(client = supabase): Promise<Lice
   return { validated, rejected };
 }
 
-let retryInterval: NodeJS.Timeout | null = null;
+const retryIntervalService = createIntervalService({
+  label: 'LICENSE-RETRY',
+  intervalMs: config.licenseValidationRetryIntervalMinutes * 60 * 1000,
+  task: () => runLicenseValidationRetry()
+});
 
 /**
  * Arranca el loop periódico. Además dispara una sincronización inicial del padrón sin esperar al
@@ -78,7 +89,6 @@ let retryInterval: NodeJS.Timeout | null = null;
  * `'pending'` cualquier registro real que llegue en esa ventana.
  */
 export function startLicenseValidationRetryService(): void {
-  const intervalMs = config.licenseValidationRetryIntervalMinutes * 60 * 1000;
   logger.info(
     { intervalMinutes: config.licenseValidationRetryIntervalMinutes },
     '[LICENSE-RETRY] Iniciando servicio de reintento de validación de matrícula (KAN-306).'
@@ -88,16 +98,9 @@ export function startLicenseValidationRetryService(): void {
   // un .catch acá.
   void syncLicensedAgents();
 
-  retryInterval = setInterval(() => {
-    runLicenseValidationRetry().catch((err: any) => {
-      logger.error({ error: err.message || err }, '[LICENSE-RETRY] Fallo inesperado en la corrida periódica.');
-    });
-  }, intervalMs);
+  retryIntervalService.start();
 }
 
 export function stopLicenseValidationRetryService(): void {
-  if (retryInterval) {
-    clearInterval(retryInterval);
-    retryInterval = null;
-  }
+  retryIntervalService.stop();
 }

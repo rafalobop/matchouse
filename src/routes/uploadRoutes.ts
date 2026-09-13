@@ -26,7 +26,7 @@ const upload = multer({
 const uploadRateLimiter = createDistributedRateLimiter('upload', config.uploadRateLimitMax, config.uploadRateLimitWindowMs);
 
 async function checkUploadRateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const tenantId = (req as any).tenantId;
+  const tenantId = req.tenantId;
   if (!(await uploadRateLimiter.check(tenantId))) {
     logger.warn({ tenantId }, `[UPLOAD] Rate limit excedido en ${req.method} ${req.path}`);
     return res.status(429).json({ error: 'Demasiadas subidas de archivo. Esperá un minuto e intentá de nuevo.' });
@@ -43,12 +43,12 @@ function handleUpload(req: express.Request, res: express.Response, next: express
       if (err.code === 'LIMIT_FILE_SIZE') {
         const maxMb = Math.floor(config.uploadMaxFileSizeBytes / (1024 * 1024));
         logger.warn(
-          { tenantId: (req as any).tenantId },
+          { tenantId: req.tenantId },
           '[UPLOAD] Archivo rechazado: supera el tamaño máximo permitido.'
         );
         return res.status(413).json({ error: `El archivo supera el tamaño máximo permitido (${maxMb}MB).` });
       }
-      logger.error({ error: err.message, tenantId: (req as any).tenantId }, '[UPLOAD] Error de multer al procesar el archivo subido');
+      logger.error({ error: err.message, tenantId: req.tenantId }, '[UPLOAD] Error de multer al procesar el archivo subido');
       return res.status(400).json({ error: 'No se pudo procesar el archivo subido.' });
     }
     next();

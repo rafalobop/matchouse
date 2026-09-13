@@ -101,6 +101,15 @@ test('getTenantPlanLimits - propaga el error de Supabase si falla la lectura del
   await assert.rejects(() => getTenantPlanLimits('tenant-1', supabase as any), /boom/);
 });
 
+test('getTenantPlanLimits - lanza un error explícito y claro si el plan no está en PLAN_LIMITS (KAN-341)', async () => {
+  const supabase = makeSupabaseMock({ profileRow: { plan: 'ENTERPRISE_NO_EXISTE' } });
+
+  await assert.rejects(
+    () => getTenantPlanLimits('tenant-1', supabase as any),
+    /Plan no reconocido.*ENTERPRISE_NO_EXISTE.*tenant-1/
+  );
+});
+
 test('countTenantProperties - cuenta filtrando por tenant_id', async () => {
   const supabase = makeSupabaseMock({ propertiesCount: 42 });
 

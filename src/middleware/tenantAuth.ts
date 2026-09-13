@@ -92,9 +92,9 @@ export async function tenantAuthMiddleware(req: express.Request, res: express.Re
   // del que está logueado (perfil propio, panel de administración de agencia).
   const cached = getCachedSession(token);
   if (cached) {
-    (req as any).actorId = cached.actorId;
-    (req as any).tenantId = cached.tenantId;
-    (req as any).supabaseClient = getTenantClient(token);
+    req.actorId = cached.actorId;
+    req.tenantId = cached.tenantId;
+    req.supabaseClient = getTenantClient(token);
     return next();
   }
 
@@ -117,9 +117,9 @@ export async function tenantAuthMiddleware(req: express.Request, res: express.Re
     const actorId = user.id;
     const tenantId = await resolveEffectiveTenantId(actorId);
     sessionCache.set(token, { actorId, tenantId, expiresAt: Date.now() + SESSION_CACHE_TTL_MS });
-    (req as any).actorId = actorId;
-    (req as any).tenantId = tenantId;
-    (req as any).supabaseClient = getTenantClient(token);
+    req.actorId = actorId;
+    req.tenantId = tenantId;
+    req.supabaseClient = getTenantClient(token);
     next();
   } catch (err: any) {
     logger.error({ err: err.message }, '[AUTH] Error inesperado en tenantAuthMiddleware (posible timeout de red hacia Supabase)');

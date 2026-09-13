@@ -1,44 +1,24 @@
 import * as express from 'express';
 import { logger } from '../services/logger';
 import { mapBlindMatchRowToDashboardShape, mapIncomingMatchRowToDashboardShape } from '../utils/blindMatchPersistence';
+import { parsePagination } from '../utils/pagination';
+import { isValidUUID } from '../utils/idValidation';
+import { validateBodyWhitelist } from '../utils/bodyWhitelist';
+
+const FEEDBACK_REASON_MAX_LENGTH = 500;
 
 // KAN-291: antes ambos endpoints tenían `.limit(50)` fijo, sin `offset` — un tenant con más de 50
 // matches históricos jamás podía ver los más viejos, sin ningún error ni indicio de que había más
 // datos. Mismo criterio (limit/offset + total) que ya usa GET /api/catalog/properties
-// (src/routes/properties.ts) para el resto de las listas paginadas del dashboard de tenant.
-const MATCHES_DEFAULT_PAGE_SIZE = 50;
-const MATCHES_MAX_PAGE_SIZE = 200;
-
-/** Parsea y valida `limit`/`offset` de query params — devuelve `{ error }` si son inválidos. */
-function parsePagination(query: express.Request['query']): { limit: number; offset: number; error?: string } {
-  let limit = MATCHES_DEFAULT_PAGE_SIZE;
-  if (query.limit !== undefined) {
-    const n = parseInt(String(query.limit), 10);
-    if (isNaN(n) || n <= 0 || n > MATCHES_MAX_PAGE_SIZE) {
-      return { limit, offset: 0, error: `El parámetro "limit" debe ser un número entre 1 y ${MATCHES_MAX_PAGE_SIZE}.` };
-    }
-    limit = n;
-  }
-
-  let offset = 0;
-  if (query.offset !== undefined) {
-    const n = parseInt(String(query.offset), 10);
-    if (isNaN(n) || n < 0) {
-      return { limit, offset, error: 'El parámetro "offset" debe ser un número mayor o igual a 0.' };
-    }
-    offset = n;
-  }
-
-  return { limit, offset };
-}
+// (src/controllers/propertiesController.ts) para el resto de las listas paginadas del dashboard de tenant.
 
 // KAN-78: reescrito contra blind_matches (reemplaza a match_queue, eliminada). Sin fallback a
 // coordinator — ese fallback era un Map en memoria permanentemente vacío (nada lo poblaba desde
 // el retiro de WhatsApp); ante un error real de DB ahora se responde 500 en vez de degradar en
 // silencio a una lista vacía.
 export async function listMatches(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
-  const supabase = (req as any).supabaseClient;
+  const tenantId = req.tenantId;
+  const supabase = req.supabaseClient;
 
   const { limit, offset, error: paginationError } = parsePagination(req.query);
   if (paginationError) {
@@ -70,8 +50,8 @@ export async function listMatches(req: express.Request, res: express.Response) {
 // (matched_tenant_id = auth.uid()). Solo lectura: la curación (user_review_status/feedback_reason)
 // sigue siendo exclusiva del buscador vía POST /api/matches/:id/feedback.
 export async function listIncomingMatches(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
-  const supabase = (req as any).supabaseClient;
+  const tenantId = req.tenantId;
+  const supabase = req.supabaseClient;
 
   const { limit, offset, error: paginationError } = parsePagination(req.query);
   if (paginationError) {
@@ -98,13 +78,26 @@ export async function listIncomingMatches(req: express.Request, res: express.Res
 }
 
 export async function submitFeedback(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
-  const { id } = req.params;
+  const tenantId = req.tenantId;
+  const id = req.params.id as string;
   const { status, reason } = req.body;
-  const supabase = (req as any).supabaseClient;
+  const supabase = req.supabaseClient;
+
+  const bodyWhitelistError = validateBodyWhitelist(req.body, ['status', 'reason']);
+  if (bodyWhitelistError) {
+    return res.status(400).json({ error: bodyWhitelistError });
+  }
+
+  if (!isValidUUID(id)) {
+    return res.status(400).json({ error: 'El ID del match está mal formado.' });
+  }
 
   if (!status || !['ACCEPTED', 'REJECTED'].includes(status)) {
     return res.status(400).json({ error: 'El estado debe ser ACCEPTED o REJECTED' });
+  }
+
+  if (reason !== undefined && (typeof reason !== 'string' || reason.length > FEEDBACK_REASON_MAX_LENGTH)) {
+    return res.status(400).json({ error: `El motivo no puede superar los ${FEEDBACK_REASON_MAX_LENGTH} caracteres.` });
   }
 
   try {

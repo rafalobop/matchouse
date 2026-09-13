@@ -10,6 +10,7 @@ import { uploadCatalog, confirmMapping } from '../src/controllers/uploadControll
 import * as excelService from '../src/services/excel';
 import * as excelMappingService from '../src/services/excelMapping';
 import * as planLimitsService from '../src/services/planLimits';
+import * as realtimeHubService from '../src/services/realtimeHub';
 import { computeHeaderSignature } from '../src/utils/excelHeaderMatcher';
 
 // Fase 1 pre-lanzamiento: cap de cartera del plan (100 en FREE, ver src/config/planLimits.ts)
@@ -79,22 +80,53 @@ test('uploadCatalog - un Excel con más filas de las que permite el plan respond
   assert.strictEqual(syncMock.mock.callCount(), 0, 'No debe tocar la base si el archivo excede el límite del plan.');
 });
 
-test('uploadCatalog - un Excel dentro del límite del plan sincroniza normalmente', async (t) => {
+// KAN-338: el resultado final (loaded/failed/count) ya no viaja en el body de la respuesta HTTP —
+// la respuesta se manda ANTES del tramo lento (geocoding real, ~1 req/seg contra Nominatim, no
+// paralelizable sin violar su política de uso) para que el cliente no dependa de un timeout HTTP
+// larguísimo. El resultado real viaja por WS (`broadcastUploadStatus`, etapa 'done'/'error').
+test('uploadCatalog - un Excel dentro del límite del plan responde de inmediato (202) y sincroniza en el mismo ciclo, avisando el resultado por WS', async (t) => {
   mockReadyMapping(t);
   t.mock.method(planLimitsService, 'getTenantPlanLimits', async () => ({ maxProperties: 100, maxSearchesPerMonth: 10 }));
   const syncMock = t.mock.method(excelService, 'syncPropertiesToDatabase', async () => ({ geocodeFailures: [] }));
+  const broadcastMock = t.mock.method(realtimeHubService, 'broadcastUploadStatus', () => {});
 
   const req = makeReq(buildCatalogBuffer(3));
   const res = makeRes();
 
   await uploadCatalog(req, res as any);
 
-  assert.strictEqual(res.statusCode, 200);
-  assert.strictEqual(res.jsonBody.success, true);
-  assert.strictEqual(res.jsonBody.count, 3);
-  assert.strictEqual(res.jsonBody.loaded.length, 3);
-  assert.strictEqual(res.jsonBody.failed.length, 0);
+  // La respuesta HTTP no lleva el resultado final — solo confirma que se aceptó para procesar.
+  assert.strictEqual(res.statusCode, 202);
+  assert.strictEqual(res.jsonBody.accepted, true);
+  assert.strictEqual(res.jsonBody.loaded, undefined, 'El resultado final no debe viajar en el body de esta respuesta.');
   assert.strictEqual(syncMock.mock.callCount(), 1);
+
+  // El resultado real (equivalente al que antes iba en el body) viaja por WS en la etapa 'done'.
+  const doneCall: any = broadcastMock.mock.calls.find((c: any) => c.arguments[1] === 'done');
+  assert.ok(doneCall, 'Debe notificar la etapa "done" por WS con el resultado.');
+  assert.strictEqual(doneCall.arguments[0], 'tenant-1');
+  assert.strictEqual(doneCall.arguments[2].count, 3);
+  assert.strictEqual(doneCall.arguments[2].loaded.length, 3);
+  assert.strictEqual(doneCall.arguments[2].failed.length, 0);
+});
+
+test('uploadCatalog - si la sincronización falla DESPUÉS de responder, no rompe la respuesta ya enviada y avisa el error por WS', async (t) => {
+  mockReadyMapping(t);
+  t.mock.method(planLimitsService, 'getTenantPlanLimits', async () => ({ maxProperties: 100, maxSearchesPerMonth: 10 }));
+  t.mock.method(excelService, 'syncPropertiesToDatabase', async () => { throw new Error('Fallo simulado de Supabase'); });
+  const broadcastMock = t.mock.method(realtimeHubService, 'broadcastUploadStatus', () => {});
+
+  const req = makeReq(buildCatalogBuffer(3));
+  const res = makeRes();
+
+  await uploadCatalog(req, res as any);
+
+  // La respuesta ya se había mandado como aceptada antes de que la sincronización fallara.
+  assert.strictEqual(res.statusCode, 202);
+  assert.strictEqual(res.jsonBody.accepted, true);
+
+  const errorCall = broadcastMock.mock.calls.find((c: any) => c.arguments[1] === 'error');
+  assert.ok(errorCall, 'Debe notificar la etapa "error" por WS cuando la sincronización falla tras responder.');
 });
 
 test('confirmMapping - mismo cap de cartera que uploadCatalog: 400 sin sincronizar si excede el límite', async (t) => {

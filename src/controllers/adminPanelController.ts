@@ -19,11 +19,11 @@ import { requireOwner } from '../utils/agencyOwnership';
 // real), nunca `req.tenantId`: si usaran `tenantId`, `requireOwner` chequearía el rol del DUEÑO
 // en vez del actor real, y un colaborador podría invitar/revocar colaboradores de una agencia
 // que no es suya. `requireOwner` vive en `utils/agencyOwnership.ts` (compartido con
-// `routes/properties.ts`, que también necesita distinguir dueño real de colaborador para el
+// `controllers/propertiesController.ts`, que también necesita distinguir dueño real de colaborador para el
 // DELETE de propiedades).
 
 export async function listCollaborators(req: express.Request, res: express.Response) {
-  const actorId = (req as any).actorId;
+  const actorId = req.actorId;
 
   try {
     const ownerCheck = await requireOwner(actorId, supabase);
@@ -64,7 +64,7 @@ export async function listCollaborators(req: express.Request, res: express.Respo
 // Los colaboradores no pasan por la validación de matrícula (ver `profileController.ts#updateProfile`)
 // — operan bajo la del dueño de su agencia, decisión de producto acordada con el usuario.
 export async function inviteCollaborator(req: express.Request, res: express.Response) {
-  const actorId = (req as any).actorId;
+  const actorId = req.actorId;
   const { email } = req.body;
 
   const bodyWhitelistError = validateBodyWhitelist(req.body, ['email']);
@@ -94,7 +94,7 @@ export async function inviteCollaborator(req: express.Request, res: express.Resp
 
     const { data: target, error: fetchError } = await supabase
       .from('profiles')
-      .select('id, agency_owner_id')
+      .select('id, agency_owner_id, collaborator_status')
       .eq('email', normalizedEmail)
       .maybeSingle();
 
@@ -105,6 +105,25 @@ export async function inviteCollaborator(req: express.Request, res: express.Resp
         return res.status(400).json({ error: 'No podés otorgarte acceso a vos mismo.' });
       }
       if (target.agency_owner_id === actorId) {
+        // KAN-340: antes esto daba el mismo 409 genérico de abajo ("ya es colaborador de tu
+        // agencia") sin importar el estado — un dueño que quería volver a darle acceso a alguien
+        // que ya había revocado se encontraba con un error sin salida clara, sin que nada lo
+        // guiara a la pestaña "Revocados" (donde `reactivateCollaborator` sí resuelve este caso
+        // exacto). `agency_owner_id` nunca se limpia al revocar (ver comentario de
+        // `revokeCollaborator`), así que es el único campo que distingue "activo" de "revocado,
+        // pero sigue vinculado" — `code` explícito para que el frontend pueda reaccionar sin
+        // parsear el texto del mensaje.
+        if (target.collaborator_status === 'revoked') {
+          // `collaboratorId` para que el frontend pueda ofrecer un botón de "Reactivar" directo
+          // en este mismo formulario (AC del ticket), sin obligar al dueño a ir a buscarlo a la
+          // pestaña "Revocados" — ese id ya lo tenemos acá (`target.id`), no hace falta un
+          // request extra.
+          return res.status(409).json({
+            error: 'Ese usuario ya está vinculado a tu agencia, pero tiene el acceso revocado. Reactivalo desde la pestaña "Revocados" en vez de volver a invitarlo.',
+            code: 'ALREADY_LINKED_REVOKED',
+            collaboratorId: target.id
+          });
+        }
         return res.status(409).json({ error: 'Ese usuario ya es colaborador de tu agencia.' });
       }
       if (target.agency_owner_id) {
@@ -201,7 +220,7 @@ export async function inviteCollaborator(req: express.Request, res: express.Resp
 // enforcement real de que un revocado no vea la cartera compartida vive en
 // `current_agency_owner_id()` (RLS) y `resolveEffectiveTenantId()` (tenantAuth.ts), no acá.
 export async function revokeCollaborator(req: express.Request, res: express.Response) {
-  const actorId = (req as any).actorId;
+  const actorId = req.actorId;
   const { id } = req.params;
 
   if (!isValidUUID(id)) {
@@ -248,7 +267,7 @@ export async function revokeCollaborator(req: express.Request, res: express.Resp
 // reactivar a alguien que sigue vinculado a la agencia del actor (`agency_owner_id === actorId`,
 // nunca se tocó) y que efectivamente estaba revocado.
 export async function reactivateCollaborator(req: express.Request, res: express.Response) {
-  const actorId = (req as any).actorId;
+  const actorId = req.actorId;
   const { id } = req.params;
 
   if (!isValidUUID(id)) {

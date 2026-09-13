@@ -8,9 +8,9 @@ export function getVapidPublicKey(req: express.Request, res: express.Response) {
 }
 
 export async function subscribe(req: express.Request, res: express.Response) {
-  const tenantId = (req as any).tenantId;
+  const tenantId = req.tenantId;
   const { subscription } = req.body;
-  const supabase = (req as any).supabaseClient;
+  const supabase = req.supabaseClient;
 
   // KAN-134: whitelist de campos del body.
   const bodyWhitelistError = validateBodyWhitelist(req.body, ['subscription']);

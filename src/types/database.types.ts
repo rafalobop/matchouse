@@ -337,6 +337,7 @@ export type Database = {
           plan: string
           profile_completed: boolean
           role: string
+          truncated_name_notified_at: string | null
         }
         Insert: {
           agency_name?: string | null
@@ -354,6 +355,7 @@ export type Database = {
           plan?: string
           profile_completed?: boolean
           role?: string
+          truncated_name_notified_at?: string | null
         }
         Update: {
           agency_name?: string | null
@@ -371,6 +373,7 @@ export type Database = {
           plan?: string
           profile_completed?: boolean
           role?: string
+          truncated_name_notified_at?: string | null
         }
         Relationships: [
           {
@@ -398,6 +401,7 @@ export type Database = {
           longitude: number | null
           lot: string | null
           maintenance_fees: number
+          needs_coordinate_review: boolean
           operation: string
           price: number
           property_type: string
@@ -422,6 +426,7 @@ export type Database = {
           longitude?: number | null
           lot?: string | null
           maintenance_fees?: number
+          needs_coordinate_review?: boolean
           operation: string
           price: number
           property_type: string
@@ -446,6 +451,7 @@ export type Database = {
           longitude?: number | null
           lot?: string | null
           maintenance_fees?: number
+          needs_coordinate_review?: boolean
           operation?: string
           price?: number
           property_type?: string

@@ -11,6 +11,7 @@
 import { supabase } from './supabase';
 import { logger } from './logger';
 import { config } from '../config/env';
+import { createIntervalService } from '../utils/intervalService';
 
 /**
  * Marca como 'expired' toda active_searches con status 'active' cuyo expires_at ya pasó.
@@ -37,28 +38,24 @@ export async function runSearchExpiration(client = supabase): Promise<string[]> 
   return expiredIds;
 }
 
-let expirationInterval: NodeJS.Timeout | null = null;
+const expirationIntervalService = createIntervalService({
+  label: 'SEARCH-EXPIRATION',
+  intervalMs: config.searchExpirationIntervalMinutes * 60 * 1000,
+  task: () => runSearchExpiration()
+});
 
 /**
  * Inicia el loop en segundo plano de vencimiento de búsquedas (KAN-41).
  */
 export function startSearchExpirationService(): void {
-  const intervalMs = config.searchExpirationIntervalMinutes * 60 * 1000;
   logger.info(
     { intervalMinutes: config.searchExpirationIntervalMinutes },
     '[SEARCH-EXPIRATION] Iniciando servicio de vencimiento de búsquedas (KAN-41).'
   );
 
-  expirationInterval = setInterval(() => {
-    runSearchExpiration().catch((err: any) => {
-      logger.error({ error: err.message || err }, '[SEARCH-EXPIRATION] Fallo inesperado en la corrida periódica.');
-    });
-  }, intervalMs);
+  expirationIntervalService.start();
 }
 
 export function stopSearchExpirationService(): void {
-  if (expirationInterval) {
-    clearInterval(expirationInterval);
-    expirationInterval = null;
-  }
+  expirationIntervalService.stop();
 }

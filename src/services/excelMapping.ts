@@ -12,8 +12,13 @@ import {
 } from '../utils/excelHeaderMatcher';
 import { suggestExcelColumnMapping, ExcelColumnMappingSuggestion } from './ai';
 
+// Contrato explícito user-facing vs. debug (auditoria.md #7): `userFacing: true` marca un mensaje
+// redactado a mano, seguro para devolver tal cual al cliente (ej. validación de negocio). Con
+// `userFacing: false` (default) el `message` puede incluir detalle de la causa real (útil en logs,
+// ver `cause`) y NO debe reenviarse crudo en una respuesta HTTP — el caller (`uploadController`)
+// responde un mensaje genérico y loguea `message`/`cause` para debug.
 export class ExcelMappingServiceError extends Error {
-  constructor(message: string, public readonly cause?: unknown) {
+  constructor(message: string, public readonly cause?: unknown, public readonly userFacing: boolean = false) {
     super(message);
     this.name = 'ExcelMappingServiceError';
   }
@@ -103,7 +108,7 @@ async function getStoredMapping(tenantId: string, headerSignature: string, clien
     .maybeSingle();
 
   if (error) {
-    throw new ExcelMappingServiceError(`No se pudo leer el mapeo guardado del tenant: ${error.message}`, error);
+    throw new ExcelMappingServiceError('No se pudo leer el mapeo guardado del tenant.', error);
   }
   return (data as StoredMappingRow | null) ?? null;
 }
@@ -133,7 +138,7 @@ async function upsertMapping(
     );
 
   if (error) {
-    throw new ExcelMappingServiceError(`No se pudo guardar el mapeo de columnas: ${error.message}`, error);
+    throw new ExcelMappingServiceError('No se pudo guardar el mapeo de columnas.', error);
   }
 }
 
@@ -280,7 +285,11 @@ export async function confirmColumnMapping(
 
   const missingRequired = unresolvedRequired(resolvedFields);
   if (missingRequired.length > 0) {
-    throw new ExcelMappingServiceError(`El mapeo confirmado no resuelve los campos requeridos: ${missingRequired.join(', ')}`);
+    throw new ExcelMappingServiceError(
+      `El mapeo confirmado no resuelve los campos requeridos: ${missingRequired.join(', ')}`,
+      undefined,
+      true
+    );
   }
 
   await upsertMapping(tenantId, headerSignature, resolvedFields, 'manual', true, 1, client);

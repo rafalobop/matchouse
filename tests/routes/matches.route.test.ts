@@ -78,7 +78,7 @@ test('KAN-76 - POST /api/matches/:id/feedback con status inválido responde 400 
   const fakeClient = createFakeSupabaseClient(() => chainableResult({ data: null, error: null }));
   const { cookie } = createFakeTenantSession(fakeClient);
 
-  const res = await fetch(`${server.baseUrl}/api/matches/some-id/feedback`, {
+  const res = await fetch(`${server.baseUrl}/api/matches/11111111-1111-1111-1111-111111111111/feedback`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: cookie },
     body: JSON.stringify({ status: 'NO_ES_UN_STATUS_VALIDO' })
@@ -182,7 +182,7 @@ test('KAN-314 - POST /api/matches/:id/feedback con id de un match que no es del 
   const fakeClient = createFakeSupabaseClient(() => chainableResult({ data: [], error: null }));
   const { cookie } = createFakeTenantSession(fakeClient);
 
-  const res = await fetch(`${server.baseUrl}/api/matches/otro-tenant-match-id/feedback`, {
+  const res = await fetch(`${server.baseUrl}/api/matches/22222222-2222-2222-2222-222222222222/feedback`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: cookie },
     body: JSON.stringify({ status: 'ACCEPTED' })
@@ -190,6 +190,36 @@ test('KAN-314 - POST /api/matches/:id/feedback con id de un match que no es del 
   assert.strictEqual(res.status, 404);
   const body = await res.json();
   assert.strictEqual(body.error, 'Match no encontrado.');
+});
+
+// KAN-134 follow-up: submitFeedback era el único endpoint mutador sin whitelist de body ni cap de
+// longitud en `reason` — mismo criterio que ya aplica el resto de rutas (validateBodyWhitelist).
+test('POST /api/matches/:id/feedback con campos no permitidos en el body responde 400', async () => {
+  const fakeClient = createFakeSupabaseClient(() => chainableResult({ data: null, error: null }));
+  const { cookie } = createFakeTenantSession(fakeClient);
+
+  const res = await fetch(`${server.baseUrl}/api/matches/11111111-1111-1111-1111-111111111111/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ status: 'ACCEPTED', tenant_id: 'otro-tenant' })
+  });
+  assert.strictEqual(res.status, 400);
+  const body = await res.json();
+  assert.match(body.error, /campos no permitidos/);
+});
+
+test('POST /api/matches/:id/feedback con reason que supera el largo máximo responde 400', async () => {
+  const fakeClient = createFakeSupabaseClient(() => chainableResult({ data: null, error: null }));
+  const { cookie } = createFakeTenantSession(fakeClient);
+
+  const res = await fetch(`${server.baseUrl}/api/matches/11111111-1111-1111-1111-111111111111/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ status: 'REJECTED', reason: 'x'.repeat(501) })
+  });
+  assert.strictEqual(res.status, 400);
+  const body = await res.json();
+  assert.match(body.error, /500 caracteres/);
 });
 
 test('routes/matchesRoutes - teardown', async () => {

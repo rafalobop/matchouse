@@ -7,8 +7,10 @@ cartera de **otros** tenants (nunca la propia) — de ahí "ciego": ningún tena
 solo recibe avisos de matches puntuales.
 
 Repo separado del frontend (`brokaza-frontend`, Next.js) desde KAN-145 — este repo expone solo API
-(`/api/*`, `/internal/*`, `/health`, WebSocket en `/ws`) más el panel admin, que todavía sirve su
-propio bundle estático (`src/admin-dashboard/`, en migración, ver `MIGRATION_PLAN.md`).
+(`/api/*`, `/internal/*`, `/health`, WebSocket en `/ws`), incluidas las rutas del panel admin
+(`src/adminRoutes.ts`). El panel admin en sí (login, métricas, listado/corrección de propiedades)
+vive como UI en `brokaza-frontend/src/app/admin` (Next.js) — el bundle estático legacy
+(`src/admin-dashboard/`) se retiró en KAN-342, ver `MIGRATION_PLAN.md`.
 
 ## Stack
 
@@ -27,8 +29,9 @@ src/
 │                          # arranca servicios de fondo, crea el server HTTP y hace listen()
 ├── app.ts                # createApp(): Helmet/CSP, express.json, cookieParser, monta el panel
 │                          # admin, GET /health, estáticos de public/, y el router de src/routes/
-├── adminRoutes.ts         # router del panel admin (app.admin.brokaza.com) — cross-tenant, montado
-│                          # aparte, solo si ADMIN_HOST está seteada
+├── adminRoutes.ts         # rutas de API del panel admin (app.admin.brokaza.com) — cross-tenant,
+│                          # montadas aparte, solo si ADMIN_HOST está seteada. La UI vive en
+│                          # brokaza-frontend (Next.js), no acá (KAN-342).
 ├── middleware/            # tenantAuthMiddleware (auth de tenant) y afines
 ├── routes/*Routes.ts      # un router por dominio: auth, profile, upload, catalog, search, matches,
 │                          # notifications, internal — define paths/middleware (auth, rate limit)
@@ -38,8 +41,7 @@ src/
 │                          # notifier-email.ts, realtimeHub.ts (WebSocket), searchExpiration.ts, etc.
 ├── config/env.ts          # validación fail-fast de variables de entorno al arrancar
 ├── utils/                 # helpers puros (rate limiting, validaciones, whitelist de body, etc.)
-├── types/database.types.ts # tipos generados desde el schema real de Supabase (no se edita a mano)
-└── admin-dashboard/        # bundle estático legacy del panel admin (en migración)
+└── types/database.types.ts # tipos generados desde el schema real de Supabase (no se edita a mano)
 ```
 
 ## Autenticación

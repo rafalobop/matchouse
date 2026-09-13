@@ -18,7 +18,7 @@ export const systemRoutes = Router();
 const dashboardMetricsRateLimiter = createRateLimiter(6, 60_000);
 
 function checkDashboardMetricsRateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const tenantId = (req as any).tenantId;
+  const tenantId = req.tenantId;
   if (!dashboardMetricsRateLimiter.check(tenantId)) {
     // 204 en vez de 429: perder un reporte de métricas no debe generar ruido de error visible en
     // el cliente ni reintentos — el próximo snapshot (60s después) lo compensa.

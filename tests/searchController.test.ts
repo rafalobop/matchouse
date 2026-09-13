@@ -5,6 +5,7 @@ import { createSearch } from '../src/controllers/searchController';
 import * as aiService from '../src/services/ai';
 import * as searchSegmentProcessorService from '../src/services/searchSegmentProcessor';
 import * as planLimitsService from '../src/services/planLimits';
+import { AIExtractionFailedError, AITimeoutError } from '../src/services/ai';
 
 // Fase 1 pre-lanzamiento: cuota mensual de búsquedas del plan (10/mes en FREE, ver
 // src/config/planLimits.ts). createSearch no expone un shape fácil de invocar vía HTTP real (no hay
@@ -29,6 +30,22 @@ function makeRes() {
   res.json = (body: any) => { res.jsonBody = body; return res; };
   return res;
 }
+
+test('createSearch - KAN-341: si getTenantPlanLimits lanza (plan no reconocido), responde 500 en vez de dejar el request colgado', async (t) => {
+  t.mock.method(planLimitsService, 'getTenantPlanLimits', async () => { throw new Error('Plan no reconocido: "X" (tenant tenant-1).'); });
+  const countMock = t.mock.method(planLimitsService, 'countTenantSearchesThisMonth', async () => 0);
+  const segmentMock = t.mock.method(aiService, 'segmentSearchRequests', async () => ['busco depto en el centro']);
+
+  const req = makeReq('busco depto en el centro de la ciudad');
+  const res = makeRes();
+
+  await createSearch(req, res as any);
+
+  assert.strictEqual(res.statusCode, 500);
+  assert.ok(res.jsonBody.error);
+  assert.strictEqual(countMock.mock.callCount(), 0, 'No debe seguir el flujo si falló la lectura de límites del plan.');
+  assert.strictEqual(segmentMock.mock.callCount(), 0);
+});
 
 test('createSearch - cuota mensual ya agotada: 403 inmediato sin llamar a segmentSearchRequests ni procesar nada', async (t) => {
   t.mock.method(planLimitsService, 'getTenantPlanLimits', async () => ({ maxProperties: 100, maxSearchesPerMonth: 10 }));
@@ -105,4 +122,49 @@ test('createSearch - si todos los segmentos procesados fallan y el resto queda s
 
   assert.strictEqual(res.statusCode, 403, 'Sin timeouts de IA de por medio, allFailed + algún segmento sobre cupo debe dar 403, no 500 genérico.');
   assert.strictEqual(res.jsonBody.success, false);
+});
+
+// KAN-339: antes, un fallo real (no timeout) de extractFromTextInput no existía como caso
+// distinguible acá — processSingleSearchSegment podía lanzar y caía al 500 genérico del catch,
+// perdiendo la distinción con un error interno real. Ahora AIExtractionFailedError se clasifica
+// aparte, igual que AITimeoutError ya se clasificaba.
+test('createSearch - AIExtractionFailedError en el único segmento responde 502 con code AI_EXTRACTION_FAILED (no 500 genérico)', async (t) => {
+  t.mock.method(planLimitsService, 'getTenantPlanLimits', async () => ({ maxProperties: 100, maxSearchesPerMonth: 10 }));
+  t.mock.method(planLimitsService, 'countTenantSearchesThisMonth', async () => 0);
+  t.mock.method(aiService, 'segmentSearchRequests', async () => ['un mensaje que ninguna IA pudo interpretar']);
+  t.mock.method(searchSegmentProcessorService, 'processSingleSearchSegment', async () => {
+    throw new AIExtractionFailedError();
+  });
+
+  const req = makeReq('un mensaje que ninguna IA pudo interpretar');
+  const res = makeRes();
+
+  await createSearch(req, res as any);
+
+  assert.strictEqual(res.statusCode, 502);
+  assert.strictEqual(res.jsonBody.success, false);
+  assert.strictEqual(res.jsonBody.searches[0].code, 'AI_EXTRACTION_FAILED');
+});
+
+test('createSearch - AITimeoutError sigue clasificándose antes que AIExtractionFailedError cuando coexisten varios segmentos (504 gana)', async (t) => {
+  t.mock.method(planLimitsService, 'getTenantPlanLimits', async () => ({ maxProperties: 100, maxSearchesPerMonth: 10 }));
+  t.mock.method(planLimitsService, 'countTenantSearchesThisMonth', async () => 0);
+  t.mock.method(aiService, 'segmentSearchRequests', async () => ['segmento con timeout', 'segmento con fallo real']);
+  t.mock.method(
+    searchSegmentProcessorService,
+    'processSingleSearchSegment',
+    async (_tenantId: string, _supabase: any, segmentText: string) => {
+      if (segmentText === 'segmento con timeout') throw new AITimeoutError();
+      throw new AIExtractionFailedError();
+    },
+  );
+
+  const req = makeReq('segmento con timeout y segmento con fallo real');
+  const res = makeRes();
+
+  await createSearch(req, res as any);
+
+  assert.strictEqual(res.statusCode, 504);
+  const codes = res.jsonBody.searches.map((s: any) => s.code).sort();
+  assert.deepStrictEqual(codes, ['AI_EXTRACTION_FAILED', 'AI_TIMEOUT']);
 });
