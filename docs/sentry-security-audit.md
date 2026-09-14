@@ -25,7 +25,7 @@ mínimo una vez por trimestre calendario aunque no haya cambios conocidos.
    `request.cookies` o `request.data` contiene un `access_token`, `Bearer ...` o secreto en texto
    plano. Si aparece alguno, es señal de que `SENSITIVE_COOKIE_NAMES`/`SENSITIVE_HEADER_NAMES`
    quedaron desactualizadas respecto al código real — corregir y volver a este checklist.
-5. **Tests siguen en verde** — `npm test` debe seguir pasando `tests/sentryDataCollection.test.ts`
+5. **Tests siguen en verde** — `pnpm test` debe seguir pasando `tests/sentryDataCollection.test.ts`
    sin cambios; si se agregó una cookie/header nuevo al paso 1/2, agregar también un caso de test
    que lo cubra.
 
