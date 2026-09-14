@@ -18,10 +18,11 @@ export interface ProfileInput {
 const MAX_TEXT_FIELD_LENGTH = 150;
 // Codigo de pais tipo "+54"/"+1" (selector del formulario, no texto libre).
 const PHONE_COUNTRY_CODE_REGEX = /^\+\d{1,4}$/;
-// Numero local: siempre 8 digitos exactos (regla de negocio explicita, independiente del pais
-// elegido en el selector).
-const PHONE_LOCAL_NUMBER_LENGTH = 8;
-const PHONE_LOCAL_NUMBER_REGEX = /^\d{8}$/;
+// Numero local: siempre 10 digitos exactos — codigo de area (3 digitos, ej. "381", "387") +
+// numero (7 digitos, ej. "4591919"). Regla de negocio explicita, independiente del pais elegido
+// en el selector.
+const PHONE_LOCAL_NUMBER_LENGTH = 10;
+const PHONE_LOCAL_NUMBER_REGEX = /^\d{10}$/;
 
 // KAN-90: reglas de formato para nombre/apellido (documentadas también en README.md). Mínimo 2
 // caracteres (evita iniciales sueltas tipo "J"), máximo 100 (más chico que MAX_TEXT_FIELD_LENGTH

@@ -71,9 +71,9 @@ sesión de usuario (crons, notificadores) usan el cliente service-role a propós
 ## Empezar local
 
 ```bash
-npm install
+pnpm install
 cp .env.example .env   # completar los valores, ver sección de abajo
-npm run dev            # ts-node, con reload manual (no hot-reload)
+pnpm run dev            # ts-node, con reload manual (no hot-reload)
 ```
 
 El servidor **no arranca** si faltan variables de entorno requeridas (`src/config/env.ts`, fail-fast
@@ -100,8 +100,8 @@ El resto de las variables documentadas en `.env.example` (rate limits, `ADMIN_HO
 ## Tests
 
 ```bash
-npm test         # node:test vía tests/runner.ts — todos los archivos de tests/ en un solo proceso
-npm run build     # tsc, sin emitir dist/ en dev (usalo para chequear tipos)
+pnpm test         # node:test vía tests/runner.ts — todos los archivos de tests/ en un solo proceso
+pnpm run build     # tsc, sin emitir dist/ en dev (usalo para chequear tipos)
 ```
 
 Sin harness de supertest/Express en este repo — los tests de rutas invocan los controllers
@@ -111,7 +111,7 @@ Push) va mockeado con `t.mock.method`. Ningún test pega a red real.
 ## CI
 
 `.github/workflows/ci.yml` (KAN-281): en cada PR/push a `master`/`development` corre
-`npm ci && npm run build && npm test` sobre Node 22. Las variables de entorno que requiere
+`pnpm install --frozen-lockfile && pnpm run build && pnpm test` sobre Node 22. Las variables de entorno que requiere
 `config/env.ts` van como placeholders inline en el workflow (no hacen falta secrets reales, ningún
 test pega a red) — única excepción, `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` sí necesitan el formato
 real de un par de claves EC porque `web-push` los valida al importar el módulo.
