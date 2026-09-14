@@ -134,6 +134,26 @@ export async function updateProfile(req: express.Request, res: express.Response)
     // cliente tenant-scoped, así que toda esta escritura pasa por el cliente service-role, no por
     // `req.supabaseClient` como el resto de las ediciones de perfil.
     const trimmedLicenseNumber = (license_number as string).trim();
+
+    // KAN-306 (fix): una matrícula ya reclamada por OTRO tenant no puede reutilizarse — antes de
+    // esto solo se validaba contra el padrón externo (existe/no existe), nunca contra `profiles`,
+    // así que dos agentes podían registrarse con el mismo número.
+    const { data: existingOwner, error: duplicateCheckError } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('license_number', trimmedLicenseNumber)
+      .neq('id', tenantId)
+      .maybeSingle();
+    if (duplicateCheckError) throw duplicateCheckError;
+
+    if (existingOwner) {
+      logger.warn({ tenantId, licenseNumber: trimmedLicenseNumber }, '[PERFIL] Registro rechazado: número de matrícula ya registrado por otro tenant.');
+      return res.status(409).json({
+        error: 'El número de matrícula ingresado ya está registrado por otra cuenta.',
+        license_validation_status: 'rejected'
+      });
+    }
+
     const validationStatus = await resolveLicenseValidationStatus(trimmedLicenseNumber);
 
     if (validationStatus === 'rejected') {
@@ -181,6 +201,16 @@ export async function updateProfile(req: express.Request, res: express.Response)
 
     res.json({ success: true, profile });
   } catch (error: any) {
+    // Código 23505 = unique_violation. Cubre la condición de carrera entre el chequeo de
+    // duplicado de arriba y este UPDATE (dos requests concurrentes con la misma matrícula) —
+    // el índice único `profiles_license_number_unique_idx` es la fuente de verdad final.
+    if (error.code === '23505') {
+      logger.warn({ tenantId, error: error.message }, '[PERFIL] Registro rechazado por constraint único: matrícula ya registrada (condición de carrera).');
+      return res.status(409).json({
+        error: 'El número de matrícula ingresado ya está registrado por otra cuenta.',
+        license_validation_status: 'rejected'
+      });
+    }
     logger.error({ error: error.message || error, tenantId }, '[PERFIL] Error al actualizar el perfil del tenant');
     res.status(500).json({ error: 'Error interno al actualizar el perfil.' });
   }

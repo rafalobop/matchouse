@@ -7,7 +7,7 @@ function baseInput(overrides: Partial<ProfileInput> = {}): ProfileInput {
     first_name: 'Juan',
     last_name: 'Pérez',
     phone_country_code: '+54',
-    phone_local_number: '38155512',
+    phone_local_number: '3815551234',
     agency_name: 'Inmobiliaria del Centro',
     city: 'San Miguel de Tucuman',
     license_number: '350',
@@ -36,12 +36,12 @@ test('profileValidation - rechaza phone_local_number con letras', () => {
   assert.notStrictEqual(validateProfileInput(baseInput({ phone_local_number: '381ABCD' })), null);
 });
 
-test('profileValidation - rechaza phone_local_number con menos de 8 dígitos', () => {
-  assert.notStrictEqual(validateProfileInput(baseInput({ phone_local_number: '3815551' })), null);
+test('profileValidation - rechaza phone_local_number con menos de 10 dígitos', () => {
+  assert.notStrictEqual(validateProfileInput(baseInput({ phone_local_number: '381555123' })), null);
 });
 
-test('profileValidation - rechaza phone_local_number con más de 8 dígitos', () => {
-  assert.notStrictEqual(validateProfileInput(baseInput({ phone_local_number: '123456789' })), null);
+test('profileValidation - rechaza phone_local_number con más de 10 dígitos', () => {
+  assert.notStrictEqual(validateProfileInput(baseInput({ phone_local_number: '12345678901' })), null);
 });
 
 test('profileValidation - rechaza agency_name faltante', () => {
