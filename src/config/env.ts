@@ -27,6 +27,8 @@ export interface Config {
   uploadRateLimitMax: number;
   uploadRateLimitWindowMs: number;
   uploadMaxFileSizeBytes: number;
+  propertiesRateLimitMax: number;
+  propertiesRateLimitWindowMs: number;
   internalWebhookSecret: string;
   adminHost?: string;
   adminAppUrl?: string;
@@ -99,6 +101,13 @@ export function validateConfig(): Config {
   // esto, multer.memoryStorage() acepta un archivo de cualquier tamaño en memoria del proceso).
   // 10MB es generoso para un Excel de cartera de propiedades (formato de texto/celdas, no medios).
   const uploadMaxFileSizeBytes = parseInt(cleanEnvVar(process.env.UPLOAD_MAX_FILE_SIZE_BYTES) || String(10 * 1024 * 1024), 10);
+  // Alta/edición manual de propiedad (POST/PATCH /api/catalog/properties): a diferencia de
+  // search/upload no dispara llamadas a IA, así que el costo de abuso es menor — pero seguía sin
+  // ningún freno de cadencia (solo el cap de cantidad total del plan). Uso normal es de a una
+  // propiedad por vez desde el formulario; 30/min da margen amplio para cargar varias seguidas sin
+  // habilitar un loop de escritura masiva a la tabla properties.
+  const propertiesRateLimitMax = parseInt(cleanEnvVar(process.env.PROPERTIES_RATE_LIMIT_MAX) || '30', 10);
+  const propertiesRateLimitWindowMs = parseInt(cleanEnvVar(process.env.PROPERTIES_RATE_LIMIT_WINDOW_MS) || '60000', 10);
   // KAN-79: secreto compartido de POST /internal/property-match-check — sin sesión de usuario (lo
   // llama el trigger de Postgres vía pg_net, no un tenant), así que sin este secreto el endpoint
   // quedaría abierto a cualquiera que adivine la URL. El mismo valor debe estar guardado en
@@ -236,6 +245,8 @@ export function validateConfig(): Config {
     uploadRateLimitMax,
     uploadRateLimitWindowMs,
     uploadMaxFileSizeBytes,
+    propertiesRateLimitMax,
+    propertiesRateLimitWindowMs,
     internalWebhookSecret,
     adminHost,
     adminAppUrl,

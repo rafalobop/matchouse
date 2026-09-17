@@ -10,6 +10,7 @@ import { getTenantPlanLimits, countTenantProperties } from '../services/planLimi
 import { requireOwner } from '../utils/agencyOwnership';
 import { parsePagination } from '../utils/pagination';
 import { isValidUUID } from '../utils/idValidation';
+import { FIELD_MAX_LENGTHS } from '../utils/textFieldLimits';
 
 // KAN-273: CRUD de propiedades para la tabla interactiva del dashboard (visualización, edición,
 // filtros/orden, alta y baja desde la UI, sin depender de un re-upload del Excel). Todas las rutas
@@ -131,6 +132,14 @@ function validateFields(body: any, requireAll: boolean): ValidationResult {
   for (const field of ['floor', 'unit', 'block', 'lot', 'features', 'contact_info'] as const) {
     if (body[field] !== undefined && body[field] !== null && typeof body[field] !== 'string') {
       return { error: `El campo "${field}" debe ser un texto.` };
+    }
+  }
+  if (typeof body.address === 'string' && body.address.length > FIELD_MAX_LENGTHS.address) {
+    return { error: `El campo "address" no puede superar los ${FIELD_MAX_LENGTHS.address} caracteres.` };
+  }
+  for (const field of ['floor', 'unit', 'block', 'lot', 'features', 'contact_info'] as const) {
+    if (typeof body[field] === 'string' && body[field].length > FIELD_MAX_LENGTHS[field]) {
+      return { error: `El campo "${field}" no puede superar los ${FIELD_MAX_LENGTHS[field]} caracteres.` };
     }
   }
   if (body.latitude !== undefined && body.latitude !== null) {
