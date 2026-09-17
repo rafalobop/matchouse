@@ -21,6 +21,13 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { geocodeAddress, GeocodeResult } from './geocoding';
 import { buildGeocodableQuery } from '../utils/addressParser';
 import { ExcelMappingField, EXCEL_MAPPING_FIELDS, computeHeaderSignature } from '../utils/excelHeaderMatcher';
+import { FIELD_MAX_LENGTHS } from '../utils/textFieldLimits';
+
+// Trunca (no rechaza) valores de celda que excedan el límite compartido con el alta manual —
+// mismo criterio de "degradar, no abortar el import" que ya aplica acá para precio no parseable.
+function truncateField(value: string, max: number): string {
+  return value.length > max ? value.slice(0, max) : value;
+}
 export interface Property {
   // Address components (era: domicilio + pisoLote)
   address: string;
@@ -133,12 +140,17 @@ export function detectTipoPropiedad(
 function parsePisoLote(raw: string): { floor?: string; unit?: string; block?: string; lot?: string } {
   if (!raw.trim()) return {};
   const lower = raw.toLowerCase().trim();
-  if (lower.includes('lote') || lower.includes('terreno')) return { lot: raw.trim() };
+  if (lower.includes('lote') || lower.includes('terreno')) return { lot: truncateField(raw.trim(), FIELD_MAX_LENGTHS.lot) };
   const blockMatch = lower.match(/bloqu?e?\s*([a-z0-9]+)/i);
-  if (blockMatch) return { block: blockMatch[1].toUpperCase() };
+  if (blockMatch) return { block: truncateField(blockMatch[1].toUpperCase(), FIELD_MAX_LENGTHS.block) };
   const floorUnitMatch = lower.match(/piso\s*(\d+)\s*(?:dpto?\.?\s*)?([a-z0-9]+)/i);
-  if (floorUnitMatch) return { floor: floorUnitMatch[1], unit: floorUnitMatch[2].toUpperCase() };
-  return { unit: raw.trim() };
+  if (floorUnitMatch) {
+    return {
+      floor: truncateField(floorUnitMatch[1], FIELD_MAX_LENGTHS.floor),
+      unit: truncateField(floorUnitMatch[2].toUpperCase(), FIELD_MAX_LENGTHS.unit)
+    };
+  }
+  return { unit: truncateField(raw.trim(), FIELD_MAX_LENGTHS.unit) };
 }
 
 // KAN-84: índices de columna resueltos para una hoja, uno por cada campo de negocio conocido
@@ -348,14 +360,14 @@ function parseSheetToProperties(
     }
 
     properties.push({
-      address: rowDomicilioText,
+      address: truncateField(rowDomicilioText, FIELD_MAX_LENGTHS.address),
       ...parsePisoLote(rawPisoLote),
       price: precioVal,
       currency: monedaVal,
       maintenance_fees: expensasVal,
       bedrooms: dormitoriosVal,
-      features: rawCaracteristicas,
-      contact_info: colContacto !== -1 ? String(row[colContacto] || '') : '',
+      features: truncateField(rawCaracteristicas, FIELD_MAX_LENGTHS.features),
+      contact_info: truncateField(colContacto !== -1 ? String(row[colContacto] || '') : '', FIELD_MAX_LENGTHS.contact_info),
       zone_display_name: zona,
       operation: operacionProp,
       property_type: tipoPropiedad,

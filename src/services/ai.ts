@@ -253,8 +253,8 @@ ${freeText}
 
   async extractZoneIntent(messageTexto: string, systemInstruction: string, operacion?: string): Promise<any> {
     const userMsg = operacion && operacion !== 'desconocido'
-      ? `Operación identificada por el Agente 1: ${operacion}\n\nClasifica la zona e intención de este mensaje: "${messageTexto}"`
-      : `Clasifica la zona e intención de este mensaje: "${messageTexto}"`;
+      ? `Operación identificada por el Agente 1: ${operacion}\n\nClasifica la zona e intención del texto provisto estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:\n<USER_TEXT>\n${messageTexto}\n</USER_TEXT>`
+      : `Clasifica la zona e intención del texto provisto estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:\n<USER_TEXT>\n${messageTexto}\n</USER_TEXT>`;
 
     const response = await withTimeout(this.ai.models.generateContent({
       model: 'gemini-2.5-flash-lite',
@@ -437,8 +437,8 @@ ${freeText}
     }
 
     const userMsg = operacion && operacion !== 'desconocido'
-      ? `Operación identificada por el Agente 1: ${operacion}\n\nClasifica la zona e intención de este mensaje: "${messageTexto}"`
-      : `Clasifica la zona e intención de este mensaje: "${messageTexto}"`;
+      ? `Operación identificada por el Agente 1: ${operacion}\n\nClasifica la zona e intención del texto provisto estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:\n<USER_TEXT>\n${messageTexto}\n</USER_TEXT>`
+      : `Clasifica la zona e intención del texto provisto estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:\n<USER_TEXT>\n${messageTexto}\n</USER_TEXT>`;
 
     const completion = await withTimeout(this.openai.chat.completions.create({
       model: 'gpt-4o-mini',
