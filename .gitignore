@@ -34,3 +34,7 @@ RUNBOOK.md
 videos/
 
 langgraph-tools/
+
+# Herramienta de QA local (scripts/qa) y fixtures de Excel - solo para pruebas locales
+scripts/qa/
+*.xlsx
