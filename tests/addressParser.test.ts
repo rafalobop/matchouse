@@ -2,12 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert';
 import { buildGeocodableQuery } from '../src/utils/addressParser';
 
-test('addressParser - normaliza un domicilio simple agregando contexto de localidad', () => {
-  const result = buildGeocodableQuery({ address: 'Av. Aconquija 1200', zone_display_name: 'Yerba Buena' });
+test('addressParser - normaliza un domicilio simple agregando contexto de provincia/país', () => {
+  const result = buildGeocodableQuery({ address: 'Av. Aconquija 1200' });
 
-  assert.strictEqual(result.normalized, 'Av. Aconquija 1200, Yerba Buena, Tucumán, Argentina');
+  assert.strictEqual(result.normalized, 'Av. Aconquija 1200, Tucumán, Argentina');
   assert.strictEqual(result.hasStreetNumber, true);
   assert.strictEqual(result.isRouteAddress, false);
+});
+
+// Regresión (QA pre-beta, 2026-10-02): zone_display_name salía de sheetOperacionYZona, un
+// heurístico de 2 valores a partir del nombre de la pestaña del Excel que no conoce Tafí Viejo,
+// Tafí del Valle, etc. Cuando la localidad adivinada contradecía la dirección real, Nominatim no
+// devolvía ningún resultado (verificado en vivo). No debe volver a mandarse como contexto.
+test('addressParser - ya no agrega zone_display_name al contexto (causaba 0 resultados en Nominatim cuando contradecía la calle real)', () => {
+  const result = buildGeocodableQuery({ address: 'San Martín 100, Tafí Viejo' } as any);
+
+  assert.strictEqual(result.normalized, 'San Martín 100, Tafí Viejo, Tucumán, Argentina');
+  assert.ok(!result.normalized.includes('San Miguel de Tucumán'), 'No debe inventar una localidad que contradiga la calle real.');
 });
 
 test('addressParser - domicilio sin numeración (s/n) se marca y se limpia de la consulta', () => {

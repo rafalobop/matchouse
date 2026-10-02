@@ -20,10 +20,20 @@ export interface ParsedAddress {
 
 /**
  * Limpia el domicilio crudo de una propiedad y arma la consulta que se le manda al geocoder,
- * agregando contexto de zona/localidad para desambiguar (todas las propiedades de la cartera
+ * agregando contexto de provincia/país para desambiguar (todas las propiedades de la cartera
  * son de Tucumán, Argentina). No hace red ni valida contra ningún servicio externo.
+ *
+ * No agrega `zone_display_name` (la localidad adivinada por `sheetOperacionYZona` a partir del
+ * nombre de la pestaña del Excel, ver excel.ts) al contexto: es un heurístico de 2 valores
+ * ("San Miguel de Tucumán" por default, "Yerba Buena" si la pestaña la menciona) que no conoce
+ * Tafí Viejo, Tafí del Valle, ni ninguna otra localidad. Cuando la dirección real cae fuera de
+ * esas dos opciones, esa localidad adivinada queda contradiciendo a la calle real en la misma
+ * query (ej. "San Martín 100, Tafí Viejo, San Miguel de Tucumán, Tucumán, Argentina") y Nominatim
+ * no devuelve ningún resultado — verificado en vivo (QA pre-beta, 2026-10-02): la misma dirección
+ * resuelve sola, pero no con esa localidad contradictoria pegada. La calle ya suele traer su
+ * propia localidad en el texto libre de la cartera real, así que no hace falta adivinarla.
  */
-export function buildGeocodableQuery(property: { address: string; zone_display_name?: string }): ParsedAddress {
+export function buildGeocodableQuery(property: { address: string }): ParsedAddress {
   let street = property.address.replace(/\s+/g, ' ').trim();
 
   const isRouteAddress = ROUTE_PATTERN.test(street);
@@ -39,7 +49,7 @@ export function buildGeocodableQuery(property: { address: string; zone_display_n
     street = intersectionMatch[1].trim();
   }
 
-  const contextParts = [street, property.zone_display_name, 'Tucumán', 'Argentina']
+  const contextParts = [street, 'Tucumán', 'Argentina']
     .map(part => part?.trim())
     .filter((part): part is string => !!part);
 
