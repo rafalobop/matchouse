@@ -575,7 +575,7 @@ export async function syncPropertiesToDatabase(
           latitude = existingCoords.latitude;
           longitude = existingCoords.longitude;
         } else {
-          const { normalized } = buildGeocodableQuery({ address: p.address, zone_display_name: p.zone_display_name });
+          const { normalized } = buildGeocodableQuery({ address: p.address });
           const geocodeResult = await geocodeFn(normalized);
           if (geocodeResult.success) {
             latitude = geocodeResult.latitude;
