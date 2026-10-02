@@ -10,7 +10,7 @@ Repo separado del frontend (`brokaza-frontend`, Next.js) desde KAN-145 — este 
 (`/api/*`, `/internal/*`, `/health`, WebSocket en `/ws`), incluidas las rutas del panel admin
 (`src/adminRoutes.ts`). El panel admin en sí (login, métricas, listado/corrección de propiedades)
 vive como UI en `brokaza-frontend/src/app/admin` (Next.js) — el bundle estático legacy
-(`src/admin-dashboard/`) se retiró en KAN-342, ver `MIGRATION_PLAN.md`.
+(`src/admin-dashboard/`) se retiró en KAN-342.
 
 ## Stack
 
@@ -138,17 +138,28 @@ dashboard.
 |---|---|---|
 | Nombre (`first_name`) | Sí | 2–100 caracteres. Solo letras (con acentos/ñ), espacios, guiones y apóstrofes. |
 | Apellido (`last_name`) | Sí | Mismas reglas que Nombre. |
-| Teléfono (`phone_number`) | Sí | Máximo 20 caracteres. Solo dígitos, espacios y `+ - ( )`. |
-| Inmobiliaria (`agency_name`) | Sí | Máximo 150 caracteres, sin restricción de charset. |
+| Código de país (`phone_country_code`) | Sí | Formato `+` seguido de 1 a 4 dígitos (ej. `+54`). |
+| Teléfono local (`phone_local_number`) | Sí | Exactamente 10 dígitos — código de área (3) + número (7). |
+| Matrícula (`license_number`) | Sí, salvo colaborador (`role='collaborator'`) | Solo dígitos, máximo 10 caracteres. Se valida contra el padrón real del CCIT y se rechaza con `409` si otro tenant ya la tiene registrada (índice único parcial en DB, KAN-306). |
+| Inmobiliaria (`agency_name`) | Sí, salvo colaborador (hereda la del dueño) | Máximo 150 caracteres, sin restricción de charset. |
 | Ciudad (`city`) | Sí | Máximo 150 caracteres — combobox de localidades reales de Tucumán (API Georef), con opción "Otra localidad...". |
 
 `first_name`/`last_name` se combinan en `profiles.full_name` al persistir (no tienen columnas
 propias). **País/Provincia fijos a Argentina/Tucumán** (KAN-93, decisión de negocio explícita): el
 backend hardcodea `country = 'Argentina'` siempre, sin importar el payload.
 
+**Roles de agencia y colaboradores (KAN-306):** `profiles.role` distingue `owner` de
+`collaborator`. Un dueño (`role='owner'`) gestiona colaboradores desde
+`POST/GET/DELETE /api/admin-panel/collaborators` (`src/routes/adminPanelRoutes.ts` +
+`adminPanelController.ts`) — invitarlos por email (creando la cuenta si no existe, junto con el
+magic link de bienvenida), revocarlos o reactivarlos. Los colaboradores operan bajo la matrícula e
+inmobiliaria del dueño (`agency_owner_id`), sin necesitar las propias. Ver
+`docs/rls-deny-all-tables-README.md` para el detalle de `licensed_agents` (caché local del padrón
+del CCIT usado para validar la matrícula).
+
 ## Otros documentos
 
-- `MIGRATION_PLAN.md` — plan de migración del frontend legacy (`src/admin-dashboard`) a `brokaza-frontend` (Next.js), fases y prioridades.
 - `docs/RUNBOOK.md` — observabilidad y alertas de errores en producción (healthcheck, Sentry).
 - `docs/rate-limit-backends.md` — por qué el rate limiting distribuido usa Postgres y no Redis.
+- `docs/rls-deny-all-tables-README.md` — por qué `licensed_agents` y la familia `neighborhood_*` tienen RLS habilitado sin policies (intencional, solo acceso service-role).
 - `.agent/CONTEXT.md` — memoria viva del proyecto: arquitectura al detalle, historial de decisiones y tracking de tickets. Fuente de verdad más granular que este README.
