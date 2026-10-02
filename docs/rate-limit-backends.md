@@ -65,8 +65,11 @@ cuanto se agrega una segunda instancia para manejar más tráfico.
 `uploadRateLimitWindowMs` — sin cambio de comportamiento observable para el usuario, solo de
 dónde vive el contador). El resto de los limiters de la app —
 `authIpRateLimiter`/`authEmailRateLimiter` (`routes/authRoutes.ts`), `searchRateLimiter`
-(`routes/searchRoutes.ts`) y `dashboardMetricsRateLimiter` (`routes/systemRoutes.ts`) — siguen en
-`createRateLimiter` (en memoria). Mientras la app corra como una única instancia Node esto es
+(`routes/searchRoutes.ts`), `dashboardMetricsRateLimiter` (`routes/systemRoutes.ts`) y, desde
+KAN-341 (2026-09-17), `propertiesRateLimiter` (`routes/propertiesRoutes.ts`, aplicado a
+`POST`/`PATCH /api/catalog/properties`, `config.propertiesRateLimitMax`/
+`propertiesRateLimitWindowMs`, default 30/min por tenant) — siguen en `createRateLimiter` (en
+memoria). Mientras la app corra como una única instancia Node esto es
 correcto, pero si en algún momento se agrega un segundo proceso/instancia detrás de un balanceador
 de carga (necesario para escalar horizontalmente a medida que crece la cantidad de tenants, ver
 nota sobre el registro sin límite en `.agent/CONTEXT.md#2`), estos tres límites restantes dejan de
