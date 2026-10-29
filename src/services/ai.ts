@@ -6,6 +6,14 @@ import { withRetry } from '../utils/withRetry';
 import { resolveMultipleNeighborhoodsByText, ZonesServiceError } from './zonesService';
 import { logger } from './logger';
 import { EXCEL_MAPPING_FIELDS } from '../utils/excelHeaderMatcher';
+import { recordLlmGeneration } from './tracing';
+
+// BE-03: callback opcional que cada método de AIStrategy invoca con el uso real de tokens del
+// proveedor justo antes de devolver el resultado parseado — permite instrumentar tracing
+// (ai.ts -> AIExtractorContext -> recordLlmGeneration) sin cambiar el tipo de retorno de los
+// métodos (que rompería los mocks de tests/ai.test.ts que hacen
+// `GeminiStrategy.prototype.X = async () => ({...})`, ignorando cualquier argumento extra).
+export type UsageCallback = (info: { model: string; inputTokens: number; outputTokens: number }) => void;
 
 // KAN-70: error específico para cuando TODAS las estrategias de IA configuradas agotaron su
 // timeout en el camino síncrono de un request HTTP (POST /api/search, ver src/index.ts). A
@@ -93,16 +101,16 @@ export interface ExcelColumnMappingSuggestion {
 
 export interface AIStrategy {
   name: string;
-  extractFromFreeText(freeText: string, systemInstruction: string): Promise<any>;
-  extractZoneIntent(messageTexto: string, systemInstruction: string, operacion?: string): Promise<any>;
-  segmentSearchRequests(messageTexto: string, systemInstruction: string): Promise<any>;
+  extractFromFreeText(freeText: string, systemInstruction: string, onUsage?: UsageCallback): Promise<any>;
+  extractZoneIntent(messageTexto: string, systemInstruction: string, operacion?: string, onUsage?: UsageCallback): Promise<any>;
+  segmentSearchRequests(messageTexto: string, systemInstruction: string, onUsage?: UsageCallback): Promise<any>;
   validateMatch(
     messageTexto: string,
     property: any,
     extractedData: any,
     systemInstruction: string
   ): Promise<ValidationResult>;
-  suggestExcelColumnMapping(headers: string[], systemInstruction: string): Promise<any>;
+  suggestExcelColumnMapping(headers: string[], systemInstruction: string, onUsage?: UsageCallback): Promise<any>;
 }
 
 // Schema compartido de salida del Agente 1 (extracción de texto libre de formulario).
@@ -211,7 +219,7 @@ export class GeminiStrategy implements AIStrategy {
   readonly name = 'Google Gemini (gemini-2.5-flash-lite)';
   private ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
 
-  async extractFromFreeText(freeText: string, systemInstruction: string): Promise<any> {
+  async extractFromFreeText(freeText: string, systemInstruction: string, onUsage?: UsageCallback): Promise<any> {
     const response = await withTimeout(this.ai.models.generateContent({
       model: 'gemini-2.5-flash-lite',
       contents: `Analiza el texto libre provisto por el usuario en un formulario de búsqueda, estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:
@@ -227,10 +235,11 @@ ${freeText}
 
     const responseText = response.text;
     if (!responseText) throw new Error('Respuesta de Gemini vacía');
+    onUsage?.({ model: 'gemini-2.5-flash-lite', inputTokens: response.usageMetadata?.promptTokenCount ?? 0, outputTokens: response.usageMetadata?.candidatesTokenCount ?? 0 });
     return JSON.parse(responseText.trim());
   }
 
-  async extractZoneIntent(messageTexto: string, systemInstruction: string, operacion?: string): Promise<any> {
+  async extractZoneIntent(messageTexto: string, systemInstruction: string, operacion?: string, onUsage?: UsageCallback): Promise<any> {
     const userMsg = operacion && operacion !== 'desconocido'
       ? `Operación identificada por el Agente 1: ${operacion}\n\nClasifica la zona e intención del texto provisto estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:\n<USER_TEXT>\n${messageTexto}\n</USER_TEXT>`
       : `Clasifica la zona e intención del texto provisto estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:\n<USER_TEXT>\n${messageTexto}\n</USER_TEXT>`;
@@ -256,10 +265,11 @@ ${freeText}
 
     const responseText = response.text;
     if (!responseText) throw new Error('Respuesta de Gemini vacía');
+    onUsage?.({ model: 'gemini-2.5-flash-lite', inputTokens: response.usageMetadata?.promptTokenCount ?? 0, outputTokens: response.usageMetadata?.candidatesTokenCount ?? 0 });
     return JSON.parse(responseText.trim());
   }
 
-  async segmentSearchRequests(messageTexto: string, systemInstruction: string): Promise<any> {
+  async segmentSearchRequests(messageTexto: string, systemInstruction: string, onUsage?: UsageCallback): Promise<any> {
     const response = await withTimeout(this.ai.models.generateContent({
       model: 'gemini-2.5-flash-lite',
       contents: `Analiza el texto provisto estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:
@@ -275,6 +285,7 @@ ${messageTexto}
 
     const responseText = response.text;
     if (!responseText) throw new Error('Respuesta de Gemini vacía');
+    onUsage?.({ model: 'gemini-2.5-flash-lite', inputTokens: response.usageMetadata?.promptTokenCount ?? 0, outputTokens: response.usageMetadata?.candidatesTokenCount ?? 0 });
     return JSON.parse(responseText.trim());
   }
 
@@ -324,7 +335,7 @@ ${JSON.stringify(property)}
     return JSON.parse(responseText.trim());
   }
 
-  async suggestExcelColumnMapping(headers: string[], systemInstruction: string): Promise<any> {
+  async suggestExcelColumnMapping(headers: string[], systemInstruction: string, onUsage?: UsageCallback): Promise<any> {
     const response = await withTimeout(this.ai.models.generateContent({
       model: 'gemini-2.5-flash-lite',
       contents: `Estas son las columnas (headers) de una hoja de cálculo Excel, en el orden en que aparecen, dentro de las etiquetas <EXCEL_HEADERS> y </EXCEL_HEADERS>:
@@ -340,6 +351,7 @@ ${JSON.stringify(headers)}
 
     const responseText = response.text;
     if (!responseText) throw new Error('Respuesta de Gemini vacía');
+    onUsage?.({ model: 'gemini-2.5-flash-lite', inputTokens: response.usageMetadata?.promptTokenCount ?? 0, outputTokens: response.usageMetadata?.candidatesTokenCount ?? 0 });
     return JSON.parse(responseText.trim());
   }
 }
@@ -348,7 +360,7 @@ export class OpenAIStrategy implements AIStrategy {
   readonly name = 'OpenAI (gpt-4o-mini)';
   private openai = config.openaiApiKey ? new OpenAI({ apiKey: config.openaiApiKey }) : null;
 
-  async extractFromFreeText(freeText: string, systemInstruction: string): Promise<any> {
+  async extractFromFreeText(freeText: string, systemInstruction: string, onUsage?: UsageCallback): Promise<any> {
     if (!this.openai) {
       throw new Error('OpenAI API key no está configurada.');
     }
@@ -376,10 +388,11 @@ ${freeText}
 
     const content = completion.choices[0]?.message?.content;
     if (!content) throw new Error('Respuesta de OpenAI vacía');
+    onUsage?.({ model: 'gpt-4o-mini', inputTokens: completion.usage?.prompt_tokens ?? 0, outputTokens: completion.usage?.completion_tokens ?? 0 });
     return JSON.parse(content.trim());
   }
 
-  async extractZoneIntent(messageTexto: string, systemInstruction: string, operacion?: string): Promise<any> {
+  async extractZoneIntent(messageTexto: string, systemInstruction: string, operacion?: string, onUsage?: UsageCallback): Promise<any> {
     if (!this.openai) {
       throw new Error('OpenAI API key no está configurada.');
     }
@@ -416,10 +429,11 @@ ${freeText}
 
     const content = completion.choices[0]?.message?.content;
     if (!content) throw new Error('Respuesta de OpenAI vacía');
+    onUsage?.({ model: 'gpt-4o-mini', inputTokens: completion.usage?.prompt_tokens ?? 0, outputTokens: completion.usage?.completion_tokens ?? 0 });
     return JSON.parse(content.trim());
   }
 
-  async segmentSearchRequests(messageTexto: string, systemInstruction: string): Promise<any> {
+  async segmentSearchRequests(messageTexto: string, systemInstruction: string, onUsage?: UsageCallback): Promise<any> {
     if (!this.openai) {
       throw new Error('OpenAI API key no está configurada.');
     }
@@ -447,6 +461,7 @@ ${messageTexto}
 
     const content = completion.choices[0]?.message?.content;
     if (!content) throw new Error('Respuesta de OpenAI vacía');
+    onUsage?.({ model: 'gpt-4o-mini', inputTokens: completion.usage?.prompt_tokens ?? 0, outputTokens: completion.usage?.completion_tokens ?? 0 });
     return JSON.parse(content.trim());
   }
 
@@ -507,7 +522,7 @@ ${JSON.stringify(property)}
     return JSON.parse(content.trim());
   }
 
-  async suggestExcelColumnMapping(headers: string[], systemInstruction: string): Promise<any> {
+  async suggestExcelColumnMapping(headers: string[], systemInstruction: string, onUsage?: UsageCallback): Promise<any> {
     if (!this.openai) {
       throw new Error('OpenAI API key no está configurada.');
     }
@@ -535,6 +550,7 @@ ${JSON.stringify(headers)}
 
     const content = completion.choices[0]?.message?.content;
     if (!content) throw new Error('Respuesta de OpenAI vacía');
+    onUsage?.({ model: 'gpt-4o-mini', inputTokens: completion.usage?.prompt_tokens ?? 0, outputTokens: completion.usage?.completion_tokens ?? 0 });
     return JSON.parse(content.trim());
   }
 }
@@ -583,11 +599,24 @@ class AIExtractorContext {
     let allFailuresWereTimeouts = this.strategies.length > 0;
 
     for (const strategy of this.strategies) {
+      const fallbackUsed = this.strategies.indexOf(strategy) > 0;
+      const startTime = new Date();
+      let usageInfo: { model: string; inputTokens: number; outputTokens: number } | undefined;
       try {
         logger.info({ strategyName: strategy.name }, '[AI STRATEGY] Intentando Extracción de Texto Libre');
-        const rawResult = await strategy.extractFromFreeText(freeText, SYSTEM_INSTRUCTIONS_AGENT1_TEXT_INPUT);
-        return normalizeAgent1(rawResult);
+        const rawResult = await strategy.extractFromFreeText(freeText, SYSTEM_INSTRUCTIONS_AGENT1_TEXT_INPUT, info => { usageInfo = info; });
+        const normalized = normalizeAgent1(rawResult);
+        recordLlmGeneration({
+          name: 'extract-intent', model: usageInfo?.model ?? strategy.name, promptVersion: 'agent1-text-input-v1',
+          input: freeText, output: normalized, usage: usageInfo, fallbackUsed, schemaValid: true, startTime
+        });
+        return normalized;
       } catch (error) {
+        recordLlmGeneration({
+          name: 'extract-intent', model: usageInfo?.model ?? strategy.name, promptVersion: 'agent1-text-input-v1',
+          input: freeText, output: null, usage: usageInfo, fallbackUsed, schemaValid: false, startTime,
+          error: error instanceof Error ? error.message : String(error)
+        });
         if (!(error instanceof TimeoutError)) {
           allFailuresWereTimeouts = false;
         }
@@ -605,12 +634,25 @@ class AIExtractorContext {
 
   async extractZoneIntent(messageTexto: string, operacion?: string): Promise<ZoneIntentRequest> {
     for (const strategy of this.strategies) {
+      const fallbackUsed = this.strategies.indexOf(strategy) > 0;
+      const startTime = new Date();
+      let usageInfo: { model: string; inputTokens: number; outputTokens: number } | undefined;
       try {
         logger.info({ strategyName: strategy.name }, '[AI STRATEGY] Intentando Geo Comparación');
-        const rawResult = await strategy.extractZoneIntent(messageTexto, SYSTEM_INSTRUCTIONS_AGENT2, operacion);
+        const rawResult = await strategy.extractZoneIntent(messageTexto, SYSTEM_INSTRUCTIONS_AGENT2, operacion, info => { usageInfo = info; });
         const normalized = normalizeAgent2(rawResult, operacion);
-        return await resolveZoneIntent(normalized);
+        const resolved = await resolveZoneIntent(normalized);
+        recordLlmGeneration({
+          name: 'extract-zone', model: usageInfo?.model ?? strategy.name, promptVersion: 'agent2-v1',
+          input: messageTexto, output: resolved, usage: usageInfo, fallbackUsed, schemaValid: true, startTime
+        });
+        return resolved;
       } catch (error) {
+        recordLlmGeneration({
+          name: 'extract-zone', model: usageInfo?.model ?? strategy.name, promptVersion: 'agent2-v1',
+          input: messageTexto, output: null, usage: usageInfo, fallbackUsed, schemaValid: false, startTime,
+          error: error instanceof Error ? error.message : String(error)
+        });
         logFallbackWarning(strategy.name, error);
       }
     }
@@ -649,15 +691,27 @@ class AIExtractorContext {
   // POST /api/search.
   async segmentSearchRequests(messageTexto: string): Promise<string[]> {
     for (const strategy of this.strategies) {
+      const fallbackUsed = this.strategies.indexOf(strategy) > 0;
+      const startTime = new Date();
+      let usageInfo: { model: string; inputTokens: number; outputTokens: number } | undefined;
       try {
         logger.info({ strategyName: strategy.name }, '[AI STRATEGY] Intentando Segmentación de Búsquedas');
-        const raw = await strategy.segmentSearchRequests(messageTexto, SYSTEM_INSTRUCTIONS_SEGMENTER);
+        const raw = await strategy.segmentSearchRequests(messageTexto, SYSTEM_INSTRUCTIONS_SEGMENTER, info => { usageInfo = info; });
         const segments = Array.isArray(raw?.segments)
           ? raw.segments.map((s: any) => String(s).trim()).filter((s: string) => s.length > 0)
           : [];
-        if (segments.length >= 2) return segments;
-        return [messageTexto];
+        const result = segments.length >= 2 ? segments : [messageTexto];
+        recordLlmGeneration({
+          name: 'segment', model: usageInfo?.model ?? strategy.name, promptVersion: 'segmenter-v1',
+          input: messageTexto, output: result, usage: usageInfo, fallbackUsed, schemaValid: true, startTime
+        });
+        return result;
       } catch (error) {
+        recordLlmGeneration({
+          name: 'segment', model: usageInfo?.model ?? strategy.name, promptVersion: 'segmenter-v1',
+          input: messageTexto, output: null, usage: usageInfo, fallbackUsed, schemaValid: false, startTime,
+          error: error instanceof Error ? error.message : String(error)
+        });
         logFallbackWarning(strategy.name, error);
       }
     }
@@ -700,18 +754,31 @@ class AIExtractorContext {
   // en vez de como una sugerencia válida vacía.
   async suggestExcelColumnMapping(headers: string[]): Promise<ExcelColumnMappingSuggestion[]> {
     for (const strategy of this.strategies) {
+      const fallbackUsed = this.strategies.indexOf(strategy) > 0;
+      const startTime = new Date();
+      let usageInfo: { model: string; inputTokens: number; outputTokens: number } | undefined;
       try {
         logger.info({ strategyName: strategy.name }, '[AI STRATEGY] Intentando mapeo de columnas de Excel');
-        const raw = await strategy.suggestExcelColumnMapping(headers, SYSTEM_INSTRUCTIONS_EXCEL_MAPPING);
+        const raw = await strategy.suggestExcelColumnMapping(headers, SYSTEM_INSTRUCTIONS_EXCEL_MAPPING, info => { usageInfo = info; });
         if (!Array.isArray(raw?.mapping)) {
           throw new Error('La respuesta de IA no tiene el formato esperado (falta "mapping" como array).');
         }
-        return raw.mapping.map((entry: any) => ({
+        const result = raw.mapping.map((entry: any) => ({
           field: String(entry.field || ''),
           header: entry.header === null || entry.header === undefined ? null : String(entry.header),
           confidence: Number(entry.confidence) || 0
         }));
+        recordLlmGeneration({
+          name: 'excel-mapping', model: usageInfo?.model ?? strategy.name, promptVersion: 'excel-mapping-v1',
+          input: headers, output: result, usage: usageInfo, fallbackUsed, schemaValid: true, startTime
+        });
+        return result;
       } catch (error) {
+        recordLlmGeneration({
+          name: 'excel-mapping', model: usageInfo?.model ?? strategy.name, promptVersion: 'excel-mapping-v1',
+          input: headers, output: null, usage: usageInfo, fallbackUsed, schemaValid: false, startTime,
+          error: error instanceof Error ? error.message : String(error)
+        });
         logFallbackWarning(strategy.name, error);
       }
     }

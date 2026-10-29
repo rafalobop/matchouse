@@ -10,6 +10,7 @@ import { config } from '../config/env';
 import { logger } from '../services/logger';
 import { processSingleSearchSegment, SearchSegmentResult } from '../services/searchSegmentProcessor';
 import { getTenantPlanLimits, countTenantSearchesThisMonth } from '../services/planLimits';
+import { traceSearchRequest } from '../services/tracing';
 
 // KAN-37: motor de matching bidireccional entre tenants, dirección búsqueda→cartera. Un tenant
 // describe lo que busca en texto libre y recibe matches de la cartera de OTROS tenants (excluye
@@ -51,72 +52,78 @@ export async function createSearch(req: express.Request, res: express.Response) 
     });
   }
 
-  let segments: string[];
-  try {
-    segments = await segmentSearchRequests(text); // Agente 0 — fail-soft, nunca lanza
-  } catch (error: any) {
-    // Defensivo: aunque segmentSearchRequests no debería lanzar, un fallo acá no debe bloquear
-    // el flujo — degradar al mensaje completo como única búsqueda.
-    logger.error({ error: error.message || error, tenantId }, '[BUSQUEDA] Error inesperado en segmentación; se procesa como búsqueda única.');
-    segments = [text];
-  }
+  // BE-03: una traza por request de POST /api/search — el trace_id resultante se persiste en cada
+  // fila de active_searches creada por este request (ver processSingleSearchSegment) para poder
+  // ir de una búsqueda puntual a la traza completa (segmentación -> por segmento: extracción ->
+  // zona -> matching -> notificación).
+  await traceSearchRequest('POST /api/search', { tenantId, rawTextLength: text.length }, async (traceId) => {
+    let segments: string[];
+    try {
+      segments = await segmentSearchRequests(text); // Agente 0 — fail-soft, nunca lanza
+    } catch (error: any) {
+      // Defensivo: aunque segmentSearchRequests no debería lanzar, un fallo acá no debe bloquear
+      // el flujo — degradar al mensaje completo como única búsqueda.
+      logger.error({ error: error.message || error, tenantId }, '[BUSQUEDA] Error inesperado en segmentación; se procesa como búsqueda única.');
+      segments = [text];
+    }
 
-  // Un mismo mensaje puede segmentarse en más sub-búsquedas de las que quedan de cuota este mes:
-  // se procesan las primeras `remaining` y el resto queda marcado como cuota agotada, sin llegar a
-  // pedirle nada a la IA de extracción (Agente 1) para esos segmentos.
-  const remaining = maxSearchesPerMonth - searchesThisMonth;
-  const segmentsToProcess = segments.slice(0, remaining);
-  const segmentsOverQuota = segments.slice(remaining);
+    // Un mismo mensaje puede segmentarse en más sub-búsquedas de las que quedan de cuota este mes:
+    // se procesan las primeras `remaining` y el resto queda marcado como cuota agotada, sin llegar a
+    // pedirle nada a la IA de extracción (Agente 1) para esos segmentos.
+    const remaining = maxSearchesPerMonth - searchesThisMonth;
+    const segmentsToProcess = segments.slice(0, remaining);
+    const segmentsOverQuota = segments.slice(remaining);
 
-  // KAN-279: en paralelo (antes: `for...await` secuencial, ~Nx la latencia de un solo segmento).
-  // Cada llamada atrapa su propio error acá adentro (nunca rechaza el `Promise.all` de afuera) —
-  // mismo criterio de "un timeout/error puntual no aborta el resto del lote" que ya tenía el catch
-  // del loop secuencial, solo que ahora corren concurrentemente en vez de en serie.
-  const segmentOutcomes = await Promise.all(
-    segmentsToProcess.map(async (segmentText): Promise<{ result: SearchSegmentResult; aiTimeout: boolean; aiExtractionFailed: boolean }> => {
-      try {
-        const result = await processSingleSearchSegment(tenantId, tenantSupabase, segmentText);
-        return { result, aiTimeout: false, aiExtractionFailed: false };
-      } catch (error: any) {
-        if (error instanceof AITimeoutError) {
-          return { result: { success: false, raw_text: segmentText, error: error.message, code: 'AI_TIMEOUT' }, aiTimeout: true, aiExtractionFailed: false };
+    // KAN-279: en paralelo (antes: `for...await` secuencial, ~Nx la latencia de un solo segmento).
+    // Cada llamada atrapa su propio error acá adentro (nunca rechaza el `Promise.all` de afuera) —
+    // mismo criterio de "un timeout/error puntual no aborta el resto del lote" que ya tenía el catch
+    // del loop secuencial, solo que ahora corren concurrentemente en vez de en serie.
+    const segmentOutcomes = await Promise.all(
+      segmentsToProcess.map(async (segmentText): Promise<{ result: SearchSegmentResult; aiTimeout: boolean; aiExtractionFailed: boolean }> => {
+        try {
+          const result = await processSingleSearchSegment(tenantId, tenantSupabase, segmentText, traceId);
+          return { result, aiTimeout: false, aiExtractionFailed: false };
+        } catch (error: any) {
+          if (error instanceof AITimeoutError) {
+            return { result: { success: false, raw_text: segmentText, error: error.message, code: 'AI_TIMEOUT' }, aiTimeout: true, aiExtractionFailed: false };
+          }
+          // KAN-339: fallo real (no timeout) de AMBAS estrategias de IA al extraer la búsqueda —
+          // antes esto no existía como caso distinguible, `extractFromTextInput` degradaba en
+          // silencio a criterios comodín y la búsqueda se publicaba igual (ver ai.ts). Mismo
+          // tratamiento que AITimeoutError: código distinguible para el cliente, no un 500 genérico.
+          if (error instanceof AIExtractionFailedError) {
+            return { result: { success: false, raw_text: segmentText, error: error.message, code: 'AI_EXTRACTION_FAILED' }, aiTimeout: false, aiExtractionFailed: true };
+          }
+          logger.error({ error: error.message || error, tenantId, segmentText }, '[BUSQUEDA] Error al procesar un segmento de búsqueda.');
+          return { result: { success: false, raw_text: segmentText, error: 'Error interno al procesar este segmento.' }, aiTimeout: false, aiExtractionFailed: false };
         }
-        // KAN-339: fallo real (no timeout) de AMBAS estrategias de IA al extraer la búsqueda —
-        // antes esto no existía como caso distinguible, `extractFromTextInput` degradaba en
-        // silencio a criterios comodín y la búsqueda se publicaba igual (ver ai.ts). Mismo
-        // tratamiento que AITimeoutError: código distinguible para el cliente, no un 500 genérico.
-        if (error instanceof AIExtractionFailedError) {
-          return { result: { success: false, raw_text: segmentText, error: error.message, code: 'AI_EXTRACTION_FAILED' }, aiTimeout: false, aiExtractionFailed: true };
-        }
-        logger.error({ error: error.message || error, tenantId, segmentText }, '[BUSQUEDA] Error al procesar un segmento de búsqueda.');
-        return { result: { success: false, raw_text: segmentText, error: 'Error interno al procesar este segmento.' }, aiTimeout: false, aiExtractionFailed: false };
-      }
-    })
-  );
+      })
+    );
 
-  const results: SearchSegmentResult[] = segmentOutcomes.map(o => o.result);
-  const anyAITimeout = segmentOutcomes.some(o => o.aiTimeout);
-  const anyAIExtractionFailed = segmentOutcomes.some(o => o.aiExtractionFailed);
+    const results: SearchSegmentResult[] = segmentOutcomes.map(o => o.result);
+    const anyAITimeout = segmentOutcomes.some(o => o.aiTimeout);
+    const anyAIExtractionFailed = segmentOutcomes.some(o => o.aiExtractionFailed);
 
-  const anyQuotaExceeded = segmentsOverQuota.length > 0;
-  for (const segmentText of segmentsOverQuota) {
-    results.push({
-      success: false,
-      raw_text: segmentText,
-      error: `Límite mensual de búsquedas alcanzado (${maxSearchesPerMonth}/mes).`,
-      code: 'SEARCH_QUOTA_EXCEEDED'
+    const anyQuotaExceeded = segmentsOverQuota.length > 0;
+    for (const segmentText of segmentsOverQuota) {
+      results.push({
+        success: false,
+        raw_text: segmentText,
+        error: `Límite mensual de búsquedas alcanzado (${maxSearchesPerMonth}/mes).`,
+        code: 'SEARCH_QUOTA_EXCEEDED'
+      });
+    }
+
+    const allFailed = results.every(r => !r.success);
+    const httpStatus = allFailed
+      ? (anyAITimeout ? 504 : anyAIExtractionFailed ? 502 : anyQuotaExceeded ? 403 : 500)
+      : 200;
+
+    res.status(httpStatus).json({
+      success: !allFailed,
+      segmented: segments.length > 1,
+      searches: results
     });
-  }
-
-  const allFailed = results.every(r => !r.success);
-  const httpStatus = allFailed
-    ? (anyAITimeout ? 504 : anyAIExtractionFailed ? 502 : anyQuotaExceeded ? 403 : 500)
-    : 200;
-
-  res.status(httpStatus).json({
-    success: !allFailed,
-    segmented: segments.length > 1,
-    searches: results
   });
 }
 

@@ -10,6 +10,7 @@ import { startReengagementService, stopReengagementService } from './services/re
 import { startLicenseValidationRetryService, stopLicenseValidationRetryService } from './services/licenseValidationRetry';
 import { logger } from './services/logger';
 import { initExcelParsePool } from './services/excelParsePool';
+import { initTracing, shutdownTracing } from './services/tracing';
 
 const PORT = process.env.PORT || 3000;
 
@@ -20,25 +21,29 @@ const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 /**
  * Ejecuta la función `stop` de un job de background con un timeout defensivo: si tarda más que
- * `timeoutMs` (o lanza), se loguea y se continúa igual — un job colgado no puede bloquear el resto
- * del apagado.
+ * `timeoutMs` (o lanza/rechaza), se loguea y se continúa igual — un job colgado no puede bloquear
+ * el resto del apagado. `stop` puede ser sync (los 4 jobs de setInterval) o async (BE-03:
+ * shutdownTracing, que espera a que el exporter drene su buffer) — `Promise.resolve().then(stop)`
+ * cubre ambos casos sin cambiar el contrato para los llamadores existentes.
  */
-function stopJobWithTimeout(name: string, stop: () => void, timeoutMs: number): Promise<void> {
+function stopJobWithTimeout(name: string, stop: () => void | Promise<void>, timeoutMs: number): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       logger.error({ job: name }, '[SHUTDOWN] El job de background no respondió dentro del timeout; se fuerza su cierre.');
       resolve();
     }, timeoutMs);
 
-    try {
-      stop();
-      clearTimeout(timer);
-      resolve();
-    } catch (error) {
-      clearTimeout(timer);
-      logger.error({ error, job: name }, '[SHUTDOWN] Error al detener el job de background.');
-      resolve();
-    }
+    Promise.resolve()
+      .then(() => stop())
+      .then(() => {
+        clearTimeout(timer);
+        resolve();
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        logger.error({ error, job: name }, '[SHUTDOWN] Error al detener el job de background.');
+        resolve();
+      });
   });
 }
 
@@ -50,12 +55,15 @@ function setupGracefulShutdown(server: http.Server): void {
     isShuttingDown = true;
     logger.info({ signal }, '[SHUTDOWN] Señal recibida, iniciando apagado ordenado.');
 
-    // Detiene los 4 jobs de background en paralelo mediante sus funciones stop.
+    // Detiene los 4 jobs de background en paralelo mediante sus funciones stop, más el drenaje
+    // del tracer de Langfuse (BE-03) — mismo patrón de timeout defensivo, para no perder spans
+    // bufferizados ante un apagado ordenado.
     const stopJobs = Promise.all([
       stopJobWithTimeout('dolar', stopDolarService, SHUTDOWN_TIMEOUT_MS),
       stopJobWithTimeout('search-expiration', stopSearchExpirationService, SHUTDOWN_TIMEOUT_MS),
       stopJobWithTimeout('reengagement', stopReengagementService, SHUTDOWN_TIMEOUT_MS),
       stopJobWithTimeout('license-validation-retry', stopLicenseValidationRetryService, SHUTDOWN_TIMEOUT_MS),
+      stopJobWithTimeout('tracing', shutdownTracing, SHUTDOWN_TIMEOUT_MS),
     ]);
 
     // Deja de aceptar nuevas conexiones; el callback de close() sólo se dispara cuando terminan
@@ -100,6 +108,9 @@ process.on('uncaughtException', (error) => {
 
 async function main() {
   logger.info('Iniciando Brokaza MVP Multi-Tenant con Dashboard...');
+
+  // BE-03: tracing de POST /api/search. No-op si faltan LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY.
+  initTracing();
 
   const app = createApp();
 

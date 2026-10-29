@@ -42,6 +42,14 @@ export interface Config {
   licenseDataStaleHours: number;
   /** KAN-122: nombres de las variables de Supabase que faltan (vacío si están todas presentes). */
   missingSupabaseCredentials: string[];
+  // BE-03: credenciales de Langfuse para el tracing de POST /api/search — opcionales, mismo
+  // patrón que openaiApiKey. Sin ellas, src/services/tracing.ts no registra ningún
+  // TracerProvider y las llamadas a startObservation/startActiveObservation caen al no-op
+  // global de @opentelemetry/api — la app arranca y la búsqueda funciona igual, solo que sin
+  // trazas exportadas.
+  langfusePublicKey?: string;
+  langfuseSecretKey?: string;
+  langfuseBaseUrl: string;
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -159,6 +167,10 @@ export function validateConfig(): Config {
   // 48h da margen a que el job de sincronización (que corre cada `licenseValidationRetryIntervalMinutes`)
   // falle varias corridas seguidas sin que eso se traduzca en rechazos falsos de matrículas válidas.
   const licenseDataStaleHours = parseInt(cleanEnvVar(process.env.LICENSE_DATA_STALE_HOURS) || '48', 10);
+  // BE-03: opcionales — ver comentario de la interfaz Config más arriba.
+  const langfusePublicKey = cleanEnvVar(process.env.LANGFUSE_PUBLIC_KEY);
+  const langfuseSecretKey = cleanEnvVar(process.env.LANGFUSE_SECRET_KEY);
+  const langfuseBaseUrl = cleanEnvVar(process.env.LANGFUSE_BASE_URL) || 'https://cloud.langfuse.com';
 
   // KAN-122: sin SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY la app queda inservible (todo el acceso a
   // datos pasa por el cliente service-role de src/services/supabase.ts) — antes de este ticket
@@ -257,7 +269,10 @@ export function validateConfig(): Config {
     licensePadronUrl,
     licenseValidationRetryIntervalMinutes,
     licenseDataStaleHours,
-    missingSupabaseCredentials
+    missingSupabaseCredentials,
+    langfusePublicKey,
+    langfuseSecretKey,
+    langfuseBaseUrl
   };
 }
 

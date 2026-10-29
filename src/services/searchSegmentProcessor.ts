@@ -5,6 +5,7 @@ import { sendIncomingMatchEmailFallback } from './notifier-email';
 import { notifyMatchFound } from './notifications';
 import { broadcastMatchCountChanged } from './realtimeHub';
 import { logger } from './logger';
+import { withSpan } from './tracing';
 import {
   buildBlindMatchInsertRows,
   mapPropertyToBlindMatchShape,
@@ -29,7 +30,17 @@ export interface SearchSegmentResult {
 export async function processSingleSearchSegment(
   tenantId: string,
   tenantSupabase: any,
-  segmentText: string
+  segmentText: string,
+  traceId?: string
+): Promise<SearchSegmentResult> {
+  return withSpan('process-segment', { tenantId, segmentText }, async () => processSingleSearchSegmentImpl(tenantId, tenantSupabase, segmentText, traceId));
+}
+
+async function processSingleSearchSegmentImpl(
+  tenantId: string,
+  tenantSupabase: any,
+  segmentText: string,
+  traceId?: string
 ): Promise<SearchSegmentResult> {
   const extractedData = await extractFromTextInput(segmentText);
 
@@ -53,14 +64,17 @@ export async function processSingleSearchSegment(
       zone_status: zoneIntent.zone_status,
       zone_ids: zoneIntent.zona_ids,
       zone_names: zoneIntent.zona_nombres,
-      zone_text_original: zoneIntent.texto_ubicacion_original
+      zone_text_original: zoneIntent.texto_ubicacion_original,
+      // BE-03: trace_id de la traza Langfuse/OpenTelemetry de este request — null si tracing no
+      // estaba configurado al momento del insert (ver src/services/tracing.ts).
+      trace_id: traceId ?? null
     })
     .select('id, criteria, zone_status, zone_names, created_at, expires_at')
     .single();
 
   if (insertErr) throw insertErr;
 
-  const matches = await findCrossTenantMatches(tenantId, extractedData, zoneIntent);
+  const matches = await withSpan('matching', { tenantId, searchId: search.id }, () => findCrossTenantMatches(tenantId, extractedData, zoneIntent));
 
   const mappedMatches = matches.map(m => ({
     tenant_id: m.tenant_id,
@@ -126,11 +140,14 @@ export async function processSingleSearchSegment(
 
     for (const [ownerTenantId, ownerMatches] of Object.entries(bySearcherOwner)) {
       const ownerMatchIds = ownerMatches.map((m) => m.id).filter((id): id is string => Boolean(id));
-      notifyMatchFound({
+      // Fire-and-forget (no se awaitea desde el request) — el span 'notify' puede seguir vivo
+      // después de que 'process-segment' ya terminó, mismo criterio best-effort que ya tenía
+      // este bloque antes de BE-03 (no afecta la búsqueda, ya confirmada).
+      withSpan('notify', { ownerTenantId, searchId: search.id }, () => notifyMatchFound({
         hasActivePush: () => hasActivePushSubscriptions(ownerTenantId),
         sendPush: () => sendWebPushToTenant(ownerTenantId, buildIncomingMatchPushPayload(ownerMatchIds)),
         sendEmailFallback: () => sendIncomingMatchEmailFallback(ownerTenantId, searcherSnapshot, segmentText, ownerMatches)
-      }).catch((notifyErr: any) => {
+      })).catch((notifyErr: any) => {
         logger.error({ error: notifyErr.message || notifyErr, tenantId: ownerTenantId, searchId: search.id }, '[BUSQUEDA] Error al notificar al dueño de una propiedad matcheada (no afecta la búsqueda ya confirmada)');
       });
     }
