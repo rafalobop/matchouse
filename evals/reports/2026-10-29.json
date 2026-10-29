@@ -1,0 +1,86 @@
+{
+  "date": "2026-10-29",
+  "reports": [
+    {
+      "operation": "extract-intent",
+      "totalCases": 78,
+      "executedCases": 78,
+      "executionErrors": [],
+      "criticalFailure": false,
+      "latency": {
+        "p50": 1444,
+        "p95": 1939,
+        "meanMs": 1495.525641025641
+      },
+      "metrics": {
+        "operationMatchRate": 0.9743589743589743,
+        "propertyTypeMatchRate": 0.9487179487179487,
+        "currencyMatchRate": 0.9743589743589743,
+        "countryMatchRate": 0.9487179487179487,
+        "bedroomsMatchRate": 0.9871794871794872,
+        "budgetMeanAbsError": 0,
+        "budgetNullMismatchRate": 0,
+        "zonesPrecision": 0.6538461538461539,
+        "zonesRecall": 0.6474358974358975,
+        "keyFeaturesPrecision": 0.9935897435897436,
+        "keyFeaturesRecall": 1,
+        "desconocidaRate": 0.05128205128205128,
+        "falseDesconocidaRate": 0.02564102564102564
+      }
+    },
+    {
+      "operation": "zone",
+      "totalCases": 30,
+      "executedCases": 30,
+      "executionErrors": [],
+      "criticalFailure": false,
+      "latency": {
+        "p50": 1361,
+        "p95": 2400,
+        "meanMs": 1452.7333333333333
+      },
+      "metrics": {
+        "zonaCorrectaRate": 0.9,
+        "zonaPrecision": 0.9,
+        "zonaRecall": 0.9,
+        "dormitoriosMatchRate": 1,
+        "caracteristicasPrecision": 1,
+        "caracteristicasRecall": 1,
+        "operacionMatchRate": 1,
+        "desconocidaRate": 0.13333333333333333,
+        "falseDesconocidaRate": 0
+      }
+    },
+    {
+      "operation": "segment",
+      "totalCases": 27,
+      "executedCases": 27,
+      "executionErrors": [],
+      "criticalFailure": false,
+      "latency": {
+        "p50": 1175,
+        "p95": 1456,
+        "meanMs": 1194.851851851852
+      },
+      "metrics": {
+        "segmentCountMatchRate": 1,
+        "segmentExactMatchRate": 0.6296296296296297
+      }
+    },
+    {
+      "operation": "excel-mapping",
+      "totalCases": 25,
+      "executedCases": 25,
+      "executionErrors": [],
+      "criticalFailure": false,
+      "latency": {
+        "p50": 2550,
+        "p95": 2930,
+        "meanMs": 2590.72
+      },
+      "metrics": {
+        "fieldAccuracy": 0.9272727272727272
+      }
+    }
+  ]
+}

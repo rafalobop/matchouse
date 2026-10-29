@@ -8,7 +8,8 @@
     "dev": "ts-node -r ./instrument.js src/index.ts",
     "test-pipeline": "ts-node scripts/test-pipeline.ts",
     "build": "tsc",
-    "test": "ts-node tests/runner.ts"
+    "test": "ts-node tests/runner.ts",
+    "eval": "ts-node evals/run.ts"
   },
   "keywords": [],
   "author": "",

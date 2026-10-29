@@ -54,6 +54,23 @@ Campos comunes a los 4 archivos:
 - Los `zones` esperados respetan el mapeo de barrios a municipios que hoy vive hardcodeado en el
   prompt del Agente 1 (SYSTEM_INSTRUCTIONS_AGENT1, regla 3) — ese mapeo se va a eliminar en BE-10,
   momento en el que estos casos van a necesitar actualizarse para dejar las zonas sin normalizar.
+- **Hallazgo de la primera corrida real (BE-02, 2026-10-29):** el modelo generaliza esa regla más
+  allá de los 3 alias explícitos del prompt — una avenida/barrio real de San Miguel de Tucumán o
+  Yerba Buena (confirmado con llamadas reales, ej. "avenida mate de luna" → `"San Miguel de
+  Tucumán"`, "villa 9 de julio" → `"San Miguel de Tucumán"`) se normaliza al municipio igual que
+  los alias documentados. Esto es correcto y deseado: `matcher.ts`
+  (`LocationMatchingStrategy`/rama de fallback sin Agente 2) compara `request.zones` por
+  **igualdad exacta** contra `property.zone_display_name`, que solo toma los 3 valores de
+  municipio — una zona literal como `"avenida mate de luna"` nunca matchearía ninguna propiedad
+  real. Por eso `expected.zones` en los casos `direccion-real` usa el municipio
+  (`"San Miguel de Tucumán"` / `"Yerba Buena"`), no el texto literal de la avenida/barrio/country,
+  salvo en los countries y barrios privados menos conocidos (Los Cedros, Country Las Yungas, etc.)
+  donde el modelo todavía falla de forma visible (devuelve texto basura tipo `"desconocido"` o
+  `"indiferente"` en el array `zones`, cruzado con otro campo del schema) — ahí se deja
+  `"Yerba Buena"` igual como ground truth correcto de negocio, aceptando que hoy el eval va a
+  marcar esos casos como fallidos: es una brecha de calidad real, no un error del dataset.
+  `zone.jsonl` (Agente 2) NO sufre este problema — su prompt pide expresamente no normalizar
+  (`"sin interpretar ni normalizar"`), y la corrida real lo confirmó al 100%.
 
 ### `zone.jsonl` (Agente 2)
 
