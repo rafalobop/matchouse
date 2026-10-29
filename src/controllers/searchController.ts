@@ -55,8 +55,9 @@ export async function createSearch(req: express.Request, res: express.Response) 
   // BE-03: una traza por request de POST /api/search — el trace_id resultante se persiste en cada
   // fila de active_searches creada por este request (ver processSingleSearchSegment) para poder
   // ir de una búsqueda puntual a la traza completa (segmentación -> por segmento: extracción ->
-  // zona -> matching -> notificación).
-  await traceSearchRequest('POST /api/search', { tenantId, rawTextLength: text.length }, async (traceId) => {
+  // zona -> matching -> notificación). tenantId queda propagado como userId de Langfuse a todas
+  // las observaciones hijas (ver tracing.ts).
+  await traceSearchRequest('handle-search-request', { userId: tenantId, input: text }, async (traceId) => {
     let segments: string[];
     try {
       segments = await segmentSearchRequests(text); // Agente 0 — fail-soft, nunca lanza
@@ -119,11 +120,15 @@ export async function createSearch(req: express.Request, res: express.Response) 
       ? (anyAITimeout ? 504 : anyAIExtractionFailed ? 502 : anyQuotaExceeded ? 403 : 500)
       : 200;
 
-    res.status(httpStatus).json({
+    const responseBody = {
       success: !allFailed,
       segmented: segments.length > 1,
       searches: results
-    });
+    };
+    res.status(httpStatus).json(responseBody);
+    // Resumen (no el payload completo) como output de la traza raíz — el detalle por segmento ya
+    // queda en los spans/generations hijos.
+    return { success: responseBody.success, segmented: responseBody.segmented, searchesCount: results.length, httpStatus };
   });
 }
 

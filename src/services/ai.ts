@@ -769,13 +769,13 @@ class AIExtractorContext {
           confidence: Number(entry.confidence) || 0
         }));
         recordLlmGeneration({
-          name: 'excel-mapping', model: usageInfo?.model ?? strategy.name, promptVersion: 'excel-mapping-v1',
+          name: 'map-excel-columns', model: usageInfo?.model ?? strategy.name, promptVersion: 'excel-mapping-v1',
           input: headers, output: result, usage: usageInfo, fallbackUsed, schemaValid: true, startTime
         });
         return result;
       } catch (error) {
         recordLlmGeneration({
-          name: 'excel-mapping', model: usageInfo?.model ?? strategy.name, promptVersion: 'excel-mapping-v1',
+          name: 'map-excel-columns', model: usageInfo?.model ?? strategy.name, promptVersion: 'excel-mapping-v1',
           input: headers, output: null, usage: usageInfo, fallbackUsed, schemaValid: false, startTime,
           error: error instanceof Error ? error.message : String(error)
         });

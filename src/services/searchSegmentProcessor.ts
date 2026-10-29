@@ -33,7 +33,9 @@ export async function processSingleSearchSegment(
   segmentText: string,
   traceId?: string
 ): Promise<SearchSegmentResult> {
-  return withSpan('process-segment', { tenantId, segmentText }, async () => processSingleSearchSegmentImpl(tenantId, tenantSupabase, segmentText, traceId));
+  // asType 'chain': orquesta varios pasos (extracción -> zona -> persistencia -> matching ->
+  // notificación), no es un lookup ni una acción atómica — ver observation-types de Langfuse.
+  return withSpan('process-segment', { tenantId, segmentText }, async () => processSingleSearchSegmentImpl(tenantId, tenantSupabase, segmentText, traceId), { asType: 'chain' });
 }
 
 async function processSingleSearchSegmentImpl(
@@ -74,7 +76,8 @@ async function processSingleSearchSegmentImpl(
 
   if (insertErr) throw insertErr;
 
-  const matches = await withSpan('matching', { tenantId, searchId: search.id }, () => findCrossTenantMatches(tenantId, extractedData, zoneIntent));
+  // asType 'retriever': lookup de solo lectura contra la cartera cross-tenant, no cambia estado.
+  const matches = await withSpan('retrieve-cross-tenant-matches', { tenantId, searchId: search.id }, () => findCrossTenantMatches(tenantId, extractedData, zoneIntent), { asType: 'retriever' });
 
   const mappedMatches = matches.map(m => ({
     tenant_id: m.tenant_id,
@@ -140,14 +143,15 @@ async function processSingleSearchSegmentImpl(
 
     for (const [ownerTenantId, ownerMatches] of Object.entries(bySearcherOwner)) {
       const ownerMatchIds = ownerMatches.map((m) => m.id).filter((id): id is string => Boolean(id));
-      // Fire-and-forget (no se awaitea desde el request) — el span 'notify' puede seguir vivo
-      // después de que 'process-segment' ya terminó, mismo criterio best-effort que ya tenía
-      // este bloque antes de BE-03 (no afecta la búsqueda, ya confirmada).
-      withSpan('notify', { ownerTenantId, searchId: search.id }, () => notifyMatchFound({
+      // Fire-and-forget (no se awaitea desde el request) — el span 'notify-match-owner' puede
+      // seguir vivo después de que 'process-segment' ya terminó, mismo criterio best-effort que
+      // ya tenía este bloque antes de BE-03 (no afecta la búsqueda, ya confirmada). asType 'tool':
+      // acción con efecto externo (push/email), no un lookup.
+      withSpan('notify-match-owner', { ownerTenantId, searchId: search.id }, () => notifyMatchFound({
         hasActivePush: () => hasActivePushSubscriptions(ownerTenantId),
         sendPush: () => sendWebPushToTenant(ownerTenantId, buildIncomingMatchPushPayload(ownerMatchIds)),
         sendEmailFallback: () => sendIncomingMatchEmailFallback(ownerTenantId, searcherSnapshot, segmentText, ownerMatches)
-      })).catch((notifyErr: any) => {
+      }), { asType: 'tool' }).catch((notifyErr: any) => {
         logger.error({ error: notifyErr.message || notifyErr, tenantId: ownerTenantId, searchId: search.id }, '[BUSQUEDA] Error al notificar al dueño de una propiedad matcheada (no afecta la búsqueda ya confirmada)');
       });
     }

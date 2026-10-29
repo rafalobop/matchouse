@@ -7,14 +7,18 @@
 // ningún TracerProvider: @opentelemetry/api cae a su NoopTracerProvider global por defecto, así
 // que startObservation/startActiveObservation siguen siendo llamables y seguras — simplemente no
 // exportan nada. La app arranca y las búsquedas funcionan igual.
-import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+import { NodeSDK } from '@opentelemetry/sdk-node';
 import { LangfuseSpanProcessor } from '@langfuse/otel';
-import { setLangfuseTracerProvider, startActiveObservation, startObservation } from '@langfuse/tracing';
-import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { startActiveObservation, startObservation, propagateAttributes, type LangfuseObservationType } from '@langfuse/tracing';
 import { config } from '../config/env';
 import { logger } from './logger';
 
-let provider: NodeTracerProvider | null = null;
+// Setup oficial de Langfuse para JS/TS SDK v6 (ver
+// https://langfuse.com/docs/observability/sdk/overview#setup) — NodeSDK + LangfuseSpanProcessor
+// sin exporter custom. Verificado en vivo contra el proyecto real de Langfuse de este repo: una
+// traza de prueba (span raíz + generation anidada) apareció correctamente vía la API pública
+// (GET /api/public/v2/observations) con el parentObservationId esperado.
+let sdk: NodeSDK | null = null;
 
 export function initTracing(): void {
   if (!config.langfusePublicKey || !config.langfuseSecretKey) {
@@ -22,36 +26,28 @@ export function initTracing(): void {
     return;
   }
 
-  // @langfuse/otel@6.0.2 declara @opentelemetry/core como peerDependency ^2.0.1, pero el exporter
-  // OTLP que arma por default (cuando no se le pasa `exporter`) depende de
-  // @opentelemetry/otlp-exporter-base@0.300.0, que a su vez trae @opentelemetry/core@3.0.0 — un
-  // conflicto real del paquete publicado. Se evita pasando un exporter propio, apuntado al mismo
-  // endpoint/headers que documenta el SDK de Langfuse, construido con la generación 2.x de OTel
-  // que el resto del proyecto ya usa (ver @sentry/opentelemetry, que también resuelve a 2.12.0).
-  const authHeader = Buffer.from(`${config.langfusePublicKey}:${config.langfuseSecretKey}`).toString('base64');
-  const exporter = new OTLPTraceExporter({
-    url: `${config.langfuseBaseUrl}/api/public/otel/v1/traces`,
-    headers: {
-      Authorization: `Basic ${authHeader}`,
-      'x-langfuse-public-key': config.langfusePublicKey
-    }
-  });
-
   // exportMode: 'immediate' en vez del default 'batched' porque hoy no hay drenaje de buffers más
   // allá del shutdown ordenado de src/index.ts (ver shutdownTracing) — evita perder spans ante un
   // crash/restart que no pase por SIGTERM.
-  provider = new NodeTracerProvider({
-    spanProcessors: [new LangfuseSpanProcessor({ exporter, exportMode: 'immediate' })]
+  sdk = new NodeSDK({
+    spanProcessors: [new LangfuseSpanProcessor({
+      publicKey: config.langfusePublicKey,
+      secretKey: config.langfuseSecretKey,
+      baseUrl: config.langfuseBaseUrl,
+      // BE-03 (best practice de Langfuse): separa trazas de dev/test de las de producción para
+      // que no se mezclen en el mismo dashboard/evaluaciones.
+      environment: process.env.NODE_ENV === 'production' ? 'production' : 'development',
+      exportMode: 'immediate'
+    })]
   });
-  provider.register();
-  setLangfuseTracerProvider(provider);
+  sdk.start();
 
   logger.info('[TRACING] Langfuse tracing habilitado.');
 }
 
 export async function shutdownTracing(): Promise<void> {
-  if (!provider) return;
-  await provider.shutdown();
+  if (!sdk) return;
+  await sdk.shutdown();
 }
 
 type SpanAttrs = Record<string, unknown>;
@@ -62,22 +58,42 @@ type SpanAttrs = Record<string, unknown>;
 // sin sentido" en active_searches.trace_id en vez de null.
 const OTEL_INVALID_TRACE_ID = '0'.repeat(32);
 
-// Envuelve TODO un request de POST /api/search en una traza raíz. `fn` recibe el trace_id (string
-// de 32 hex chars, o undefined si no hay tracer registrado) para que el caller lo persista en
-// active_searches.
-export async function traceSearchRequest<T>(name: string, attrs: SpanAttrs, fn: (traceId: string | undefined) => Promise<T>): Promise<T> {
+// Envuelve TODO un request de POST /api/search en una traza raíz, con tenantId propagado como
+// userId de Langfuse (https://langfuse.com/docs/observability/features/users) a TODAS las
+// observaciones hijas (generations de ai.ts, spans de withSpan) sin tener que pasarlo a mano en
+// cada una — habilita las vistas de "por usuario" (costo/latencia por tenant) en Langfuse.
+// `input` es el texto real de la búsqueda (no un resumen) — es lo más útil para un humano que
+// revisa la traza, siguiendo "Choose meaningful input and output" de
+// https://langfuse.com/docs/observability/best-practices. `fn` recibe el trace_id (32 hex chars,
+// o undefined si no hay tracer registrado) para que el caller lo persista en active_searches, y
+// su valor de retorno se usa como output de la traza raíz.
+export async function traceSearchRequest<T>(
+  name: string,
+  attrs: { userId: string; input: unknown },
+  fn: (traceId: string | undefined) => Promise<T>
+): Promise<T> {
   return startActiveObservation(name, async (span) => {
-    span.update({ input: attrs });
+    span.update({ input: attrs.input });
     const traceId = span.traceId === OTEL_INVALID_TRACE_ID ? undefined : span.traceId;
-    return fn(traceId);
+    const result = await propagateAttributes({ userId: attrs.userId }, () => fn(traceId));
+    span.update({ output: result as unknown });
+    return result;
   }, {});
 }
 
-// Span genérico (no-LLM) para un paso del pipeline (un segmento, matching, notificación). Anida
-// automáticamente bajo el span activo del contexto OTel ambient (AsyncLocalStorage) — ni siquiera
-// dentro de un Promise.all de segmentos en paralelo hace falta pasar el padre a mano, porque cada
-// rama async que llama a withSpan abre su propio boundary aislado.
-export async function withSpan<T>(name: string, attrs: SpanAttrs, fn: () => Promise<T>): Promise<T> {
+// Span/observation genérico (no-LLM) para un paso del pipeline (un segmento, matching,
+// notificación). `asType` por default 'span'; pasar 'retriever' para lookups de solo lectura
+// (ej. matching cross-tenant) o 'tool' para una acción con efecto externo (ej. notificar) — ver
+// https://langfuse.com/docs/observability/features/observation-types. Anida automáticamente bajo
+// el span activo del contexto OTel ambient (AsyncLocalStorage) — ni siquiera dentro de un
+// Promise.all de segmentos en paralelo hace falta pasar el padre a mano, porque cada rama async
+// que llama a withSpan abre su propio boundary aislado.
+export async function withSpan<T>(
+  name: string,
+  attrs: SpanAttrs,
+  fn: () => Promise<T>,
+  options: { asType?: LangfuseObservationType } = {}
+): Promise<T> {
   return startActiveObservation(name, async (span) => {
     span.update({ input: attrs });
     try {
@@ -88,7 +104,7 @@ export async function withSpan<T>(name: string, attrs: SpanAttrs, fn: () => Prom
       span.update({ level: 'ERROR', statusMessage: error instanceof Error ? error.message : String(error) });
       throw error;
     }
-  }, {});
+  }, { asType: options.asType } as Parameters<typeof startActiveObservation>[2]);
 }
 
 // BE-03: precios aproximados a mano (USD por 1.000 tokens) — a verificar contra las páginas de
