@@ -1,6 +1,6 @@
 // KAN-40: envio de notificaciones web push puntuales, fuera del ciclo periodico de notifier.ts.
 // Reusa el mismo mecanismo ya cableado por POST /api/notifications/subscribe
-// (web_push_subscriptions + VAPID, ver src/index.ts), sin depender de WhatsApp/Baileys.
+// (web_push_subscriptions + VAPID, ver src/index.ts).
 
 import webpush from 'web-push';
 import { supabase } from './supabase';

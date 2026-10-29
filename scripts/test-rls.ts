@@ -2,7 +2,7 @@
 // Reescrito para el schema v2 actual (profiles/properties/blind_matches en inglés, RLS
 // tenant_id = auth.uid()) — la versión anterior de este script quedó rota tras SPEC-0012
 // (referenciaba las tablas viejas "Tenant"/"Property" pre-refactor, ya inexistentes).
-// KAN-78: match_queue (legacy WhatsApp) fue eliminada y reemplazada por blind_matches — la
+// KAN-78: match_queue (legacy) fue eliminada y reemplazada por blind_matches — la
 // sección de prueba de esa tabla se reescribió contra el schema nuevo (ver más abajo).
 //
 // No es parte de `npm test` (requiere una conexión real a Supabase y crea/borra usuarios

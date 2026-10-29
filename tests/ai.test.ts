@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import {
-  extractFromWhatsApp,
   extractFromTextInput,
   extractZoneIntent,
   segmentSearchRequests,
@@ -16,8 +15,7 @@ import {
 import { TimeoutError } from '../src/utils/withTimeout';
 import { config, validateConfig } from '../src/config/env';
 
-test('AI Service - Debería exportar las funciones clave (KAN-36: extractFromWhatsApp y extractFromTextInput)', () => {
-  assert.strictEqual(typeof extractFromWhatsApp, 'function', 'extractFromWhatsApp debe ser una función.');
+test('AI Service - Debería exportar las funciones clave (KAN-36: extractFromTextInput)', () => {
   assert.strictEqual(typeof extractFromTextInput, 'function', 'extractFromTextInput debe ser una función.');
   assert.strictEqual(typeof extractZoneIntent, 'function', 'extractZoneIntent debe ser una función.');
   assert.strictEqual(typeof validateMatch, 'function', 'validateMatch debe ser una función.');
@@ -58,12 +56,6 @@ test('AI Service - extractFromTextInput (KAN-36) rechaza sin llamar a ningún pr
   } finally {
     config.freeTextExtractionEnabled = original;
   }
-});
-
-test('AI Service - extractFromWhatsApp no depende de FREE_TEXT_EXTRACTION_ENABLED (KAN-36: sin regresiones)', () => {
-  // extractFromWhatsApp no debe leer el flag en absoluto: es una verificación estática de
-  // que ambas funciones están desacopladas (el flag deshabilitado nunca debe frenar WhatsApp).
-  assert.strictEqual(typeof extractFromWhatsApp, 'function');
 });
 
 test('AI Service - normalizeAgent1 (KAN-36) produce salida válida según el schema para múltiples variaciones de texto libre', () => {
@@ -125,7 +117,6 @@ test('AI Service - normalizeAgent1 (KAN-36) produce salida válida según el sch
 // ejercitando el wrapping real de withTimeout en cada uno de los 8 call sites, sin red real.
 
 const geminiInvocations: Array<{ label: string; call: (s: GeminiStrategy) => Promise<any> }> = [
-  { label: 'extractRealEstateRequest', call: (s) => s.extractRealEstateRequest('mensaje de prueba', 'instrucción') },
   { label: 'extractFromFreeText', call: (s) => s.extractFromFreeText('texto libre de prueba', 'instrucción') },
   { label: 'extractZoneIntent', call: (s) => s.extractZoneIntent('mensaje de prueba', 'instrucción', 'venta') },
   { label: 'segmentSearchRequests', call: (s) => s.segmentSearchRequests('mensaje de prueba', 'instrucción') },
@@ -157,7 +148,6 @@ test('AI Service (KAN-70) - las 4 llamadas de GeminiStrategy a generateContent u
 });
 
 const openaiInvocations: Array<{ label: string; call: (s: OpenAIStrategy) => Promise<any> }> = [
-  { label: 'extractRealEstateRequest', call: (s) => s.extractRealEstateRequest('mensaje de prueba', 'instrucción') },
   { label: 'extractFromFreeText', call: (s) => s.extractFromFreeText('texto libre de prueba', 'instrucción') },
   { label: 'extractZoneIntent', call: (s) => s.extractZoneIntent('mensaje de prueba', 'instrucción', 'venta') },
   { label: 'segmentSearchRequests', call: (s) => s.segmentSearchRequests('mensaje de prueba', 'instrucción') },

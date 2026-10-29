@@ -7,8 +7,8 @@ export const profileRoutes = Router();
 // ==========================================
 // ENDPOINTS DE PERFIL DE TENANT (KAN-64)
 // ==========================================
-// Con el retiro de WhatsApp/Baileys como canal de entrada, el agente inmobiliario completa su
-// perfil (telefono, inmobiliaria, ciudad, pais) despues del magic link, no via WhatsApp OTP.
+// El agente inmobiliario completa su perfil (telefono, inmobiliaria, ciudad, pais) despues del
+// magic link.
 
 profileRoutes.get('/api/localities/tucuman', tenantAuthMiddleware, profileController.getTucumanLocalitiesHandler);
 profileRoutes.get('/api/profile', tenantAuthMiddleware, profileController.getProfile);

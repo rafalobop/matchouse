@@ -1,5 +1,5 @@
 /**
- * Utilidad de filtrado local para determinar si un mensaje de WhatsApp es un pedido
+ * Utilidad de filtrado local para determinar si un mensaje de texto es un pedido
  * de propiedad (demanda) o si es descartable (ofertas, saludos, spam).
  */
 
@@ -40,7 +40,7 @@ const OFFER_PATTERNS = [
 
 /**
  * Determina si el texto del mensaje califica como un pedido/búsqueda de propiedad.
- * @param text Mensaje de WhatsApp entrante
+ * @param text Mensaje de texto entrante
  */
 export function isRealEstateRequest(text: string): boolean {
   if (!text || text.trim().length < 10) {

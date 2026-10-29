@@ -5,7 +5,7 @@
 const MIN_LENGTH = 10;
 const MAX_LENGTH = 1000;
 
-// Caracteres de control (excepto \n y \r, comunes en texto pegado de WhatsApp/formularios).
+// Caracteres de control (excepto \n y \r, comunes en texto pegado desde formularios).
 const CONTROL_CHARS_REGEX = /[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/;
 
 export function validateFreeSearchText(text: string): string | null {

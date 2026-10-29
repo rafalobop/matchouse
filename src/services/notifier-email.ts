@@ -31,8 +31,8 @@ function brandLogoUrl(): string {
 /**
  * Shell compartido por los emails "de marca" (magic link ×3, aviso de interesado) — header con
  * logo + título, card clara sobre fondo sage, footer chico. Separado de
- * `buildEmailHtml`/`buildBlindMatchPropertyRowHtml` de más abajo (tema oscuro, sin logo) porque
- * esos son el canal legacy de WhatsApp, dormido (SPEC-0014) y fuera de este rediseño.
+ * `buildBlindMatchPropertyRowHtml` de más abajo (tema oscuro, sin logo) porque ese es el canal
+ * legacy del matching ciego, dormido (SPEC-0014) y fuera de este rediseño.
  *
  * Layout a base de `<table>` (no `<div>` + `max-width`) — patrón "bulletproof email HTML":
  * Gmail Android, Outlook y varios clientes mobile ignoran `max-width` en `<div>`, así que sin
@@ -122,72 +122,8 @@ export function groupMatchesByTenant(matches: any[]): Map<string, any[]> {
   return byTenant;
 }
 
-export function groupMatchesByWhatsAppGroup(matches: any[]): Map<string, any[]> {
-  const byGroup = new Map<string, any[]>();
-  matches.forEach((match) => {
-    const groupKey = match.whatsapp_group_name || 'default';
-    if (!byGroup.has(groupKey)) byGroup.set(groupKey, []);
-    byGroup.get(groupKey)!.push(match);
-  });
-  return byGroup;
-}
-
-export function buildWhatsAppMessage(groupName: string, property: any, senderName?: string, requestText?: string): string {
-  const greeting = senderName ? `Hola ${senderName}` : 'Hola';
-
-  const pisoLote = [property.floor, property.unit, property.block, property.lot].filter(Boolean).join(' ');
-  const direccion = pisoLote ? `${property.address} (${pisoLote})` : property.address;
-  const detalle = [property.property_type, property.operation].filter(Boolean).join(' en ');
-
-  const truncatedRequest = requestText && requestText.length > 120 ? `${requestText.slice(0, 120)}...` : requestText;
-  const contexto = truncatedRequest
-    ? ` Vi tu mensaje en el grupo "${groupName}" ("${truncatedRequest}")`
-    : ` Vi tu pedido en el grupo "${groupName}"`;
-
-  return `${greeting}!${contexto} y justo tenemos en cartera ${direccion}${detalle ? `, ${detalle}` : ''} a ${property.currency} ${property.price}. ¿Te gustaría que te pase la ficha técnica?`;
-}
-
-export function buildPropertyRowHtml(match: any): string {
-  const prop = match.property;
-  const pisoLote = [prop.floor, prop.unit, prop.block, prop.lot].filter(Boolean).join(' ');
-  const clickUrl = `${config.appUrl}/api/notifications/email/click/${match.id}`;
-
-  return `
-    <tr>
-      <td style="padding:16px;border-bottom:1px solid #2d3b53;">
-        <strong style="color:#f1f5f9;">${prop.address}</strong>${pisoLote ? ` (${pisoLote})` : ''}<br/>
-        <span style="color:#94a3b8;font-size:13px;">${prop.property_type} · ${prop.operation} · ${prop.bedrooms} dorm.</span><br/>
-        <span style="color:#f1f5f9;font-weight:600;">${prop.currency} ${prop.price}</span><br/>
-        <a href="${clickUrl}" style="display:inline-block;margin-top:10px;padding:8px 16px;background:#25D366;color:#ffffff;text-decoration:none;border-radius:6px;font-size:14px;">Contactar al cliente por WhatsApp</a>
-      </td>
-    </tr>`;
-}
-
-export function buildEmailHtml(groupName: string, originalText: string, sender: string, matches: any[]): string {
-  const pixelUrl = `${config.appUrl}/api/notifications/email/pixel/${matches[0].id}.gif`;
-  const truncatedText = originalText.length > 150 ? `${originalText.substring(0, 150)}...` : originalText;
-  const rows = matches.map(buildPropertyRowHtml).join('\n');
-
-  return `<!DOCTYPE html>
-<html>
-<body style="font-family:Arial,Helvetica,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px;margin:0;">
-  <div style="max-width:600px;margin:0 auto;">
-    <h2 style="color:#ffffff;">🏠 Brokaza — Nuevos matches detectados</h2>
-    <p>Grupo: <strong>${groupName}</strong></p>
-    <p style="color:#94a3b8;">Pedido: "${truncatedText}" — Cliente: ${sender}</p>
-    <table style="width:100%;border-collapse:collapse;background:#1e293b;border-radius:8px;overflow:hidden;">
-      ${rows}
-    </table>
-    <p style="color:#64748b;font-size:12px;margin-top:16px;">Gestioná y revisá el feedback de estos matches desde tu Dashboard de Brokaza.</p>
-  </div>
-  <img src="${pixelUrl}" width="1" height="1" alt="" style="display:none;" />
-</body>
-</html>`;
-}
-
 // KAN-48: fila de propiedad para los emails del matching ciego (`domicilio`/`precio`/`moneda`/
-// etc., ver mapeo en src/index.ts — otra forma que el `match_queue` legacy de WhatsApp que usa
-// buildEmailHtml/buildPropertyRowHtml de más arriba). Compartida entre los dos emails de este
+// etc., ver mapeo en src/index.ts). Compartida entre los dos emails de este
 // dominio — hoy solo la usa `buildIncomingMatchEmailHtml` (aviso al dueño de la propiedad
 // matcheada); el email equivalente al buscador (`buildBlindMatchEmailHtml`/
 // `sendBlindMatchEmailFallback`) se retiró por decisión de producto (2026-08-21) — el buscador ya

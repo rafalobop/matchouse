@@ -65,8 +65,7 @@ export function validateConfig(): Config {
   const notificationIntervalMinutes = parseInt(cleanEnvVar(process.env.NOTIFICATION_INTERVAL_MINUTES) || '20', 10);
   // KAN-36/KAN-38: extracción de texto libre de formulario (matching ciego), consumida por
   // POST /api/search. Habilitada por default desde KAN-38: hace falta
-  // FREE_TEXT_EXTRACTION_ENABLED=false explícito para apagarla. No afecta a
-  // extractFromWhatsApp, que sigue funcionando siempre sin depender de este flag.
+  // FREE_TEXT_EXTRACTION_ENABLED=false explícito para apagarla.
   const freeTextExtractionEnabled = cleanEnvVar(process.env.FREE_TEXT_EXTRACTION_ENABLED) !== 'false';
   // KAN-41: frecuencia del servicio en segundo plano que marca 'active_searches' vencidas
   // (expires_at < ahora) como 'expired'. Default 60 min: el vencimiento es a 7 días, no hace

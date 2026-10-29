@@ -103,8 +103,8 @@ test('BlindMatching - matchRequestAgainstProperties: excluye implícitamente la 
 });
 
 // Regresión (hallazgo de QA en KAN-37): mapDbRowToProperty() no seteaba zone_display_name al
-// reconstruir un Property desde una fila de `properties`, a diferencia de los otros dos lugares
-// del repo que hacen ese mismo trabajo (src/index.ts#main(), src/services/whatsapp.ts). Efecto
+// reconstruir un Property desde una fila de `properties`, a diferencia del otro lugar
+// del repo que hace ese mismo trabajo (src/index.ts#main()). Efecto
 // real observado por QA: una búsqueda con zona nunca matcheaba ninguna propiedad cross-tenant,
 // aunque coincidiera en todo lo demás (operación, tipo, dormitorios, presupuesto, características).
 test('BlindMatching - mapDbRowToProperty: reconstruye zone_display_name a partir de sheet_name (regresión QA KAN-37)', () => {
@@ -112,7 +112,7 @@ test('BlindMatching - mapDbRowToProperty: reconstruye zone_display_name a partir
 
   const property = mapDbRowToProperty(row);
 
-  assert.strictEqual(property.zone_display_name, 'Alquiler YB', 'zone_display_name debe reconstruirse desde sheet_name, igual que en index.ts y whatsapp.ts.');
+  assert.strictEqual(property.zone_display_name, 'Alquiler YB', 'zone_display_name debe reconstruirse desde sheet_name, igual que en index.ts.');
 });
 
 test('BlindMatching - findCrossTenantMatches (regresión QA KAN-37): una búsqueda con zona matchea una propiedad cross-tenant cuya zona coincide', () => {

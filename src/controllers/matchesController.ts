@@ -13,9 +13,8 @@ const FEEDBACK_REASON_MAX_LENGTH = 500;
 // (src/controllers/propertiesController.ts) para el resto de las listas paginadas del dashboard de tenant.
 
 // KAN-78: reescrito contra blind_matches (reemplaza a match_queue, eliminada). Sin fallback a
-// coordinator — ese fallback era un Map en memoria permanentemente vacío (nada lo poblaba desde
-// el retiro de WhatsApp); ante un error real de DB ahora se responde 500 en vez de degradar en
-// silencio a una lista vacía.
+// coordinator — ese fallback era un Map en memoria permanentemente vacío (nada lo poblaba);
+// ante un error real de DB ahora se responde 500 en vez de degradar en silencio a una lista vacía.
 export async function listMatches(req: express.Request, res: express.Response) {
   const tenantId = req.tenantId;
   const supabase = req.supabaseClient;

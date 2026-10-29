@@ -21,8 +21,8 @@ interface TenantScopedProperty {
 
 // Exportada para poder testear la reconstrucción de zone_display_name (ver
 // tests/blindMatching.test.ts) — QA (KAN-37) encontró que esta función no lo seteaba, a
-// diferencia de los otros dos lugares del repo que rehidratan un Property desde una fila de
-// properties (src/index.ts#main() y src/services/whatsapp.ts), lo que hacía que
+// diferencia del otro lugar del repo que rehidrata un Property desde una fila de
+// properties (src/index.ts#main()), lo que hacía que
 // ZoneMatchingStrategy rechazara sistemáticamente cualquier búsqueda con zona.
 export function mapDbRowToProperty(row: any): Property {
   return {
