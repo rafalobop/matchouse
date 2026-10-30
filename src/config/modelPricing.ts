@@ -8,7 +8,10 @@
 // inventar un número.
 const MODEL_PRICING_USD_PER_1K_TOKENS: Record<string, { input: number; output: number }> = {
   'gemini-2.5-flash-lite': { input: 0.0001, output: 0.0004 },
-  'gpt-4o-mini': { input: 0.00015, output: 0.0006 }
+  'gpt-4o-mini': { input: 0.00015, output: 0.0006 },
+  // BE-46: tercer modelo de la comparativa (candidato "más grande", misma familia que el
+  // primario para aislar el efecto de tamaño/capacidad del de cambiar de proveedor).
+  'gemini-2.5-flash': { input: 0.0003, output: 0.0025 }
 };
 
 export function estimateCostUsd(model: string, usage?: { inputTokens: number; outputTokens: number }): number {

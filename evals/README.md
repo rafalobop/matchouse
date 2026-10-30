@@ -4,8 +4,12 @@ Datasets de casos con respuesta esperada (`expected`) para medir la calidad real
 operación de IA del backend (`src/services/ai.ts`), no solo el plumbing que ya cubre
 `tests/ai.test.ts` (que mockea el LLM). Implementa BE-01 del backlog de IA.
 
-El runner que ejecuta estos datasets contra el LLM real (`pnpm eval`) es BE-02 — todavía no
-existe en este repo. Este README documenta el formato para que BE-02 lo consuma sin ambigüedad.
+El runner que ejecuta estos datasets contra el LLM real (`pnpm eval`, `evals/run.ts`) es BE-02 —
+corre el pipeline completo de `ai.ts` (con fallback Gemini→OpenAI, como en producción). BE-46
+(`pnpm eval:compare-models`, `evals/compare-models.ts`) corre los mismos datasets contra UN modelo
+aislado por vez (sin fallback), para comparar accuracy × costo × latencia entre modelos — ver
+`docs/model-selection.md`. Las funciones de carga de datasets y cálculo de métricas que usan ambos
+scripts viven en `evals/metrics.ts`, no duplicadas.
 
 ## Estado actual (2026-10-29)
 

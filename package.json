@@ -9,7 +9,8 @@
     "test-pipeline": "ts-node scripts/test-pipeline.ts",
     "build": "tsc",
     "test": "ts-node tests/runner.ts",
-    "eval": "ts-node evals/run.ts"
+    "eval": "ts-node evals/run.ts",
+    "eval:compare-models": "ts-node evals/compare-models.ts"
   },
   "keywords": [],
   "author": "",

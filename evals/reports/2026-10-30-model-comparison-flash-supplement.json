@@ -1,0 +1,150 @@
+{
+  "date": "2026-10-30",
+  "modelReports": [
+    {
+      "label": "gemini-2.5-flash (candidato \"más grande\")",
+      "model": "gemini-2.5-flash",
+      "operations": [
+        {
+          "operation": "extract-intent",
+          "totalCases": 4,
+          "executedCases": 3,
+          "executionErrors": [
+            {
+              "id": "ei-004",
+              "error": "{\"error\":{\"code\":429,\"message\":\"You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash, description: Generate content requests per day limit exceeded on Free Tier. See https://ai.google.dev/gemini-api/docs/rate-limits.\\nPlease retry in 14h29m18.212292172s.\",\"status\":\"RESOURCE_EXHAUSTED\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.Help\",\"links\":[{\"description\":\"Learn more about Gemini API quotas\",\"url\":\"https://ai.google.dev/gemini-api/docs/rate-limits\"}]},{\"@type\":\"type.googleapis.com/google.rpc.QuotaFailure\",\"violations\":[{\"description\":\"Generate content requests per day limit exceeded on Free Tier. See https://ai.google.dev/gemini-api/docs/rate-limits.\",\"quotaMetric\":\"generativelanguage.googleapis.com/generate_content_free_tier_requests\",\"quotaId\":\"GenerateRequestsPerDayPerProjectPerModel-FreeTier\",\"quotaDimensions\":{\"model\":\"gemini-2.5-flash\",\"location\":\"global\"},\"quotaValue\":\"20\"}]},{\"@type\":\"type.googleapis.com/google.rpc.RetryInfo\",\"retryDelay\":\"52158s\"}]}}"
+            }
+          ],
+          "latency": {
+            "p50": 2536,
+            "p95": 11236,
+            "meanMs": 5311.666666666667
+          },
+          "meanCostUsdPerCall": 0.0005170666666666667,
+          "metrics": {
+            "operationMatchRate": 1,
+            "propertyTypeMatchRate": 1,
+            "currencyMatchRate": 1,
+            "countryMatchRate": 1,
+            "bedroomsMatchRate": 1,
+            "budgetMeanAbsError": 0,
+            "budgetNullMismatchRate": 0,
+            "zonesPrecision": 1,
+            "zonesRecall": 1,
+            "keyFeaturesPrecision": 1,
+            "keyFeaturesRecall": 1,
+            "desconocidaRate": 0,
+            "falseDesconocidaRate": 0
+          }
+        },
+        {
+          "operation": "zone",
+          "totalCases": 4,
+          "executedCases": 0,
+          "executionErrors": [
+            {
+              "id": "z-001",
+              "error": "Cuota diaria de gemini-2.5-flash ya agotada en esta corrida (sin reintentar)."
+            },
+            {
+              "id": "z-002",
+              "error": "Cuota diaria de gemini-2.5-flash ya agotada en esta corrida (sin reintentar)."
+            },
+            {
+              "id": "z-003",
+              "error": "Cuota diaria de gemini-2.5-flash ya agotada en esta corrida (sin reintentar)."
+            },
+            {
+              "id": "z-004",
+              "error": "Cuota diaria de gemini-2.5-flash ya agotada en esta corrida (sin reintentar)."
+            }
+          ],
+          "latency": {
+            "p50": 0,
+            "p95": 0,
+            "meanMs": 0
+          },
+          "meanCostUsdPerCall": 0,
+          "metrics": {
+            "zonaCorrectaRate": 0,
+            "zonaPrecision": 0,
+            "zonaRecall": 0,
+            "dormitoriosMatchRate": 0,
+            "caracteristicasPrecision": 0,
+            "caracteristicasRecall": 0,
+            "operacionMatchRate": 0,
+            "desconocidaRate": 0,
+            "falseDesconocidaRate": 0
+          }
+        },
+        {
+          "operation": "segment",
+          "totalCases": 4,
+          "executedCases": 0,
+          "executionErrors": [
+            {
+              "id": "seg-001",
+              "error": "Cuota diaria de gemini-2.5-flash ya agotada en esta corrida (sin reintentar)."
+            },
+            {
+              "id": "seg-002",
+              "error": "Cuota diaria de gemini-2.5-flash ya agotada en esta corrida (sin reintentar)."
+            },
+            {
+              "id": "seg-003",
+              "error": "Cuota diaria de gemini-2.5-flash ya agotada en esta corrida (sin reintentar)."
+            },
+            {
+              "id": "seg-004",
+              "error": "Cuota diaria de gemini-2.5-flash ya agotada en esta corrida (sin reintentar)."
+            }
+          ],
+          "latency": {
+            "p50": 0,
+            "p95": 0,
+            "meanMs": 0
+          },
+          "meanCostUsdPerCall": 0,
+          "metrics": {
+            "segmentCountMatchRate": 0,
+            "segmentExactMatchRate": 0
+          }
+        },
+        {
+          "operation": "excel-mapping",
+          "totalCases": 4,
+          "executedCases": 0,
+          "executionErrors": [
+            {
+              "id": "em-001",
+              "error": "Cuota diaria de gemini-2.5-flash ya agotada en esta corrida (sin reintentar)."
+            },
+            {
+              "id": "em-002",
+              "error": "Cuota diaria de gemini-2.5-flash ya agotada en esta corrida (sin reintentar)."
+            },
+            {
+              "id": "em-003",
+              "error": "Cuota diaria de gemini-2.5-flash ya agotada en esta corrida (sin reintentar)."
+            },
+            {
+              "id": "em-004",
+              "error": "Cuota diaria de gemini-2.5-flash ya agotada en esta corrida (sin reintentar)."
+            }
+          ],
+          "latency": {
+            "p50": 0,
+            "p95": 0,
+            "meanMs": 0
+          },
+          "meanCostUsdPerCall": 0,
+          "metrics": {
+            "fieldAccuracy": 0
+          }
+        }
+      ],
+      "costPerSearchUsd": 0.0005170666666666667,
+      "costPer1000SearchesUsd": 0.5170666666666667
+    }
+  ]
+}

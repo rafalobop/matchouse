@@ -162,4 +162,5 @@ del CCIT usado para validar la matrícula).
 - `docs/RUNBOOK.md` — observabilidad y alertas de errores en producción (healthcheck, Sentry).
 - `docs/rate-limit-backends.md` — por qué el rate limiting distribuido usa Postgres y no Redis.
 - `docs/rls-deny-all-tables-README.md` — por qué `licensed_agents` y la familia `neighborhood_*` tienen RLS habilitado sin policies (intencional, solo acceso service-role).
+- `docs/model-selection.md` — comparativa de modelos LLM (accuracy × costo × latencia) y la justificación con datos de por qué `gemini-2.5-flash-lite` es el primario y `gpt-4o-mini` el fallback.
 - `.agent/CONTEXT.md` — memoria viva del proyecto: arquitectura al detalle, historial de decisiones y tracking de tickets. Fuente de verdad más granular que este README.
