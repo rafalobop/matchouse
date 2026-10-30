@@ -186,7 +186,7 @@ export async function resolveColumnMapping(
   tenantId: string,
   headers: string[],
   client: SupabaseClient = serviceRoleSupabase,
-  aiSuggestFn: (headers: string[]) => Promise<ExcelColumnMappingSuggestion[]> = suggestExcelColumnMapping
+  aiSuggestFn: (headers: string[], tenantId?: string) => Promise<ExcelColumnMappingSuggestion[]> = suggestExcelColumnMapping
 ): Promise<ColumnMappingResolution> {
   const headerSignature = computeHeaderSignature(headers);
 
@@ -204,7 +204,7 @@ export async function resolveColumnMapping(
 
   let aiFields: ResolvedFieldMapping[] | null = null;
   try {
-    const suggestions = await aiSuggestFn(headers);
+    const suggestions = await aiSuggestFn(headers, tenantId);
     if (suggestions.length > 0) {
       aiFields = resolveAiFields(suggestions, headers);
     }

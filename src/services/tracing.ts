@@ -11,6 +11,7 @@ import { NodeSDK } from '@opentelemetry/sdk-node';
 import { LangfuseSpanProcessor } from '@langfuse/otel';
 import { startActiveObservation, startObservation, propagateAttributes, type LangfuseObservationType } from '@langfuse/tracing';
 import { config } from '../config/env';
+import { estimateCostUsd } from '../config/modelPricing';
 import { logger } from './logger';
 
 // Setup oficial de Langfuse para JS/TS SDK v6 (ver
@@ -105,22 +106,6 @@ export async function withSpan<T>(
       throw error;
     }
   }, { asType: options.asType } as Parameters<typeof startActiveObservation>[2]);
-}
-
-// BE-03: precios aproximados a mano (USD por 1.000 tokens) — a verificar contra las páginas de
-// precios reales de cada proveedor cuando se necesite exactitud (ver BE-46, comparativa de
-// modelos). Mismo criterio de "no fabricar precisión" que en BE-02: un modelo no listado acá
-// cuesta 0 en vez de inventar un número.
-const MODEL_PRICING_USD_PER_1K_TOKENS: Record<string, { input: number; output: number }> = {
-  'gemini-2.5-flash-lite': { input: 0.0001, output: 0.0004 },
-  'gpt-4o-mini': { input: 0.00015, output: 0.0006 }
-};
-
-function estimateCostUsd(model: string, usage?: { inputTokens: number; outputTokens: number }): number {
-  if (!usage) return 0;
-  const pricing = MODEL_PRICING_USD_PER_1K_TOKENS[model];
-  if (!pricing) return 0;
-  return (usage.inputTokens / 1000) * pricing.input + (usage.outputTokens / 1000) * pricing.output;
 }
 
 export interface LlmGenerationParams {

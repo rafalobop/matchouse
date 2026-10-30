@@ -60,7 +60,7 @@ export async function createSearch(req: express.Request, res: express.Response) 
   await traceSearchRequest('handle-search-request', { userId: tenantId, input: text }, async (traceId) => {
     let segments: string[];
     try {
-      segments = await segmentSearchRequests(text); // Agente 0 — fail-soft, nunca lanza
+      segments = await segmentSearchRequests(text, tenantId); // Agente 0 — fail-soft, nunca lanza
     } catch (error: any) {
       // Defensivo: aunque segmentSearchRequests no debería lanzar, un fallo acá no debe bloquear
       // el flujo — degradar al mensaje completo como única búsqueda.

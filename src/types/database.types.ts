@@ -2,7 +2,8 @@
 // `brokaza` (bbadahhljpddlckyrmvi), reflejando el schema real de Postgres al momento de generarlo
 // — no escrito a mano. Regenerar con el mismo comando (o `supabase gen types typescript`) cada vez
 // que cambie el schema (nueva columna/tabla/función) para que no quede desactualizado. No editar
-// a mano.
+// a mano. Última regeneración: 2026-10-29 (BE-04, agrega tabla llm_calls y corrige drift de
+// active_searches.trace_id que BE-03 había agregado en la base real sin regenerar este archivo).
 export type Json =
   | string
   | number
@@ -29,6 +30,7 @@ export type Database = {
           reengagement_sent: boolean
           status: string
           tenant_id: string
+          trace_id: string | null
           zone_ids: string[]
           zone_names: string[]
           zone_status: string
@@ -43,6 +45,7 @@ export type Database = {
           reengagement_sent?: boolean
           status?: string
           tenant_id: string
+          trace_id?: string | null
           zone_ids?: string[]
           zone_names?: string[]
           zone_status?: string
@@ -57,6 +60,7 @@ export type Database = {
           reengagement_sent?: boolean
           status?: string
           tenant_id?: string
+          trace_id?: string | null
           zone_ids?: string[]
           zone_names?: string[]
           zone_status?: string
@@ -240,6 +244,69 @@ export type Database = {
           synced_at?: string
         }
         Relationships: []
+      }
+      llm_calls: {
+        Row: {
+          cost_usd: number
+          created_at: string
+          fallback_used: boolean
+          id: string
+          latency_ms: number
+          model: string
+          operation: string
+          prompt_version: string | null
+          schema_valid: boolean
+          search_id: string | null
+          tenant_id: string | null
+          tokens_in: number
+          tokens_out: number
+        }
+        Insert: {
+          cost_usd?: number
+          created_at?: string
+          fallback_used?: boolean
+          id?: string
+          latency_ms?: number
+          model: string
+          operation: string
+          prompt_version?: string | null
+          schema_valid?: boolean
+          search_id?: string | null
+          tenant_id?: string | null
+          tokens_in?: number
+          tokens_out?: number
+        }
+        Update: {
+          cost_usd?: number
+          created_at?: string
+          fallback_used?: boolean
+          id?: string
+          latency_ms?: number
+          model?: string
+          operation?: string
+          prompt_version?: string | null
+          schema_valid?: boolean
+          search_id?: string | null
+          tenant_id?: string | null
+          tokens_in?: number
+          tokens_out?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "llm_calls_search_id_fkey"
+            columns: ["search_id"]
+            isOneToOne: false
+            referencedRelation: "active_searches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "llm_calls_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       neighborhood_aliases: {
         Row: {

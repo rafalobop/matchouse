@@ -10,10 +10,19 @@ import {
   GeminiStrategy,
   OpenAIStrategy,
   AITimeoutError,
-  AIExtractionFailedError
+  AIExtractionFailedError,
+  __setLlmCallsClientForTests
 } from '../src/services/ai';
 import { TimeoutError } from '../src/utils/withTimeout';
 import { config, validateConfig } from '../src/config/env';
+import { createFakeSupabaseClient, chainableResult } from './helpers/fakeSupabaseClient';
+
+// BE-04 (fix QA, 2026-10-29): AIExtractorContext persiste una fila en llm_calls por cada llamada
+// real de IA (ver ai.ts#persistLlmCall) — sin este fake, los tests de este archivo (que sí
+// ejercitan AIExtractorContext real, solo sobreescribiendo los métodos de
+// GeminiStrategy/OpenAIStrategy.prototype para no llamar a un LLM real) insertarían filas reales
+// en la tabla de producción en cada corrida de `pnpm test`, tal como encontró QA.
+__setLlmCallsClientForTests(createFakeSupabaseClient(() => chainableResult({ data: null, error: null })));
 
 test('AI Service - Debería exportar las funciones clave (KAN-36: extractFromTextInput)', () => {
   assert.strictEqual(typeof extractFromTextInput, 'function', 'extractFromTextInput debe ser una función.');

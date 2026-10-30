@@ -21,6 +21,7 @@ import './health.test';
 import './idValidation.test';
 import './kan303IncomingMatchHighlight.test';
 import './licenseRegistry.test';
+import './llmCallsRepository.test';
 import './licenseValidationRetry.test';
 import './localitiesService.test';
 import './logger.test';

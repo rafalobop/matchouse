@@ -44,7 +44,7 @@ async function processSingleSearchSegmentImpl(
   segmentText: string,
   traceId?: string
 ): Promise<SearchSegmentResult> {
-  const extractedData = await extractFromTextInput(segmentText);
+  const extractedData = await extractFromTextInput(segmentText, tenantId);
 
   if (extractedData.operation === 'desconocido') {
     return { success: false, raw_text: segmentText, error: 'No pudimos clasificar el texto como un pedido de propiedad.' };
@@ -55,7 +55,7 @@ async function processSingleSearchSegmentImpl(
   // zone_text_original en el mismo insert — elimina la ventana donde una fila de active_searches
   // existía sin haber corrido el Agente 2 todavía. extractZoneIntent nunca lanza (fallback
   // silencioso ante fallo total de IA), así que no necesita try/catch propio.
-  const zoneIntent = await extractZoneIntent(segmentText, extractedData.operation);
+  const zoneIntent = await extractZoneIntent(segmentText, extractedData.operation, tenantId);
 
   const { data: search, error: insertErr } = await tenantSupabase
     .from('active_searches')

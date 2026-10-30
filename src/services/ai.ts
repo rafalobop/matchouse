@@ -7,6 +7,9 @@ import { resolveMultipleNeighborhoodsByText, ZonesServiceError } from './zonesSe
 import { logger } from './logger';
 import { EXCEL_MAPPING_FIELDS } from '../utils/excelHeaderMatcher';
 import { recordLlmGeneration } from './tracing';
+import { recordLlmCall } from './llmCallsRepository';
+import { estimateCostUsd } from '../config/modelPricing';
+import { supabase, TypedSupabaseClient } from './supabase';
 
 // BE-03: callback opcional que cada método de AIStrategy invoca con el uso real de tokens del
 // proveedor justo antes de devolver el resultado parseado — permite instrumentar tracing
@@ -570,6 +573,55 @@ export function logFallbackWarning(strategyName: string, error: any) {
   }
 }
 
+// BE-04 (fix QA, 2026-10-29): antes de este fix, persistLlmCall usaba el singleton `supabase`
+// (service-role real) directo — a diferencia del resto de los escritores de este repo
+// (`excelMapping.ts#resolveColumnMapping`, `notifier-email.ts` vía __setResendClientForTests),
+// ai.ts nunca había tenido un camino de escritura a Supabase, así que `tests/ai.test.ts` (que
+// ejercita AIExtractorContext real, solo sobreescribiendo los métodos de
+// GeminiStrategy/OpenAIStrategy.prototype para evitar llamadas reales al LLM) terminaba insertando
+// filas reales en la tabla de producción en cada corrida de `pnpm test` — encontrado por QA: 72
+// filas con tenant_id null, timestamps coincidentes con las corridas de test, confirmado contra la
+// base real y limpiado manualmente. `llmCallsClient` es el mismo patrón ya usado para
+// `resendClient` en notifier-email.ts: variable de módulo mutable solo a través del setter de
+// tests, real por default en producción.
+let llmCallsClient: TypedSupabaseClient = supabase;
+
+/** Permite inyectar un cliente fake en tests para no escribir en la base real (ver comentario arriba). */
+export function __setLlmCallsClientForTests(client: TypedSupabaseClient): void {
+  llmCallsClient = client;
+}
+
+// BE-04: inserta una fila en llm_calls por cada llamada real a un proveedor de IA, con el mismo
+// costo estimado que ya calcula tracing.ts para el span de Langfuse (ver config/modelPricing.ts).
+// Fire-and-forget (no se awaitea desde los call sites) — mismo criterio best-effort que
+// recordLlmGeneration, nunca debe poder demorar ni romper una extracción ya resuelta.
+function persistLlmCall(params: {
+  operation: string;
+  model: string;
+  promptVersion: string;
+  usage?: { inputTokens: number; outputTokens: number };
+  startTime: Date;
+  fallbackUsed: boolean;
+  schemaValid: boolean;
+  tenantId?: string;
+}): void {
+  void recordLlmCall(llmCallsClient, {
+    operation: params.operation,
+    model: params.model,
+    promptVersion: params.promptVersion,
+    tokensIn: params.usage?.inputTokens ?? 0,
+    tokensOut: params.usage?.outputTokens ?? 0,
+    latencyMs: Date.now() - params.startTime.getTime(),
+    costUsd: estimateCostUsd(params.model, params.usage),
+    fallbackUsed: params.fallbackUsed,
+    schemaValid: params.schemaValid,
+    tenantId: params.tenantId ?? null,
+    // search_id queda null: estas llamadas corren ANTES del insert en active_searches (ver
+    // searchSegmentProcessor.ts), así que el id todavía no existe en el momento de persistir.
+    searchId: null
+  });
+}
+
 // --- CONTEXT / MANAGER DE ESTRATEGIAS DE IA ---
 
 class AIExtractorContext {
@@ -595,7 +647,7 @@ class AIExtractorContext {
   // publicaba igual, matcheando de más, sin que el buscador se enterara de que la extracción real
   // había fallado. El motivo del fallo (timeout vs. cualquier otro) solo cambia el mensaje/código
   // de error (`AITimeoutError` vs. `AIExtractionFailedError`), nunca si hay que avisar o no.
-  async extractFromTextInput(freeText: string): Promise<ExtractedRealEstateRequest> {
+  async extractFromTextInput(freeText: string, tenantId?: string): Promise<ExtractedRealEstateRequest> {
     let allFailuresWereTimeouts = this.strategies.length > 0;
 
     for (const strategy of this.strategies) {
@@ -610,12 +662,20 @@ class AIExtractorContext {
           name: 'extract-intent', model: usageInfo?.model ?? strategy.name, promptVersion: 'agent1-text-input-v1',
           input: freeText, output: normalized, usage: usageInfo, fallbackUsed, schemaValid: true, startTime
         });
+        persistLlmCall({
+          operation: 'extract-intent', model: usageInfo?.model ?? strategy.name, promptVersion: 'agent1-text-input-v1',
+          usage: usageInfo, startTime, fallbackUsed, schemaValid: true, tenantId
+        });
         return normalized;
       } catch (error) {
         recordLlmGeneration({
           name: 'extract-intent', model: usageInfo?.model ?? strategy.name, promptVersion: 'agent1-text-input-v1',
           input: freeText, output: null, usage: usageInfo, fallbackUsed, schemaValid: false, startTime,
           error: error instanceof Error ? error.message : String(error)
+        });
+        persistLlmCall({
+          operation: 'extract-intent', model: usageInfo?.model ?? strategy.name, promptVersion: 'agent1-text-input-v1',
+          usage: usageInfo, startTime, fallbackUsed, schemaValid: false, tenantId
         });
         if (!(error instanceof TimeoutError)) {
           allFailuresWereTimeouts = false;
@@ -632,7 +692,7 @@ class AIExtractorContext {
     throw new AIExtractionFailedError();
   }
 
-  async extractZoneIntent(messageTexto: string, operacion?: string): Promise<ZoneIntentRequest> {
+  async extractZoneIntent(messageTexto: string, operacion?: string, tenantId?: string): Promise<ZoneIntentRequest> {
     for (const strategy of this.strategies) {
       const fallbackUsed = this.strategies.indexOf(strategy) > 0;
       const startTime = new Date();
@@ -646,12 +706,20 @@ class AIExtractorContext {
           name: 'extract-zone', model: usageInfo?.model ?? strategy.name, promptVersion: 'agent2-v1',
           input: messageTexto, output: resolved, usage: usageInfo, fallbackUsed, schemaValid: true, startTime
         });
+        persistLlmCall({
+          operation: 'extract-zone', model: usageInfo?.model ?? strategy.name, promptVersion: 'agent2-v1',
+          usage: usageInfo, startTime, fallbackUsed, schemaValid: true, tenantId
+        });
         return resolved;
       } catch (error) {
         recordLlmGeneration({
           name: 'extract-zone', model: usageInfo?.model ?? strategy.name, promptVersion: 'agent2-v1',
           input: messageTexto, output: null, usage: usageInfo, fallbackUsed, schemaValid: false, startTime,
           error: error instanceof Error ? error.message : String(error)
+        });
+        persistLlmCall({
+          operation: 'extract-zone', model: usageInfo?.model ?? strategy.name, promptVersion: 'agent2-v1',
+          usage: usageInfo, startTime, fallbackUsed, schemaValid: false, tenantId
         });
         logFallbackWarning(strategy.name, error);
       }
@@ -689,7 +757,7 @@ class AIExtractorContext {
   // Fail-soft en todos los casos (ambas estrategias fallan, o el resultado trae 0/1 segmentos):
   // se degrada a tratar el mensaje completo como una única búsqueda — nunca lanza, nunca bloquea
   // POST /api/search.
-  async segmentSearchRequests(messageTexto: string): Promise<string[]> {
+  async segmentSearchRequests(messageTexto: string, tenantId?: string): Promise<string[]> {
     for (const strategy of this.strategies) {
       const fallbackUsed = this.strategies.indexOf(strategy) > 0;
       const startTime = new Date();
@@ -705,12 +773,20 @@ class AIExtractorContext {
           name: 'segment', model: usageInfo?.model ?? strategy.name, promptVersion: 'segmenter-v1',
           input: messageTexto, output: result, usage: usageInfo, fallbackUsed, schemaValid: true, startTime
         });
+        persistLlmCall({
+          operation: 'segment', model: usageInfo?.model ?? strategy.name, promptVersion: 'segmenter-v1',
+          usage: usageInfo, startTime, fallbackUsed, schemaValid: true, tenantId
+        });
         return result;
       } catch (error) {
         recordLlmGeneration({
           name: 'segment', model: usageInfo?.model ?? strategy.name, promptVersion: 'segmenter-v1',
           input: messageTexto, output: null, usage: usageInfo, fallbackUsed, schemaValid: false, startTime,
           error: error instanceof Error ? error.message : String(error)
+        });
+        persistLlmCall({
+          operation: 'segment', model: usageInfo?.model ?? strategy.name, promptVersion: 'segmenter-v1',
+          usage: usageInfo, startTime, fallbackUsed, schemaValid: false, tenantId
         });
         logFallbackWarning(strategy.name, error);
       }
@@ -752,7 +828,7 @@ class AIExtractorContext {
   // excelMapping.ts pueda distinguir "la IA no pudo sugerir nada" de "la IA sugirió que ningún
   // header corresponde a ningún campo" y trate el primer caso como "requiere confirmación manual"
   // en vez de como una sugerencia válida vacía.
-  async suggestExcelColumnMapping(headers: string[]): Promise<ExcelColumnMappingSuggestion[]> {
+  async suggestExcelColumnMapping(headers: string[], tenantId?: string): Promise<ExcelColumnMappingSuggestion[]> {
     for (const strategy of this.strategies) {
       const fallbackUsed = this.strategies.indexOf(strategy) > 0;
       const startTime = new Date();
@@ -772,12 +848,20 @@ class AIExtractorContext {
           name: 'map-excel-columns', model: usageInfo?.model ?? strategy.name, promptVersion: 'excel-mapping-v1',
           input: headers, output: result, usage: usageInfo, fallbackUsed, schemaValid: true, startTime
         });
+        persistLlmCall({
+          operation: 'map-excel-columns', model: usageInfo?.model ?? strategy.name, promptVersion: 'excel-mapping-v1',
+          usage: usageInfo, startTime, fallbackUsed, schemaValid: true, tenantId
+        });
         return result;
       } catch (error) {
         recordLlmGeneration({
           name: 'map-excel-columns', model: usageInfo?.model ?? strategy.name, promptVersion: 'excel-mapping-v1',
           input: headers, output: null, usage: usageInfo, fallbackUsed, schemaValid: false, startTime,
           error: error instanceof Error ? error.message : String(error)
+        });
+        persistLlmCall({
+          operation: 'map-excel-columns', model: usageInfo?.model ?? strategy.name, promptVersion: 'excel-mapping-v1',
+          usage: usageInfo, startTime, fallbackUsed, schemaValid: false, tenantId
         });
         logFallbackWarning(strategy.name, error);
       }
@@ -1085,21 +1169,21 @@ const aiContext = new AIExtractorContext();
 // KAN-36: extractor de texto libre de formulario (matching ciego). Detrás de
 // FREE_TEXT_EXTRACTION_ENABLED (default false) porque es una feature nueva sin
 // consumidor todavía.
-export async function extractFromTextInput(freeText: string): Promise<ExtractedRealEstateRequest> {
+export async function extractFromTextInput(freeText: string, tenantId?: string): Promise<ExtractedRealEstateRequest> {
   if (!config.freeTextExtractionEnabled) {
     throw new Error('La extracción de texto libre está deshabilitada (FREE_TEXT_EXTRACTION_ENABLED=false). Ver KAN-36.');
   }
-  return aiContext.extractFromTextInput(freeText);
+  return aiContext.extractFromTextInput(freeText, tenantId);
 }
 
-export async function extractZoneIntent(messageTexto: string, operacion?: 'venta' | 'alquiler' | 'desconocido'): Promise<ZoneIntentRequest> {
-  return aiContext.extractZoneIntent(messageTexto, operacion);
+export async function extractZoneIntent(messageTexto: string, operacion?: 'venta' | 'alquiler' | 'desconocido', tenantId?: string): Promise<ZoneIntentRequest> {
+  return aiContext.extractZoneIntent(messageTexto, operacion, tenantId);
 }
 
 // Agente 0: divide un mensaje en N pedidos de búsqueda independientes. Fail-soft — nunca lanza,
 // degrada a `[freeText]` (mensaje completo como única búsqueda) ante cualquier fallo.
-export async function segmentSearchRequests(freeText: string): Promise<string[]> {
-  return aiContext.segmentSearchRequests(freeText);
+export async function segmentSearchRequests(freeText: string, tenantId?: string): Promise<string[]> {
+  return aiContext.segmentSearchRequests(freeText, tenantId);
 }
 
 export async function validateMatch(
@@ -1115,8 +1199,8 @@ export async function validateMatch(
 // no reconocible). Nunca lanza — un fallo total de IA devuelve `[]` (ver
 // AIExtractorContext.suggestExcelColumnMapping), que el llamador trata como "no se pudo escalar,
 // requiere confirmación manual del agente".
-export async function suggestExcelColumnMapping(headers: string[]): Promise<ExcelColumnMappingSuggestion[]> {
-  return aiContext.suggestExcelColumnMapping(headers);
+export async function suggestExcelColumnMapping(headers: string[], tenantId?: string): Promise<ExcelColumnMappingSuggestion[]> {
+  return aiContext.suggestExcelColumnMapping(headers, tenantId);
 }
 
 // --- PROMPT DE INSTRUCCIONES DEL VALIDADOR ---
