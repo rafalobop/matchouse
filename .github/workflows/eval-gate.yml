@@ -1,0 +1,133 @@
+name: Eval Gate
+
+# BE-05: corre una muestra de los evals de evals/ (BE-01/BE-02) contra UN PR que toca la capa de
+# IA, y la compara contra el baseline commiteado en la rama base (evals/compare-to-baseline.ts) —
+# falla el job si algún campo de calidad retrocede más del umbral. Workflow separado de ci.yml (no
+# el mismo archivo) para que el filtro de `paths` de abajo no afecte al job de build/test, que debe
+# correr en TODOS los PRs sin importar qué tocan.
+#
+# Requiere los secrets EVAL_GATE_GEMINI_API_KEY / EVAL_GATE_OPENAI_API_KEY configurados en el repo
+# (Settings → Secrets and variables → Actions). Sin EVAL_GATE_GEMINI_API_KEY, el job se saltea (no
+# bloquea el merge) con un aviso — ver el step "Aviso: sin credenciales" más abajo.
+#
+# ⚠️ IMPORTANTE (hallazgo real de BE-46, docs/model-selection.md): usar acá una API key de Gemini
+# DISTINTA de la de producción, idealmente con facturación habilitada (pay-as-you-go). El free tier
+# de Gemini tiene un límite de 20 requests/día POR MODELO (no solo por minuto) — este job hace
+# EVAL_GATE_MAX_CASES × 4 operaciones llamadas reales por corrida (default 10 = 40 llamadas), así
+# que una sola corrida con una key free-tier agotaría casi toda la cuota diaria. Si se reutiliza la
+# key de producción, cada PR que toque ai.ts puede degradar el servicio real por el resto del día.
+on:
+  pull_request:
+    paths:
+      - 'src/services/ai.ts'
+      - 'evals/**'
+
+jobs:
+  eval-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      EVAL_GATE_MAX_CASES: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # fetch-depth 0: hace falta el historial completo (no solo el commit del PR) para poder
+          # leer evals/reports/ de la rama base con `git show`/`git ls-tree` más abajo.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Chequear credenciales de eval
+        id: check-secrets
+        run: |
+          if [ -z "${{ secrets.EVAL_GATE_GEMINI_API_KEY }}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 'Aviso: sin credenciales'
+        if: steps.check-secrets.outputs.skip == 'true'
+        run: |
+          echo "::notice::EVAL_GATE_GEMINI_API_KEY no está configurado — el eval gate se saltea (no bloquea este PR). Ver evals/README.md para cómo configurarlo."
+
+      - name: Buscar baseline en la rama base
+        if: steps.check-secrets.outputs.skip == 'false'
+        id: baseline
+        run: |
+          BASE_REF="origin/${{ github.event.pull_request.base.ref }}"
+          BASELINE_FILE=$(git ls-tree -r --name-only "$BASE_REF" -- evals/reports | grep -E '^evals/reports/[0-9]{4}-[0-9]{2}-[0-9]{2}\.json$' | sort | tail -1 || true)
+          if [ -z "$BASELINE_FILE" ]; then
+            echo "::notice::No se encontró ningún baseline (evals/reports/YYYY-MM-DD.json) en $BASE_REF — se saltea el gate."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git show "$BASE_REF:$BASELINE_FILE" > /tmp/baseline.json
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "file=$BASELINE_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Correr muestra de evals (PR branch)
+        if: steps.check-secrets.outputs.skip == 'false' && steps.baseline.outputs.found == 'true'
+        run: pnpm exec ts-node evals/run.ts --max-cases "$EVAL_GATE_MAX_CASES" --out-dir /tmp/eval-current
+        env:
+          GEMINI_API_KEY: ${{ secrets.EVAL_GATE_GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.EVAL_GATE_OPENAI_API_KEY }}
+          # Mismos placeholders que el job de tests (ver ci.yml) — Supabase real no es necesario
+          # (ni seguro) para correr evals desde un runner de CI; con una URL inalcanzable, la
+          # resolución de zona (único punto que toca DB) degrada a DESCONOCIDA sin romper nada —
+          # por eso 'zone' es informativo-only en compare-to-baseline.ts, no gatea el resultado.
+          SUPABASE_URL: https://example.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: dummy-ci-service-role-key
+          SUPABASE_ANON_KEY: dummy-ci-anon-key
+          SUPABASE_JWT_SECRET: dummy-ci-jwt-secret
+          INTERNAL_WEBHOOK_SECRET: dummy-ci-webhook-secret
+          VAPID_PUBLIC_KEY: BDF5oylZ3ZVC_QqKnD_8FI5tl5vuJ8HLdzts6bhAdii7CeD4Ba_fFWsKhu3AtrQhPwe_Tp-A219FUGMXK5eSCnI
+          VAPID_PRIVATE_KEY: JHfSSmRxLMD9TP5ocnc0iNvBr7AyZrVnYtezXejOVa0
+          VAPID_EMAIL: mailto:ci@example.com
+          SENDER_API_KEY: dummy-ci-resend-key
+          APP_URL: http://localhost:3000
+
+      - name: Comparar contra el baseline
+        if: steps.check-secrets.outputs.skip == 'false' && steps.baseline.outputs.found == 'true'
+        id: compare
+        run: |
+          CURRENT_FILE=$(ls /tmp/eval-current/*.json | head -1)
+          set +e
+          pnpm exec ts-node evals/compare-to-baseline.ts --baseline /tmp/baseline.json --current "$CURRENT_FILE" --out /tmp/eval-comment.md
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+
+      - name: Publicar resultado como comentario del PR
+        if: steps.check-secrets.outputs.skip == 'false' && steps.baseline.outputs.found == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- eval-gate-comment -->';
+            const body = fs.readFileSync('/tmp/eval-comment.md', 'utf8') + `\n\n${marker}`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body });
+            }
+
+      - name: Fallar si el gate encontró una regresión
+        if: steps.check-secrets.outputs.skip == 'false' && steps.baseline.outputs.found == 'true' && steps.compare.outputs.exit_code != '0'
+        run: exit 1

@@ -81,11 +81,16 @@ interface OperationReport {
   metrics: Record<string, number>;
 }
 
-async function runOperation(op: OperationName): Promise<OperationReport> {
+// BE-05: maxCasesPerOp acota cuántos casos de cada dataset se corren — el eval gate de CI
+// (.github/workflows/eval-gate.yml) lo usa para no quemar la cuota diaria de Gemini en cada PR
+// (ver BE-46: el free tier tiene un cap de 20 requests/día POR MODELO, no solo por minuto).
+// undefined = dataset completo (uso normal de `pnpm eval` local).
+async function runOperation(op: OperationName, maxCasesPerOp?: number): Promise<OperationReport> {
   console.log(`\n→ ${op}`);
+  const limitCases = <T,>(all: T[]): T[] => (maxCasesPerOp !== undefined ? all.slice(0, maxCasesPerOp) : all);
 
   if (op === 'extract-intent') {
-    const cases = loadJsonl<ExtractIntentCase>(DATASET_FILES[op]);
+    const cases = limitCases(loadJsonl<ExtractIntentCase>(DATASET_FILES[op]));
     const results = await runCases(cases, evalExtractIntentCase);
     const agg = aggregateExtractIntent(results);
     const executionErrors = results.filter(r => r.executionError).map(r => ({ id: r.id, error: r.executionError! }));
@@ -115,7 +120,7 @@ async function runOperation(op: OperationName): Promise<OperationReport> {
   }
 
   if (op === 'zone') {
-    const cases = loadJsonl<ZoneCase>(DATASET_FILES[op]);
+    const cases = limitCases(loadJsonl<ZoneCase>(DATASET_FILES[op]));
     const results = await runCases(cases, evalZoneCase);
     const agg = aggregateZone(results);
     const executionErrors = results.filter(r => r.executionError).map(r => ({ id: r.id, error: r.executionError! }));
@@ -141,7 +146,7 @@ async function runOperation(op: OperationName): Promise<OperationReport> {
   }
 
   if (op === 'segment') {
-    const cases = loadJsonl<SegmentCase>(DATASET_FILES[op]);
+    const cases = limitCases(loadJsonl<SegmentCase>(DATASET_FILES[op]));
     const results = await runCases(cases, evalSegmentCase);
     const agg = aggregateSegment(results);
     const executionErrors = results.filter(r => r.executionError).map(r => ({ id: r.id, error: r.executionError! }));
@@ -160,7 +165,7 @@ async function runOperation(op: OperationName): Promise<OperationReport> {
   }
 
   // excel-mapping
-  const cases = loadJsonl<ExcelMappingCase>(DATASET_FILES[op]);
+  const cases = limitCases(loadJsonl<ExcelMappingCase>(DATASET_FILES[op]));
   const results = await runCases(cases, evalExcelMappingCase);
   const agg = aggregateExcelMapping(results);
   const executionErrors = results.filter(r => r.executionError).map(r => ({ id: r.id, error: r.executionError! }));
@@ -240,28 +245,42 @@ async function main() {
     }
   }
 
+  // BE-05: --max-cases <n> acota el dataset (ver runOperation) y --out-dir <path> escribe el
+  // reporte en otro lado que evals/reports/ — ambos pensados para el eval gate de CI, que no debe
+  // ni gastar el dataset completo (cuota diaria de Gemini, ver BE-46) ni pisar un baseline
+  // commiteado del mismo día.
+  const maxCasesIdx = args.findIndex(a => a === '--max-cases');
+  const maxCasesPerOp = maxCasesIdx !== -1 ? parseInt(args[maxCasesIdx + 1], 10) : undefined;
+  if (maxCasesIdx !== -1 && (!Number.isFinite(maxCasesPerOp) || (maxCasesPerOp as number) <= 0)) {
+    console.error(`--max-cases inválido: "${args[maxCasesIdx + 1]}"`);
+    process.exitCode = 1;
+    return;
+  }
+  const outDirIdx = args.findIndex(a => a === '--out-dir');
+  const outDir = outDirIdx !== -1 ? args[outDirIdx + 1] : null;
+
   // BE-01's extract-intent.jsonl ejercita extractFromTextInput (KAN-36), que rechaza si el flag
   // está apagado — el eval mide la calidad de la extracción, no el flag de feature, así que se
   // fuerza habilitado para esta corrida sin importar el .env.
   config.freeTextExtractionEnabled = true;
 
   const operations = requestedOp ? [requestedOp] : ALL_OPERATIONS;
-  console.log(`Corriendo evals para: ${operations.join(', ')}`);
+  console.log(`Corriendo evals para: ${operations.join(', ')}${maxCasesPerOp ? ` (máx. ${maxCasesPerOp} casos/operación)` : ''}`);
 
   const reports: OperationReport[] = [];
   for (const op of operations) {
-    reports.push(await runOperation(op));
+    reports.push(await runOperation(op, maxCasesPerOp));
   }
 
   const date = new Date().toISOString().slice(0, 10);
-  const reportsDir = path.join(__dirname, 'reports');
+  const reportsDir = outDir ? path.resolve(outDir) : path.join(__dirname, 'reports');
   fs.mkdirSync(reportsDir, { recursive: true });
 
   const markdown = buildMarkdownReport(date, reports);
   fs.writeFileSync(path.join(reportsDir, `${date}.md`), markdown, 'utf8');
   fs.writeFileSync(path.join(reportsDir, `${date}.json`), JSON.stringify({ date, reports }, null, 2), 'utf8');
 
-  console.log(`\nReporte escrito en evals/reports/${date}.md y ${date}.json`);
+  console.log(`\nReporte escrito en ${path.join(reportsDir, `${date}.md`)} y ${date}.json`);
 
   const anyCriticalFailure = reports.some(r => r.criticalFailure);
   if (anyCriticalFailure) {

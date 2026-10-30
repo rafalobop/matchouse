@@ -11,6 +11,33 @@ aislado por vez (sin fallback), para comparar accuracy × costo × latencia entr
 `docs/model-selection.md`. Las funciones de carga de datasets y cálculo de métricas que usan ambos
 scripts viven en `evals/metrics.ts`, no duplicadas.
 
+## Eval gate de CI (BE-05)
+
+`.github/workflows/eval-gate.yml` corre en cada PR que toca `src/services/ai.ts` o `evals/**`: una
+muestra chica (`pnpm eval --max-cases 10`) de los 4 datasets, comparada contra el baseline
+commiteado en la rama base (`pnpm eval:compare-baseline`, `evals/compare-to-baseline.ts`) — falla
+el job si algún campo retrocede más de 5 puntos porcentuales, y publica el resultado como
+comentario del PR.
+`zone` corre igual (para detectar que el LLM no rompió el schema) pero es **informativo, nunca
+gatea**: ese operación necesita una conexión real a Supabase con `neighborhoods` reales para decir
+algo más que DESCONOCIDA, y el job corre con credenciales de Supabase dummy (mismo patrón que el
+job de tests en `ci.yml`) — no es seguro ni necesario darle a un runner de CI acceso a la base real.
+
+**Configuración requerida** (Settings → Secrets and variables → Actions del repo):
+`EVAL_GATE_GEMINI_API_KEY` / `EVAL_GATE_OPENAI_API_KEY`. Sin `EVAL_GATE_GEMINI_API_KEY` el job se
+saltea solo (no bloquea ningún PR).
+
+**⚠️ Usar una API key de Gemini separada de la de producción, con facturación habilitada.**
+Hallazgo real de BE-46 (ver `docs/model-selection.md`): el free tier de Gemini tiene un límite de
+**20 requests/día POR MODELO** (no solo por minuto) — este gate hace ~40 llamadas reales por
+corrida (`--max-cases 10` × 4 operaciones). Con una key free-tier, una sola corrida agota casi toda
+la cuota diaria; si fuera la misma key de producción, cada PR que toque `ai.ts` degradaría el
+servicio real al fallback por el resto del día.
+
+Para subir un nuevo baseline (ej. después de confirmar que un cambio de prompt es una mejora
+real), simplemente commitear el `.json`/`.md` que escribe `pnpm eval` sin `--max-cases` — el gate
+siempre usa el archivo `evals/reports/YYYY-MM-DD.json` más reciente de la rama base.
+
 ## Estado actual (2026-10-29)
 
 Dataset inicial, escrito a mano (no proviene de `active_searches` real — no hubo acceso a datos
