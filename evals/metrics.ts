@@ -1,34 +1,30 @@
 // BE-46: extraído de run.ts (BE-02) para que evals/compare-models.ts (BE-46) reuse exactamente
 // las mismas definiciones de dataset y cálculos de métricas sin duplicarlas — ambos scripts miden
 // "lo mismo" contra la misma vara, solo cambia qué produce el `actual` de cada caso (el pipeline
-// completo de ai.ts en run.ts, una única estrategia/modelo aislada en compare-models.ts).
+// completo de src/ai/ en run.ts, una única estrategia/modelo aislada en compare-models.ts).
+//
+// BE-09: 'extract-intent' y 'zone' se consolidan en una sola operación 'search-intent' — antes
+// eran dos llamadas LLM separadas (Agente 1 + Agente 2) con datasets de INPUTS DISTINTOS
+// (extract-intent.jsonl probaba textos completos, zone.jsonl probaba fragmentos más cortos con un
+// `operacion_hint` simulando la salida de Agente 1). Con una sola llamada ya no hay ningún
+// `operacion_hint` que simular ni una resolución de zona que testear por separado de la
+// extracción — `evals/search-intent.jsonl` (nuevo, dataset curado a mano, no un merge mecánico de
+// los 108 casos viejos) reemplaza a ambos. `extract-intent.jsonl`/`zone.jsonl` quedan en el repo
+// como artefactos históricos del esquema de dos agentes, sin consumidor real (ver evals/README.md).
 import * as fs from 'fs';
 import * as path from 'path';
-import { ExtractedRealEstateRequest, ExcelColumnMappingSuggestion } from '../src/ai';
+import { SearchIntent, ExcelColumnMappingSuggestion } from '../src/ai';
 
 // --- Tipos de los datasets (ver evals/README.md) ---
 
-export type OperationName = 'extract-intent' | 'zone' | 'segment' | 'excel-mapping';
+export type OperationName = 'search-intent' | 'segment' | 'excel-mapping';
 
-export const ALL_OPERATIONS: OperationName[] = ['extract-intent', 'zone', 'segment', 'excel-mapping'];
+export const ALL_OPERATIONS: OperationName[] = ['search-intent', 'segment', 'excel-mapping'];
 
-export interface ExtractIntentCase {
+export interface SearchIntentCase {
   id: string;
   input: string;
-  expected: ExtractedRealEstateRequest;
-  tags: string[];
-}
-
-export interface ZoneCase {
-  id: string;
-  input: string;
-  operacion_hint: 'venta' | 'alquiler' | null;
-  expected: {
-    ubicaciones: string[];
-    dormitorios_min: number | null;
-    caracteristicas_claves: string[];
-    operacion: 'ALQUILER' | 'COMPRA' | 'DESCONOCIDO';
-  };
+  expected: SearchIntent;
   tags: string[];
 }
 
@@ -44,18 +40,6 @@ export interface ExcelMappingCase {
   input: { headers: string[] };
   expected: { mapping: { field: string; header: string | null }[] };
   tags: string[];
-}
-
-// Shape mínimo de "actual" que necesita evalZoneCase — el pipeline completo (ai.ts) devuelve un
-// ZoneIntentRequest ya resuelto contra la base (zona_ids/zona_nombres incluidos); una estrategia
-// aislada (compare-models.ts) solo llega hasta acá (normalizeAgent2, sin resolveZoneIntent/DB) —
-// ninguna de las métricas de esta operación mira zona_ids/zona_nombres, así que este shape alcanza
-// para ambos casos.
-export interface ZoneActualShape {
-  texto_ubicacion_original: string;
-  dormitorios_min: number | null;
-  caracteristicas_claves: string[];
-  operacion: 'ALQUILER' | 'COMPRA' | 'DESCONOCIDO';
 }
 
 // --- Utilidades compartidas de métricas ---
@@ -131,8 +115,7 @@ export function loadJsonl<T>(fileName: string): T[] {
 }
 
 export const DATASET_FILES: Record<OperationName, string> = {
-  'extract-intent': 'extract-intent.jsonl',
-  zone: 'zone.jsonl',
+  'search-intent': 'search-intent.jsonl',
   segment: 'segment.jsonl',
   'excel-mapping': 'excel-mapping.jsonl'
 };
@@ -171,37 +154,37 @@ export function latencyStats(results: ExecutedCase<unknown>[]) {
   return { p50: percentile(latencies, 50), p95: percentile(latencies, 95), meanMs: mean(latencies) };
 }
 
-// --- extract-intent (Agente 1) ---
+// --- search-intent (BE-09: Agente 1 + Agente 2 fusionados) ---
 
-export interface ExtractIntentMetrics {
+export interface SearchIntentMetrics {
   operationMatch: boolean;
   propertyTypeMatch: boolean;
   currencyMatch: boolean;
   countryMatch: boolean;
-  bedroomsMatch: boolean;
+  bedroomsMinMatch: boolean;
   budget: NullableNumberComparison;
-  zones: { precision: number; recall: number };
-  keyFeatures: { precision: number; recall: number };
+  locationMentions: { precision: number; recall: number };
+  features: { precision: number; recall: number };
   isDesconocida: boolean;
   expectedDesconocida: boolean;
 }
 
-export function computeExtractIntentMetrics(e: ExtractedRealEstateRequest, actual: ExtractedRealEstateRequest): ExtractIntentMetrics {
+export function computeSearchIntentMetrics(e: SearchIntent, actual: SearchIntent): SearchIntentMetrics {
   return {
     operationMatch: e.operation === actual.operation,
     propertyTypeMatch: e.property_type === actual.property_type,
     currencyMatch: e.currency === actual.currency,
     countryMatch: e.country === actual.country,
-    bedroomsMatch: e.bedrooms === actual.bedrooms,
+    bedroomsMinMatch: e.bedrooms_min === actual.bedrooms_min,
     budget: compareNullableNumber(e.max_budget, actual.max_budget),
-    zones: precisionRecall(e.zones, actual.zones),
-    keyFeatures: precisionRecall(e.key_features, actual.key_features),
+    locationMentions: precisionRecall(e.location_mentions, actual.location_mentions),
+    features: precisionRecall(e.features, actual.features),
     isDesconocida: actual.operation === 'desconocido' || actual.property_type === 'otro',
     expectedDesconocida: e.operation === 'desconocido' || e.property_type === 'otro'
   };
 }
 
-export function aggregateExtractIntent(results: ExecutedCase<ExtractIntentMetrics>[]) {
+export function aggregateSearchIntent(results: ExecutedCase<SearchIntentMetrics>[]) {
   const ok = results.filter(r => r.metrics).map(r => r.metrics!);
   const n = ok.length;
   const absErrors = ok.map(m => m.budget).filter((b): b is { absError: number } => 'absError' in b).map(b => b.absError);
@@ -213,56 +196,13 @@ export function aggregateExtractIntent(results: ExecutedCase<ExtractIntentMetric
     propertyTypeMatchRate: rate(ok.filter(m => m.propertyTypeMatch).length, n),
     currencyMatchRate: rate(ok.filter(m => m.currencyMatch).length, n),
     countryMatchRate: rate(ok.filter(m => m.countryMatch).length, n),
-    bedroomsMatchRate: rate(ok.filter(m => m.bedroomsMatch).length, n),
+    bedroomsMinMatchRate: rate(ok.filter(m => m.bedroomsMinMatch).length, n),
     budgetMeanAbsError: mean(absErrors),
     budgetNullMismatchRate: rate(budgetNullMismatches, n),
-    zonesPrecision: mean(ok.map(m => m.zones.precision)),
-    zonesRecall: mean(ok.map(m => m.zones.recall)),
-    keyFeaturesPrecision: mean(ok.map(m => m.keyFeatures.precision)),
-    keyFeaturesRecall: mean(ok.map(m => m.keyFeatures.recall)),
-    desconocidaRate: rate(ok.filter(m => m.isDesconocida).length, n),
-    falseDesconocidaRate: rate(falseDesconocida, n)
-  };
-}
-
-// --- zone (Agente 2) ---
-
-export interface ZoneMetrics {
-  ubicaciones: { precision: number; recall: number; exactMatch: boolean };
-  dormitoriosMatch: boolean;
-  caracteristicas: { precision: number; recall: number };
-  operacionMatch: boolean;
-  isDesconocida: boolean;
-  expectedDesconocida: boolean;
-}
-
-export function computeZoneMetrics(e: ZoneCase['expected'], actual: ZoneActualShape): ZoneMetrics {
-  const actualUbicaciones = actual.texto_ubicacion_original
-    ? actual.texto_ubicacion_original.split(' | ').map(s => s.trim()).filter(s => s.length > 0)
-    : [];
-  return {
-    ubicaciones: { ...precisionRecall(e.ubicaciones, actualUbicaciones), exactMatch: setExactMatch(e.ubicaciones, actualUbicaciones) },
-    dormitoriosMatch: e.dormitorios_min === actual.dormitorios_min,
-    caracteristicas: precisionRecall(e.caracteristicas_claves, actual.caracteristicas_claves),
-    operacionMatch: e.operacion === actual.operacion,
-    isDesconocida: actual.operacion === 'DESCONOCIDO',
-    expectedDesconocida: e.operacion === 'DESCONOCIDO'
-  };
-}
-
-export function aggregateZone(results: ExecutedCase<ZoneMetrics>[]) {
-  const ok = results.filter(r => r.metrics).map(r => r.metrics!);
-  const n = ok.length;
-  const falseDesconocida = ok.filter(m => !m.expectedDesconocida && m.isDesconocida).length;
-  return {
-    n,
-    zonaCorrectaRate: rate(ok.filter(m => m.ubicaciones.exactMatch).length, n),
-    zonaPrecision: mean(ok.map(m => m.ubicaciones.precision)),
-    zonaRecall: mean(ok.map(m => m.ubicaciones.recall)),
-    dormitoriosMatchRate: rate(ok.filter(m => m.dormitoriosMatch).length, n),
-    caracteristicasPrecision: mean(ok.map(m => m.caracteristicas.precision)),
-    caracteristicasRecall: mean(ok.map(m => m.caracteristicas.recall)),
-    operacionMatchRate: rate(ok.filter(m => m.operacionMatch).length, n),
+    locationMentionsPrecision: mean(ok.map(m => m.locationMentions.precision)),
+    locationMentionsRecall: mean(ok.map(m => m.locationMentions.recall)),
+    featuresPrecision: mean(ok.map(m => m.features.precision)),
+    featuresRecall: mean(ok.map(m => m.features.recall)),
     desconocidaRate: rate(ok.filter(m => m.isDesconocida).length, n),
     falseDesconocidaRate: rate(falseDesconocida, n)
   };
@@ -326,22 +266,15 @@ export const METRIC_LABELS: Record<string, string> = {
   propertyTypeMatchRate: 'property_type (exact match)',
   currencyMatchRate: 'currency (exact match)',
   countryMatchRate: 'country (exact match)',
-  bedroomsMatchRate: 'bedrooms (exact match)',
+  bedroomsMinMatchRate: 'bedrooms_min (exact match)',
   budgetMeanAbsError: 'max_budget (error absoluto medio)',
   budgetNullMismatchRate: 'max_budget (null vs. no-null, tasa de error)',
-  zonesPrecision: 'zones (precision)',
-  zonesRecall: 'zones (recall)',
-  keyFeaturesPrecision: 'key_features (precision)',
-  keyFeaturesRecall: 'key_features (recall)',
+  locationMentionsPrecision: 'location_mentions (precision)',
+  locationMentionsRecall: 'location_mentions (recall)',
+  featuresPrecision: 'features (precision)',
+  featuresRecall: 'features (recall)',
   desconocidaRate: 'tasa de DESCONOCIDA/otro',
   falseDesconocidaRate: 'tasa de DESCONOCIDA falsa (esperado != desconocido)',
-  zonaCorrectaRate: 'zona correcta (set exacto de ubicaciones)',
-  zonaPrecision: 'ubicaciones (precision)',
-  zonaRecall: 'ubicaciones (recall)',
-  dormitoriosMatchRate: 'dormitorios_min (exact match)',
-  caracteristicasPrecision: 'caracteristicas_claves (precision)',
-  caracteristicasRecall: 'caracteristicas_claves (recall)',
-  operacionMatchRate: 'operacion (exact match)',
   segmentCountMatchRate: 'cantidad de segmentos correcta',
   segmentExactMatchRate: 'segmentos exactamente iguales (texto)',
   fieldAccuracy: 'mapeo field→header (accuracy sobre los 11 campos)'

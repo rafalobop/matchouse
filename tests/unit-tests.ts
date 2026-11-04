@@ -45,7 +45,7 @@ test('Dolar Service - Debería retornar cotizaciones válidas y persistir caché
 // 4. Probar conversión dinámica en Matcher
 import { checkMatch } from '../src/utils/matcher';
 import { Property } from '../src/services/excel';
-import { ExtractedRealEstateRequest } from '../src/ai';
+import { SearchIntent } from '../src/ai';
 
 test('Matcher - Conversión dinámica usando cotización dinámica de dólar', () => {
   const currentDolar = getDolarBlueRate();
@@ -65,14 +65,14 @@ test('Matcher - Conversión dinámica usando cotización dinámica de dólar', (
     sheet_name: 'Alquileres'
   };
 
-  const request: ExtractedRealEstateRequest = {
+  const request: SearchIntent = {
     operation: 'alquiler',
     property_type: 'departamento',
-    zones: ['Yerba Buena'],
+    location_mentions: ['Yerba Buena'],
     max_budget: 101, // Presupuesto de 101 USD (la propiedad cuesta 100 USD al cambio)
     currency: 'USD',
-    bedrooms: 2,
-    key_features: [],
+    bedrooms_min: 2,
+    features: [],
     country: 'indiferente'
   };
 

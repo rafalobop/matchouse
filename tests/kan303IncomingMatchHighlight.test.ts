@@ -202,14 +202,22 @@ const DEFAULT_EXTRACTED_DATA = {
   country: 'indiferente' as const
 };
 
+const DEFAULT_SEARCH_INTENT = {
+  operation: 'venta' as const,
+  property_type: 'casa' as const,
+  location_mentions: [] as string[],
+  max_budget: 150000,
+  currency: 'USD' as const,
+  bedrooms_min: 3,
+  features: [] as string[],
+  country: 'indiferente' as const
+};
+
 const DEFAULT_ZONE_INTENT = {
   zone_status: 'INDEFINIDA' as const,
   zona_ids: [] as string[],
   zona_nombres: [] as string[],
-  texto_ubicacion_original: '',
-  dormitorios_min: null,
-  caracteristicas_claves: [] as string[],
-  operacion: 'DESCONOCIDO' as const
+  texto_ubicacion_original: ''
 };
 
 function sampleProperty(overrides: Partial<any> = {}) {
@@ -260,8 +268,7 @@ function makeSearchSegmentTenantSupabaseMock(matchInsertIds: string[]) {
 }
 
 test('KAN-303 integración (búsqueda→cartera) - dos matches nuevos del mismo dueño se agrupan en UN push con ambos ids en ?highlight=', async (t) => {
-  t.mock.method(aiService, 'extractFromTextInput', async () => DEFAULT_EXTRACTED_DATA);
-  t.mock.method(aiService, 'extractZoneIntent', async () => DEFAULT_ZONE_INTENT);
+  t.mock.method(aiService, 'extractSearchIntent', async () => ({ intent: DEFAULT_SEARCH_INTENT, zone: DEFAULT_ZONE_INTENT }));
   t.mock.method(blindMatchingService, 'findCrossTenantMatches', async () => [
     sampleMatch({ tenant_id: 'tenant-owner-302' }),
     sampleMatch({ tenant_id: 'tenant-owner-302' })

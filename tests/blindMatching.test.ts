@@ -10,11 +10,30 @@ import {
   MAX_CROSS_TENANT_MATCHES,
   MAX_QUERY_ROWS
 } from '../src/services/blindMatching';
-import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../src/ai';
+import { SearchIntent, ZoneIntentRequest } from '../src/ai';
 import { Property } from '../src/services/excel';
 import { __clearZoneKeywordCacheForTests } from '../src/services/zonesService';
 
-function baseRequest(overrides: Partial<ExtractedRealEstateRequest> = {}): ExtractedRealEstateRequest {
+function baseRequest(overrides: Partial<SearchIntent> = {}): SearchIntent {
+  return {
+    operation: 'venta',
+    property_type: 'departamento',
+    location_mentions: [],
+    max_budget: null,
+    currency: 'ARS',
+    bedrooms_min: null,
+    features: [],
+    country: 'indiferente',
+    ...overrides
+  };
+}
+
+// BE-09: a diferencia de `baseRequest` (el `SearchIntent` real, usado directo en memoria), esto
+// simula el JSON crudo que realmente queda en la columna `active_searches.criteria` — con las
+// keys LEGACY (`zones`/`bedrooms`/`key_features`, ver searchSegmentProcessor.ts#toLegacyCriteriaShape)
+// — para los tests que mockean filas de la tabla y pasan por
+// blindMatching.ts#reconstructSearchIntentFromCriteria.
+function legacyCriteria(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     operation: 'venta',
     property_type: 'departamento',
@@ -34,9 +53,6 @@ function baseZoneIntent(overrides: Partial<ZoneIntentRequest> = {}): ZoneIntentR
     zona_ids: [],
     zona_nombres: [],
     texto_ubicacion_original: '',
-    dormitorios_min: null,
-    caracteristicas_claves: [],
-    operacion: 'DESCONOCIDO',
     ...overrides
   };
 }
@@ -80,7 +96,7 @@ test('BlindMatching - matchRequestAgainstProperties: atribuye el tenant_id corre
 });
 
 test('BlindMatching - matchRequestAgainstProperties: ordena los resultados de mayor a menor score', () => {
-  const request = baseRequest({ key_features: ['pileta'] });
+  const request = baseRequest({ features: ['pileta'] });
   const candidates = [
     { tenant_id: 'tenant-low', property: baseProperty({ address: 'Sin pileta', features: 'Living amplio' }) },
     { tenant_id: 'tenant-high', property: baseProperty({ address: 'Con pileta', features: 'Cuenta con pileta climatizada' }) }
@@ -132,12 +148,19 @@ test('BlindMatching - findCrossTenantMatches (regresión QA KAN-37): una búsque
     longitude: 0
   };
 
-  const candidate = { tenant_id: dbRow.tenant_id, property: mapDbRowToProperty(dbRow) };
-  const request = baseRequest({ zones: ['Yerba Buena'], key_features: ['pileta', 'cochera'], bedrooms: 2, max_budget: 150000, currency: 'USD' });
+  const property = mapDbRowToProperty(dbRow);
+  // BE-09: la zona ya no se filtra comparando `request.zones` contra `zone_display_name` (ese
+  // campo/mecanismo desapareció junto con el mapeo hardcodeado de Agente 1, ver BE-10 absorbido) —
+  // la resolución real es 100% vía `zoneIntent` (neighborhood_id, resuelto por PostGIS/alias ANTES
+  // de llegar al matcher). Se simula ese pre-estampado seteando neighborhood_id directo.
+  property.neighborhood_id = 'n-yerba-buena';
+  const candidate = { tenant_id: dbRow.tenant_id, property };
+  const request = baseRequest({ features: ['pileta', 'cochera'], bedrooms_min: 2, max_budget: 150000, currency: 'USD' });
+  const zoneIntent = baseZoneIntent({ zone_status: 'DEFINIDA', zona_ids: ['n-yerba-buena'], zona_nombres: ['Yerba Buena'] });
 
-  const result = matchRequestAgainstProperties(request, [candidate]);
+  const result = matchRequestAgainstProperties(request, [candidate], zoneIntent);
 
-  assert.strictEqual(result.length, 1, 'Antes del fix, esta búsqueda con zona no devolvía ningún match aunque coincidiera en todo lo demás.');
+  assert.strictEqual(result.length, 1, 'Antes del fix original, esta búsqueda con zona no devolvía ningún match aunque coincidiera en todo lo demás.');
   assert.strictEqual(result[0].tenant_id, 'tenant-b');
 });
 
@@ -374,8 +397,8 @@ test('BlindMatching (KAN-79) - matchActiveSearchesAgainstProperty: atribuye tena
   // faltante) debe puntuar peor que la que pide 'pileta' (característica presente).
   const property = baseProperty({ features: 'Cuenta con pileta climatizada' });
   const candidates: ActiveSearchCandidate[] = [
-    { tenant_id: 'tenant-low', search_id: 'search-low', raw_text: 'busco con cochera', criteria: baseRequest({ key_features: ['cochera'] }), zoneIntent: baseZoneIntent() },
-    { tenant_id: 'tenant-high', search_id: 'search-high', raw_text: 'busco con pileta', criteria: baseRequest({ key_features: ['pileta'] }), zoneIntent: baseZoneIntent() }
+    { tenant_id: 'tenant-low', search_id: 'search-low', raw_text: 'busco con cochera', criteria: baseRequest({ features: ['cochera'] }), zoneIntent: baseZoneIntent() },
+    { tenant_id: 'tenant-high', search_id: 'search-high', raw_text: 'busco con pileta', criteria: baseRequest({ features: ['pileta'] }), zoneIntent: baseZoneIntent() }
   ];
 
   const result = matchActiveSearchesAgainstProperty(property, candidates);
@@ -426,7 +449,7 @@ test('BlindMatching (KAN-79) - findMatchingActiveSearchesForProperty: mapea las 
     bedrooms: 2, operation: 'venta', property_type: 'casa', sheet_name: 'Ventas'
   };
   const searchRows = [
-    { id: 'search-1', tenant_id: 'tenant-searcher', raw_text: 'busco casa', criteria: baseRequest({ operation: 'venta', property_type: 'casa' }) }
+    { id: 'search-1', tenant_id: 'tenant-searcher', raw_text: 'busco casa', criteria: legacyCriteria({ operation: 'venta', property_type: 'casa' }) }
   ];
   const mockClient = makeCrossTenantMockClient({ propertyRow, searchRows });
 
@@ -459,7 +482,7 @@ test('BlindMatching (self-healing) - una búsqueda DESCONOCIDA cuya zona ahora r
   };
   const searchRows = [{
     id: 'search-1', tenant_id: 'tenant-searcher', raw_text: 'busco casa en villa lujan',
-    criteria: baseRequest({ operation: 'venta', property_type: 'casa' }),
+    criteria: legacyCriteria({ operation: 'venta', property_type: 'casa' }),
     zone_status: 'DESCONOCIDA', zone_ids: [], zone_names: [], zone_text_original: 'villa lujan'
   }];
   const mockClient = makeCrossTenantMockClient({
@@ -490,7 +513,7 @@ test('BlindMatching (self-healing) - una búsqueda DESCONOCIDA que sigue sin res
   };
   const searchRows = [{
     id: 'search-1', tenant_id: 'tenant-searcher', raw_text: 'busco casa en planeta marte',
-    criteria: baseRequest({ operation: 'venta', property_type: 'casa' }),
+    criteria: legacyCriteria({ operation: 'venta', property_type: 'casa' }),
     zone_status: 'DESCONOCIDA', zone_ids: [], zone_names: [], zone_text_original: 'planeta marte'
   }];
   const mockClient = makeCrossTenantMockClient({
@@ -515,7 +538,7 @@ test('BlindMatching (self-healing) - una búsqueda ya DEFINIDA no dispara ningú
   };
   const searchRows = [{
     id: 'search-1', tenant_id: 'tenant-searcher', raw_text: 'busco casa en villa lujan',
-    criteria: baseRequest({ operation: 'venta', property_type: 'casa' }),
+    criteria: legacyCriteria({ operation: 'venta', property_type: 'casa' }),
     zone_status: 'DEFINIDA', zone_ids: ['n-lujan'], zone_names: ['Villa Lujan'], zone_text_original: 'villa lujan'
   }];
   const mockClient = makeCrossTenantMockClient({

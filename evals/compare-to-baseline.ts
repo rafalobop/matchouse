@@ -21,9 +21,8 @@ interface EvalReportFile {
 
 // Métricas de fracción 0-1 donde un valor MÁS ALTO es mejor calidad (accuracy/precision/recall).
 const HIGHER_IS_BETTER = new Set([
-  'operationMatchRate', 'propertyTypeMatchRate', 'currencyMatchRate', 'countryMatchRate', 'bedroomsMatchRate',
-  'zonesPrecision', 'zonesRecall', 'keyFeaturesPrecision', 'keyFeaturesRecall',
-  'zonaCorrectaRate', 'zonaPrecision', 'zonaRecall', 'dormitoriosMatchRate', 'caracteristicasPrecision', 'caracteristicasRecall', 'operacionMatchRate',
+  'operationMatchRate', 'propertyTypeMatchRate', 'currencyMatchRate', 'countryMatchRate', 'bedroomsMinMatchRate',
+  'locationMentionsPrecision', 'locationMentionsRecall', 'featuresPrecision', 'featuresRecall',
   'segmentCountMatchRate', 'segmentExactMatchRate',
   'fieldAccuracy'
 ]);
@@ -35,13 +34,13 @@ const LOWER_IS_BETTER = new Set(['budgetNullMismatchRate', 'desconocidaRate', 'f
 // umbral en "puntos porcentuales" no tiene sentido acá. Se muestra siempre, nunca gatea el pass/fail.
 const INFORMATIONAL_ONLY = new Set(['budgetMeanAbsError']);
 
-// BE-46/KAN: 'zone' necesita una conexión real a Supabase con datos reales de `neighborhoods` para
-// que extractZoneIntent resuelva algo más allá de DESCONOCIDA — el eval gate de CI corre con
-// credenciales de Supabase dummy (mismo patrón que el job de tests, ver ci.yml) porque no es seguro
-// darle a un runner de CI acceso de escritura a la base real. Sin esa conexión, CUALQUIER PR
-// mostraría una "regresión" falsa en zone sin haber tocado nada de zona — se corre igual (para
-// detectar que el LLM no rompió el schema de salida) pero nunca gatea el resultado.
-const OPERATIONS_INFORMATIONAL_ONLY = new Set(['zone']);
+// BE-09: antes 'zone' necesitaba una conexión real a Supabase (sin ella, el eval gate de CI
+// mostraría una "regresión" falsa) — con la extracción fusionada, las métricas de `search-intent`
+// (ver evals/metrics.ts) solo miran el output CRUDO del LLM (`location_mentions`, nunca
+// `zona_ids`/`zona_nombres` ya resueltos contra la base), así que ya no hay ninguna operación con
+// dependencia de DB en este gate. Se deja el set vacío (en vez de borrarlo) para que, si en el
+// futuro se agrega una operación con esa misma dependencia, el patrón ya esté armado.
+const OPERATIONS_INFORMATIONAL_ONLY = new Set<string>([]);
 
 function loadReport(filePath: string): EvalReportFile {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));

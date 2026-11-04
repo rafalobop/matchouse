@@ -1,6 +1,6 @@
 import * as express from 'express';
 import { segmentSearchRequests, ZoneIntentRequest, AITimeoutError, AIExtractionFailedError } from '../ai';
-import { findCrossTenantMatches } from '../services/blindMatching';
+import { findCrossTenantMatches, reconstructSearchIntentFromCriteria } from '../services/blindMatching';
 import { validateFreeSearchText } from '../utils/searchValidation';
 import { calculateDaysRemaining } from '../utils/activeSearches';
 import { isValidUUID } from '../utils/idValidation';
@@ -162,12 +162,11 @@ export async function listSearches(req: express.Request, res: express.Response) 
           zone_status: search.zone_status,
           zona_ids: search.zone_ids || [],
           zona_nombres: search.zone_names || [],
-          texto_ubicacion_original: search.zone_text_original || '',
-          dormitorios_min: null,
-          caracteristicas_claves: [],
-          operacion: 'DESCONOCIDO'
+          texto_ubicacion_original: search.zone_text_original || ''
         };
-        const matches = await findCrossTenantMatches(tenantId, search.criteria, zoneIntent);
+        // BE-09: search.criteria tiene el shape LEGACY de persistencia (zones/bedrooms/
+        // key_features) — reconstruye el SearchIntent real que espera matcher.ts.
+        const matches = await findCrossTenantMatches(tenantId, reconstructSearchIntentFromCriteria(search.criteria), zoneIntent);
         matchesCount = matches.length;
       } catch (matchError: any) {
         logger.error({ error: matchError.message || matchError, tenantId, searchId: search.id }, '[BUSQUEDAS] Error al calcular el conteo de matches de una búsqueda activa');

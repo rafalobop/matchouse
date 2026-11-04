@@ -1,4 +1,4 @@
-import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../ai';
+import { SearchIntent, ZoneIntentRequest } from '../ai';
 import { Property } from '../services/excel';
 import { getDolarBlueRate } from '../services/dolar';
 
@@ -17,7 +17,7 @@ export interface MatchingResult {
 export interface IMatchingStrategy {
   name: string;
   evaluate(
-    request: ExtractedRealEstateRequest,
+    request: SearchIntent,
     property: Property,
     zoneIntent?: ZoneIntentRequest
   ): MatchingResult;
@@ -59,12 +59,12 @@ export function isPropertyInCountry(property: Property): boolean {
 export class OperationMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Operación';
 
-  evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
-    const operacionRequest = (zoneIntent && zoneIntent.operacion !== 'DESCONOCIDO')
-      ? (zoneIntent.operacion === 'COMPRA' ? 'venta' : 'alquiler')
-      : request.operation;
-
-    if (operacionRequest !== 'desconocido' && operacionRequest !== property.operation) {
+  // BE-09: antes preferia `zoneIntent.operacion` (el enum propio de Agente 2) sobre
+  // `request.operation` (Agente 1) cuando no era DESCONOCIDO — reconciliaba dos opiniones de
+  // DOS llamadas LLM distintas. Con una sola extracción unificada (`SearchIntent`), no hay una
+  // segunda opinión que reconciliar: `request.operation` es la única fuente.
+  evaluate(request: SearchIntent, property: Property): MatchingResult {
+    if (request.operation !== 'desconocido' && request.operation !== property.operation) {
       return { isMatch: false, scoreDeduction: 0, reason: 'Diferente tipo de operación' };
     }
     return { isMatch: true, scoreDeduction: 0 };
@@ -74,7 +74,7 @@ export class OperationMatchingStrategy implements IMatchingStrategy {
 export class PropertyTypeMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Tipo de Propiedad';
 
-  evaluate(request: ExtractedRealEstateRequest, property: Property): MatchingResult {
+  evaluate(request: SearchIntent, property: Property): MatchingResult {
     if (request.property_type !== 'otro' && request.property_type !== property.property_type) {
       return { isMatch: false, scoreDeduction: 0, reason: 'Diferente tipo de propiedad' };
     }
@@ -85,7 +85,7 @@ export class PropertyTypeMatchingStrategy implements IMatchingStrategy {
 export class CountryMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Country';
 
-  evaluate(request: ExtractedRealEstateRequest, property: Property): MatchingResult {
+  evaluate(request: SearchIntent, property: Property): MatchingResult {
     if (request.country && request.country !== 'indiferente') {
       const propInCountry = isPropertyInCountry(property);
       if (request.country === 'si' && !propInCountry) {
@@ -109,12 +109,15 @@ export class CountryMatchingStrategy implements IMatchingStrategy {
 export class ZoneMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Zona';
 
-  evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
-    // 1. Validar por el Agente 2 (Geolocalización Inexacta / Intenciones) si existe. KAN-22: la
-    // zona real (PostGIS + alias, ver zonesService.resolvePropertyZoneId) se resuelve ANTES de
-    // llegar acá — esta estrategia es sync/sin red por diseño (matchRequestAgainstProperties se
-    // testea sin Supabase), así que solo compara el `neighborhood_id` ya estampado en la
-    // property (ver blindMatching.ts#findCrossTenantMatches) contra el/los del pedido.
+  // BE-09: antes, si `zoneIntent` no resolvía nada específico (INDEFINIDA, o ausente), caía a un
+  // "branch 2" que comparaba `request.zones` (barrios YA MAPEADOS a municipio por el prompt
+  // hardcodeado de Agente 1 — ver BE-10) contra `property.zone_display_name` por igualdad exacta
+  // de texto. Ese mapeo hardcodeado desapareció (la extracción unificada solo produce
+  // `location_mentions` crudos, resueltos 100% contra la base) — no queda ningún string
+  // "pre-mapeado" con el que comparar, así que ese fallback se elimina: la zona se resuelve
+  // siempre a través de `zoneIntent` (PostGIS + alias, ver zonesService.resolvePropertyZoneId,
+  // resuelto ANTES de llegar acá — esta estrategia es sync/sin red por diseño).
+  evaluate(request: SearchIntent, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
     if (zoneIntent) {
       // Zona mencionada pero no resuelta tras reintentos: filtro duro. No hay base para decidir
       // si esta propiedad corresponde o no, así que NO matchea (a diferencia de INDEFINIDA, que
@@ -145,21 +148,7 @@ export class ZoneMatchingStrategy implements IMatchingStrategy {
         return { isMatch: true, scoreDeduction: 0, reason: `Coincidencia de Zona Geográfica: ${zonasDisplay}` };
       }
 
-      // zone_status === 'INDEFINIDA' (o DEFINIDA con array vacío, caso defensivo): cae al branch 2.
-    }
-
-    // 2. Zona de Ubicación General (Si no se usó el Agente 2 para geo-filtrado específico)
-    if (request.zones.length > 0) {
-      const zoneMatch = request.zones.some(zonaReq =>
-        zonaReq.toLowerCase() === (property.zone_display_name ?? '').toLowerCase()
-      );
-      if (!zoneMatch) {
-        return {
-          isMatch: false,
-          scoreDeduction: 0,
-          reason: `Zona de la propiedad (${property.zone_display_name ?? ''}) no solicitada en: ${request.zones.join(', ')}`
-        };
-      }
+      // zone_status === 'INDEFINIDA' (o DEFINIDA con array vacío, caso defensivo): sin filtro de zona.
     }
 
     return { isMatch: true, scoreDeduction: 0 };
@@ -169,10 +158,10 @@ export class ZoneMatchingStrategy implements IMatchingStrategy {
 export class BedroomsMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Dormitorios';
 
-  evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
-    const bedroomsRequired = (zoneIntent && zoneIntent.dormitorios_min !== null)
-      ? zoneIntent.dormitorios_min
-      : request.bedrooms;
+  // BE-09: antes preferia `zoneIntent.dormitorios_min` (Agente 2) sobre `request.bedrooms`
+  // (Agente 1) — mismo criterio que OperationMatchingStrategy, ya no hay dos opiniones.
+  evaluate(request: SearchIntent, property: Property): MatchingResult {
+    const bedroomsRequired = request.bedrooms_min;
 
     if (bedroomsRequired !== null) {
       if (property.bedrooms < bedroomsRequired) {
@@ -197,7 +186,7 @@ export class BedroomsMatchingStrategy implements IMatchingStrategy {
 export class BudgetMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Presupuesto';
 
-  evaluate(request: ExtractedRealEstateRequest, property: Property): MatchingResult {
+  evaluate(request: SearchIntent, property: Property): MatchingResult {
     // KAN-72: price <= 0 es dato faltante (celda vacía o precio no parseable en el Excel, ver
     // processExcelBuffer), no un precio real de $0. Tratarlo como "sin datos de precio para
     // comparar" en vez de dejar que la propiedad se salte el filtro de presupuesto sin dejar
@@ -257,11 +246,10 @@ export class BudgetMatchingStrategy implements IMatchingStrategy {
 export class FeaturesMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Características';
 
-  evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
-    const requiredFeatures = Array.from(new Set([
-      ...request.key_features,
-      ...(zoneIntent?.caracteristicas_claves || [])
-    ]));
+  // BE-09: antes UNÍA `request.key_features` (Agente 1) con `zoneIntent.caracteristicas_claves`
+  // (Agente 2) — con una sola extracción, `request.features` ya es el conjunto completo.
+  evaluate(request: SearchIntent, property: Property): MatchingResult {
+    const requiredFeatures = Array.from(new Set(request.features));
 
     if (requiredFeatures.length > 0 && property.features) {
       const descLower = (property.features ?? '').toLowerCase();
@@ -334,7 +322,7 @@ const matchingStrategies: IMatchingStrategy[] = [
  * Compara un pedido de cliente con una propiedad de la cartera
  */
 export function checkMatch(
-  request: ExtractedRealEstateRequest,
+  request: SearchIntent,
   property: Property,
   zoneIntent?: ZoneIntentRequest
 ): MatchResult {

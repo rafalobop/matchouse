@@ -1,4 +1,4 @@
-import { extractFromTextInput, extractZoneIntent } from '../ai';
+import { extractSearchIntent, SearchIntent, ZoneIntentRequest } from '../ai';
 import { findCrossTenantMatches } from './blindMatching';
 import { sendWebPushToTenant, buildIncomingMatchPushPayload, hasActivePushSubscriptions } from './webPush';
 import { sendIncomingMatchEmailFallback } from './notifier-email';
@@ -13,6 +13,28 @@ import {
   SearcherSnapshot
 } from '../utils/blindMatchPersistence';
 
+// BE-09: `active_searches.criteria` sigue escribiéndose con las keys VIEJAS (`zones`/`bedrooms`/
+// `key_features`) a propósito, aunque la extracción interna ya use el schema unificado
+// (`location_mentions`/`bedrooms_min`/`features`) — decisión explícita para no romper
+// `brokaza-frontend` (repo separado, lee `criteria` por esos nombres para mostrar "Buscás: depto,
+// 2 dormitorios..."). `zones` pasa a ser la zona YA RESUELTA (`zona_nombres`, el nombre real de
+// `neighborhoods`) cuando la resolución fue exitosa — mejora real sobre el valor anterior (un
+// municipio hardcodeado, ver BE-10) — con fallback a las menciones crudas si no se resolvió nada
+// (zone_status INDEFINIDA/DESCONOCIDA), para que el frontend siga mostrando algo parecido a lo
+// que escribió el usuario en vez de un array vacío.
+function toLegacyCriteriaShape(intent: SearchIntent, zone: ZoneIntentRequest) {
+  return {
+    operation: intent.operation,
+    property_type: intent.property_type,
+    zones: zone.zone_status === 'DEFINIDA' && zone.zona_nombres.length > 0 ? zone.zona_nombres : intent.location_mentions,
+    max_budget: intent.max_budget,
+    currency: intent.currency,
+    bedrooms: intent.bedrooms_min,
+    key_features: intent.features,
+    country: intent.country
+  };
+}
+
 export interface SearchSegmentResult {
   success: boolean;
   raw_text: string;
@@ -23,10 +45,11 @@ export interface SearchSegmentResult {
 }
 
 // Procesa UN segmento de búsqueda ya extraído del mensaje original (ver segmentSearchRequests) a
-// través del pipeline completo: Agente 1 -> Agente 2 (zona) -> insert en active_searches (ya con
-// el estado de zona persistido) -> matching cross-tenant -> persistencia de blind_matches ->
-// notificaciones bidireccionales. Extraído a función propia para poder correrlo una vez por cada
-// sub-búsqueda de un mensaje multi-búsqueda.
+// través del pipeline completo: extracción de intención (BE-09: una sola llamada LLM, antes
+// Agente 1 + Agente 2 en serie) -> insert en active_searches (ya con el estado de zona
+// persistido) -> matching cross-tenant -> persistencia de blind_matches -> notificaciones
+// bidireccionales. Extraído a función propia para poder correrlo una vez por cada sub-búsqueda de
+// un mensaje multi-búsqueda.
 export async function processSingleSearchSegment(
   tenantId: string,
   tenantSupabase: any,
@@ -44,25 +67,22 @@ async function processSingleSearchSegmentImpl(
   segmentText: string,
   traceId?: string
 ): Promise<SearchSegmentResult> {
-  const extractedData = await extractFromTextInput(segmentText, tenantId);
+  // BE-09: una sola llamada LLM (antes extractFromTextInput + extractZoneIntent en serie) —
+  // resuelve intención y zona en el mismo paso, zone ya viene resuelta contra la base (nunca
+  // lanza por sí sola; un fallo total de IA sí lanza AITimeoutError/AIExtractionFailedError, ver
+  // operations/extractSearchIntent.ts).
+  const { intent, zone: zoneIntent } = await extractSearchIntent(segmentText, tenantId);
 
-  if (extractedData.operation === 'desconocido') {
+  if (intent.operation === 'desconocido') {
     return { success: false, raw_text: segmentText, error: 'No pudimos clasificar el texto como un pedido de propiedad.' };
   }
-
-  // KAN-22 + estados de zona (2026-08-11): zoneIntent (Agente 2) se resuelve ANTES del insert (no
-  // después, como antes de este cambio) para poder persistir zone_status/zone_ids/zone_names/
-  // zone_text_original en el mismo insert — elimina la ventana donde una fila de active_searches
-  // existía sin haber corrido el Agente 2 todavía. extractZoneIntent nunca lanza (fallback
-  // silencioso ante fallo total de IA), así que no necesita try/catch propio.
-  const zoneIntent = await extractZoneIntent(segmentText, extractedData.operation, tenantId);
 
   const { data: search, error: insertErr } = await tenantSupabase
     .from('active_searches')
     .insert({
       tenant_id: tenantId,
       raw_text: segmentText,
-      criteria: extractedData,
+      criteria: toLegacyCriteriaShape(intent, zoneIntent),
       zone_status: zoneIntent.zone_status,
       zone_ids: zoneIntent.zona_ids,
       zone_names: zoneIntent.zona_nombres,
@@ -77,7 +97,9 @@ async function processSingleSearchSegmentImpl(
   if (insertErr) throw insertErr;
 
   // asType 'retriever': lookup de solo lectura contra la cartera cross-tenant, no cambia estado.
-  const matches = await withSpan('retrieve-cross-tenant-matches', { tenantId, searchId: search.id }, () => findCrossTenantMatches(tenantId, extractedData, zoneIntent), { asType: 'retriever' });
+  // `intent` (no `search.criteria`, que tiene el shape legacy de persistencia) es lo que entiende
+  // matcher.ts.
+  const matches = await withSpan('retrieve-cross-tenant-matches', { tenantId, searchId: search.id }, () => findCrossTenantMatches(tenantId, intent, zoneIntent), { asType: 'retriever' });
 
   const mappedMatches = matches.map(m => ({
     tenant_id: m.tenant_id,

@@ -2,8 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert';
 import { z } from 'zod';
 import {
-  extractFromTextInput,
-  extractZoneIntent,
+  extractSearchIntent,
   segmentSearchRequests,
   suggestExcelColumnMapping,
   GeminiProvider,
@@ -11,7 +10,7 @@ import {
   FallbackProvider,
   AllProvidersFailedError,
   SchemaValidationError,
-  ExtractIntentSchema,
+  SearchIntentSchema,
   AITimeoutError,
   AIExtractionFailedError,
   __setLlmCallsClientForTests,
@@ -28,9 +27,8 @@ import { createFakeSupabaseClient, chainableResult } from './helpers/fakeSupabas
 // producción. Ver observability.ts.
 __setLlmCallsClientForTests(createFakeSupabaseClient(() => chainableResult({ data: null, error: null })));
 
-test('AI Service - Debería exportar las funciones clave (KAN-36: extractFromTextInput)', () => {
-  assert.strictEqual(typeof extractFromTextInput, 'function', 'extractFromTextInput debe ser una función.');
-  assert.strictEqual(typeof extractZoneIntent, 'function', 'extractZoneIntent debe ser una función.');
+test('AI Service - Debería exportar las funciones clave (BE-09: extractSearchIntent fusiona Agente 1 + Agente 2)', () => {
+  assert.strictEqual(typeof extractSearchIntent, 'function', 'extractSearchIntent debe ser una función.');
   assert.strictEqual(typeof segmentSearchRequests, 'function', 'segmentSearchRequests debe ser una función.');
   assert.strictEqual(typeof suggestExcelColumnMapping, 'function', 'suggestExcelColumnMapping debe ser una función.');
 });
@@ -58,42 +56,42 @@ test('AI Service - FREE_TEXT_EXTRACTION_ENABLED (KAN-38) está habilitado por de
   }
 });
 
-test('AI Service - extractFromTextInput (KAN-36) rechaza sin llamar a ningún proveedor de IA cuando el flag está deshabilitado', async () => {
+test('AI Service - extractSearchIntent (KAN-36/BE-09) rechaza sin llamar a ningún proveedor de IA cuando el flag está deshabilitado', async () => {
   const original = config.freeTextExtractionEnabled;
   try {
     config.freeTextExtractionEnabled = false;
     await assert.rejects(
-      () => extractFromTextInput('busco depto 2 dorm en yerba buena hasta 80000 usd'),
+      () => extractSearchIntent('busco depto 2 dorm en yerba buena hasta 80000 usd'),
       /FREE_TEXT_EXTRACTION_ENABLED/,
-      'Con el flag deshabilitado, extractFromTextInput debe rechazar de inmediato mencionando el flag.'
+      'Con el flag deshabilitado, extractSearchIntent debe rechazar de inmediato mencionando el flag.'
     );
   } finally {
     config.freeTextExtractionEnabled = original;
   }
 });
 
-test('AI Service - ExtractIntentSchema (BE-06) acepta/rechaza variaciones del Agente 1 igual que antes normalizeAgent1', () => {
+test('AI Service - SearchIntentSchema (BE-09) acepta/rechaza variaciones del contrato unificado', () => {
   const casoCompleto = {
-    operation: 'venta', property_type: 'departamento', zones: ['Yerba Buena'], max_budget: 80000,
-    currency: 'USD', bedrooms: 2, key_features: ['cochera', 'pileta'], country: 'no'
+    operation: 'venta', property_type: 'departamento', location_mentions: ['Yerba Buena'], max_budget: 80000,
+    currency: 'USD', bedrooms_min: 2, features: ['cochera', 'pileta'], country: 'no'
   };
-  assert.strictEqual(ExtractIntentSchema.safeParse(casoCompleto).success, true, 'Un caso bien formado debe pasar el schema.');
+  assert.strictEqual(SearchIntentSchema.safeParse(casoCompleto).success, true, 'Un caso bien formado debe pasar el schema.');
 
-  // BE-06: a diferencia de normalizeAgent1 (que corregía/defaulteaba en silencio), un enum en
-  // mayúsculas o inventado ahora es un fallo de schema explícito — decisión de diseño documentada:
-  // la validación de schema se encarga de la FORMA, las decisiones de negocio (qué hacer ante un
-  // fallo total de todos los proveedores) siguen en las operaciones (ver AIExtractionFailedError).
+  // BE-06/BE-09: un enum en mayúsculas o inventado es un fallo de schema explícito — decisión de
+  // diseño documentada: la validación de schema se encarga de la FORMA, las decisiones de negocio
+  // (qué hacer ante un fallo total de todos los proveedores) siguen en las operaciones (ver
+  // AIExtractionFailedError).
   const casoMayusculas = { ...casoCompleto, operation: 'VENTA' };
-  assert.strictEqual(ExtractIntentSchema.safeParse(casoMayusculas).success, false, 'Un enum en mayúsculas debe fallar el schema (los providers ya fuerzan minúsculas vía structured output).');
+  assert.strictEqual(SearchIntentSchema.safeParse(casoMayusculas).success, false, 'Un enum en mayúsculas debe fallar el schema (los providers ya fuerzan minúsculas vía structured output).');
 
   const casoEnumInventado = { ...casoCompleto, property_type: 'mansion' };
-  assert.strictEqual(ExtractIntentSchema.safeParse(casoEnumInventado).success, false, 'Un enum fuera de la lista debe fallar el schema.');
+  assert.strictEqual(SearchIntentSchema.safeParse(casoEnumInventado).success, false, 'Un enum fuera de la lista debe fallar el schema.');
 
   const casoSinCampos = {};
-  assert.strictEqual(ExtractIntentSchema.safeParse(casoSinCampos).success, false, 'Campos faltantes deben fallar el schema (son todos requeridos, incluso los nullable).');
+  assert.strictEqual(SearchIntentSchema.safeParse(casoSinCampos).success, false, 'Campos faltantes deben fallar el schema (son todos requeridos, incluso los nullable).');
 
-  const casoNulls = { ...casoCompleto, max_budget: null, bedrooms: null };
-  assert.strictEqual(ExtractIntentSchema.safeParse(casoNulls).success, true, 'max_budget/bedrooms nullable deben aceptar null.');
+  const casoNulls = { ...casoCompleto, max_budget: null, bedrooms_min: null };
+  assert.strictEqual(SearchIntentSchema.safeParse(casoNulls).success, true, 'max_budget/bedrooms_min nullable deben aceptar null.');
 });
 
 // --- KAN-70: timeout en las llamadas reales a los SDKs ---
@@ -110,7 +108,7 @@ test('AI Providers (KAN-70) - GeminiProvider.generateStructured usa withTimeout 
     (provider as any).ai.models.generateContent = () => new Promise(() => {});
 
     await assert.rejects(
-      () => provider.generateStructured({ op: 'extract-intent', system: 'instrucción', user: 'texto', schema: ExtractIntentSchema }),
+      () => provider.generateStructured({ op: 'extract-search-intent', system: 'instrucción', user: 'texto', schema: SearchIntentSchema }),
       (error: any) => {
         assert.ok(error instanceof TimeoutError, 'El error debe ser una instancia de TimeoutError.');
         assert.match(error.message, /Gemini generateContent/, 'El mensaje debe identificar la llamada de Gemini.');
@@ -133,7 +131,7 @@ test(
       (provider as any).openai.chat.completions.create = () => new Promise(() => {});
 
       await assert.rejects(
-        () => provider.generateStructured({ op: 'extract-intent', system: 'instrucción', user: 'texto', schema: ExtractIntentSchema }),
+        () => provider.generateStructured({ op: 'extract-search-intent', system: 'instrucción', user: 'texto', schema: SearchIntentSchema }),
         (error: any) => {
           assert.ok(error instanceof TimeoutError, 'El error debe ser una instancia de TimeoutError.');
           assert.match(error.message, /OpenAI chat\.completions\.create/, 'El mensaje debe identificar la llamada de OpenAI.');
@@ -146,7 +144,7 @@ test(
   }
 );
 
-// --- Fakes de LLMProvider para probar FallbackProvider y las 4 operaciones sin red real ---
+// --- Fakes de LLMProvider para probar FallbackProvider y las operaciones sin red real ---
 // BE-06: reemplaza el patrón anterior de monkey-patchear GeminiStrategy.prototype.X — con
 // inyección de dependencias real (FallbackProvider recibe un array de LLMProvider en su
 // constructor), un test puede construir un fake sin tocar ninguna clase global.
@@ -217,18 +215,20 @@ test('FallbackProvider - lanza AllProvidersFailedError con los intentos de cada 
   );
 });
 
-// --- KAN-70/KAN-339: extractFromTextInput y la distinción AITimeoutError vs AIExtractionFailedError ---
-// Estos tests inyectan providers fake directo en un FallbackProvider de prueba — necesitan pasar
-// por `extractFromTextInput` real (no un fake standalone) para probar
-// la lógica de clasificación de errores que vive en src/ai/operations/extractIntent.ts, así que se
-// llama a la implementación interna importando el módulo de operación directamente.
+// --- KAN-70/KAN-339: extractSearchIntent y la distinción AITimeoutError vs AIExtractionFailedError ---
+// BE-09: antes estos tests ejercitaban por separado extractFromTextInput (Agente 1) y
+// extractZoneIntent (Agente 2) — el fallo total de Agente 2 degradaba en silencio a
+// zone_status: 'INDEFINIDA'. Con una sola llamada LLM, un fallo total es un fallo de TODO
+// (operación + zona + presupuesto vienen de la misma respuesta), así que el criterio correcto es
+// siempre el más estricto: nunca degradar en silencio, siempre lanzar AITimeoutError o
+// AIExtractionFailedError. Se llama a la implementación interna (no al wrapper del barrel) para
+// poder inyectar un FallbackProvider de prueba.
 
-import { extractFromTextInput as extractFromTextInputOp } from '../src/ai/operations/extractIntent';
-import { extractZoneIntent as extractZoneIntentOp } from '../src/ai/operations/extractZoneIntent';
+import { extractSearchIntent as extractSearchIntentOp } from '../src/ai/operations/extractSearchIntent';
 import { segmentSearchRequests as segmentSearchRequestsOp } from '../src/ai/operations/segment';
 import { suggestExcelColumnMapping as suggestExcelColumnMappingOp } from '../src/ai/operations/excelMapping';
 
-test('extractFromTextInput (KAN-70) lanza AITimeoutError cuando TODOS los providers agotan el timeout', async () => {
+test('extractSearchIntent (KAN-70) lanza AITimeoutError cuando TODOS los providers agotan el timeout', async () => {
   const originalFlag = config.freeTextExtractionEnabled;
   config.freeTextExtractionEnabled = true;
   try {
@@ -237,7 +237,7 @@ test('extractFromTextInput (KAN-70) lanza AITimeoutError cuando TODOS los provid
       alwaysFails('OpenAI', new TimeoutError('Timeout simulado de OpenAI (KAN-70)'))
     ]);
     await assert.rejects(
-      () => extractFromTextInputOp(fallback, 'busco depto 2 dorm en yerba buena hasta 80000 usd'),
+      () => extractSearchIntentOp(fallback, 'busco depto 2 dorm en yerba buena hasta 80000 usd'),
       (error: any) => {
         assert.ok(error instanceof AITimeoutError, 'Debe lanzar AITimeoutError cuando todos los providers agotan el timeout, en vez de devolver el fallback silencioso.');
         return true;
@@ -248,7 +248,7 @@ test('extractFromTextInput (KAN-70) lanza AITimeoutError cuando TODOS los provid
   }
 });
 
-test('extractFromTextInput (KAN-70/KAN-339) lanza AIExtractionFailedError (no AITimeoutError) si al menos un provider falló por un motivo distinto a timeout', async () => {
+test('extractSearchIntent (KAN-70/KAN-339) lanza AIExtractionFailedError (no AITimeoutError) si al menos un provider falló por un motivo distinto a timeout', async () => {
   const originalFlag = config.freeTextExtractionEnabled;
   config.freeTextExtractionEnabled = true;
   try {
@@ -257,7 +257,7 @@ test('extractFromTextInput (KAN-70/KAN-339) lanza AIExtractionFailedError (no AI
       alwaysFails('OpenAI', new Error('Cuota excedida (no es timeout)'))
     ]);
     await assert.rejects(
-      () => extractFromTextInputOp(fallback, 'busco depto 2 dorm en yerba buena hasta 80000 usd'),
+      () => extractSearchIntentOp(fallback, 'busco depto 2 dorm en yerba buena hasta 80000 usd'),
       (error: any) => {
         assert.ok(error instanceof AIExtractionFailedError, 'KAN-339: un fallo mixto (un timeout + un fallo real) debe lanzar AIExtractionFailedError, no degradar en silencio a criterios comodín.');
         return true;
@@ -268,7 +268,7 @@ test('extractFromTextInput (KAN-70/KAN-339) lanza AIExtractionFailedError (no AI
   }
 });
 
-test('extractFromTextInput (KAN-339) lanza AIExtractionFailedError cuando TODOS los providers fallan por un motivo que no es timeout', async () => {
+test('extractSearchIntent (KAN-339) lanza AIExtractionFailedError cuando TODOS los providers fallan por un motivo que no es timeout', async () => {
   const originalFlag = config.freeTextExtractionEnabled;
   config.freeTextExtractionEnabled = true;
   try {
@@ -277,13 +277,33 @@ test('extractFromTextInput (KAN-339) lanza AIExtractionFailedError cuando TODOS 
       alwaysFails('OpenAI', new Error('Respuesta con schema inválido (no es timeout)'))
     ]);
     await assert.rejects(
-      () => extractFromTextInputOp(fallback, 'busco depto 2 dorm en yerba buena hasta 80000 usd'),
+      () => extractSearchIntentOp(fallback, 'busco depto 2 dorm en yerba buena hasta 80000 usd'),
       (error: any) => {
         assert.ok(error instanceof AIExtractionFailedError);
         assert.ok(!(error instanceof AITimeoutError), 'No debe confundirse con un timeout — ningún provider agotó el timeout acá.');
         return true;
       }
     );
+  } finally {
+    config.freeTextExtractionEnabled = originalFlag;
+  }
+});
+
+test('extractSearchIntent (BE-09) resuelve zona en INDEFINIDA sin consultar zonesService cuando no hay location_mentions', async () => {
+  const originalFlag = config.freeTextExtractionEnabled;
+  config.freeTextExtractionEnabled = true;
+  try {
+    const fallback = new FallbackProvider([
+      alwaysSucceeds('Gemini', {
+        operation: 'alquiler', property_type: 'departamento', location_mentions: [],
+        max_budget: null, currency: 'desconocido', bedrooms_min: 2, features: ['pileta'], country: 'indiferente'
+      })
+    ]);
+    const result = await extractSearchIntentOp(fallback, 'busco depto 2 dorm con pileta');
+    assert.strictEqual(result.intent.bedrooms_min, 2);
+    assert.strictEqual(result.zone.zone_status, 'INDEFINIDA');
+    assert.deepStrictEqual(result.zone.zona_ids, []);
+    assert.deepStrictEqual(result.zone.zona_nombres, []);
   } finally {
     config.freeTextExtractionEnabled = originalFlag;
   }
@@ -315,26 +335,6 @@ test('suggestExcelColumnMapping (KAN-84) cae al siguiente provider si la respues
   ]);
   const result = await suggestExcelColumnMappingOp(fallback, ['Dirección']);
   assert.deepStrictEqual(result, mapping, 'Debe caer al siguiente provider cuando la respuesta del primero no tiene el formato esperado.');
-});
-
-// --- Estados de zona (2026-08-11): toZoneIntentPlaceholder / resolveZoneIntent / segmentSearchRequests ---
-
-test('extractZoneIntent (estados de zona) - sin ubicaciones mencionadas, resuelve INDEFINIDA sin consultar zonesService', async () => {
-  const fallback = new FallbackProvider([
-    alwaysSucceeds('Gemini', { ubicaciones: [], dormitorios_min: 2, caracteristicas_claves: ['pileta'], operacion: 'ALQUILER' })
-  ]);
-  const result = await extractZoneIntentOp(fallback, 'busco depto 2 dorm con pileta');
-  assert.strictEqual(result.zone_status, 'INDEFINIDA');
-  assert.deepStrictEqual(result.zona_ids, []);
-  assert.deepStrictEqual(result.zona_nombres, []);
-  assert.strictEqual(result.dormitorios_min, 2);
-});
-
-test('extractZoneIntent (estados de zona) - fallo total de todos los providers degrada a INDEFINIDA (no DESCONOCIDA)', async () => {
-  const fallback = new FallbackProvider([alwaysFails('Gemini'), alwaysFails('OpenAI')]);
-  const result = await extractZoneIntentOp(fallback, 'busco algo');
-  assert.strictEqual(result.zone_status, 'INDEFINIDA', 'Un fallo total del LLM no es evidencia de que el usuario mencionó una zona real, así que no debe bloquear (DESCONOCIDA).');
-  assert.deepStrictEqual(result.zona_ids, []);
 });
 
 // --- Segmentador ---

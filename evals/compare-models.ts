@@ -4,29 +4,23 @@
 // gemini-2.5-flash-lite como primario / gpt-4o-mini como fallback. Resultado consumido por
 // docs/model-selection.md.
 //
-// BE-06 (reescrito): antes llamaba directo a los métodos de GeminiStrategy/OpenAIStrategy y
-// normalizaba a mano con normalizeAgent1/normalizeAgent2/etc. Ahora llama directo a
-// provider.generateStructured(schema) — la validación de schema (antes manual) la hace el
-// provider mismo, así que el resultado ya viene tipado y validado; solo queda aplicar la MISMA
-// limpieza de negocio post-schema que usan las operaciones reales (toZoneIntentPlaceholder para
-// zona, toSegments para el segmentador — exportadas desde src/ai justo para esta reutilización).
-// A propósito NO pasa por extractFromTextInput/extractZoneIntent/etc. (que sí tienen fallback,
-// tracing y persistencia en llm_calls) ni por resolveZoneIntent (ninguna métrica de esta
-// operación depende de zona_ids/zona_nombres — ver evals/metrics.ts#ZoneActualShape).
+// BE-09 (reescrito): 'extract-intent' + 'zone' se consolidan en 'search-intent' — una sola
+// llamada LLM por caso, validada contra `SearchIntentSchema` (antes dos schemas/llamadas
+// separadas). A propósito NO pasa por extractSearchIntent (que sí tiene fallback, tracing y
+// persistencia en llm_calls, y además resuelve zona contra la DB) — acá se llama directo a
+// provider.generateStructured(schema), que ya devuelve el resultado tipado y validado por Zod sin
+// necesitar normalización manual.
 import * as fs from 'fs';
 import * as path from 'path';
 import {
   GeminiProvider,
   OpenAIProvider,
   LLMProvider,
-  ExtractIntentSchema,
-  ZoneLlmOutputSchema,
+  SearchIntentSchema,
   SegmentSchema,
   ExcelMappingSchema,
-  toZoneIntentPlaceholder,
   toSegments,
-  SYSTEM_INSTRUCTIONS_AGENT1_TEXT_INPUT,
-  SYSTEM_INSTRUCTIONS_AGENT2,
+  SYSTEM_INSTRUCTIONS_SEARCH_INTENT,
   SYSTEM_INSTRUCTIONS_SEGMENTER,
   SYSTEM_INSTRUCTIONS_EXCEL_MAPPING
 } from '../src/ai';
@@ -34,18 +28,15 @@ import { estimateCostUsd } from '../src/config/modelPricing';
 import {
   ALL_OPERATIONS,
   OperationName,
-  ExtractIntentCase,
-  ZoneCase,
+  SearchIntentCase,
   SegmentCase,
   ExcelMappingCase,
   DATASET_FILES,
   loadJsonl,
   latencyStats,
   ExecutedCase,
-  computeExtractIntentMetrics,
-  aggregateExtractIntent,
-  computeZoneMetrics,
-  aggregateZone,
+  computeSearchIntentMetrics,
+  aggregateSearchIntent,
   computeSegmentMetrics,
   aggregateSegment,
   computeExcelMappingMetrics,
@@ -76,8 +67,8 @@ const CANDIDATES: ModelCandidate[] = [
 // este entorno, gemini-2.5-flash-lite y gemini-2.5-flash devolvieron 429 RESOURCE_EXHAUSTED en la
 // mayoría de los casos (10 req/min y 5 req/min respectivamente — ver
 // https://ai.google.dev/gemini-api/docs/rate-limits) al no haber ningún espaciado entre llamadas.
-// gpt-4o-mini no tuvo ningún 429 en la misma corrida (0 errores en 160 casos). Sin este fix, la
-// comparativa mediría cuota agotada, no calidad del modelo.
+// gpt-4o-mini no tuvo ningún 429 en la misma corrida. Sin este fix, la comparativa mediría cuota
+// agotada, no calidad del modelo.
 const RATE_LIMIT_MIN_INTERVAL_MS: Record<string, number> = {
   'gemini-2.5-flash-lite': 6_500, // límite observado: 10 req/min -> 1 cada 6s, +margen
   'gemini-2.5-flash': 13_000 // límite observado: 5 req/min -> 1 cada 12s, +margen
@@ -121,11 +112,11 @@ function isRateLimitError(error: unknown): boolean {
   return message.includes('429') || message.includes('RESOURCE_EXHAUSTED') || message.toLowerCase().includes('rate limit');
 }
 
-// Hallazgo real (2026-10-30, mismo día): además del límite por minuto, el free tier de Gemini
-// tiene un tope DIARIO por modelo ("Generate content requests per day limit exceeded", 20 req/día
-// para gemini-2.5-flash-lite) — con un retryDelay del orden de horas, no segundos. Una vez
-// detectado, se marca el modelo como agotado por hoy — ninguna llamada posterior a ESE modelo
-// intenta siquiera pegarle a la red, solo falla rápido.
+// Hallazgo real (2026-10-30): además del límite por minuto, el free tier de Gemini tiene un tope
+// DIARIO por modelo ("Generate content requests per day limit exceeded", 20 req/día para
+// gemini-2.5-flash-lite) — con un retryDelay del orden de horas, no segundos. Una vez detectado,
+// se marca el modelo como agotado por hoy — ninguna llamada posterior a ESE modelo intenta
+// siquiera pegarle a la red, solo falla rápido.
 const dailyQuotaExhausted = new Set<string>();
 
 function isDailyQuotaError(error: unknown): boolean {
@@ -217,15 +208,15 @@ async function runOperationForStrategy(op: OperationName, candidate: ModelCandid
   const provider = candidate.makeProvider();
   const limitCases = <T,>(all: T[]): T[] => (maxCasesPerOp !== undefined ? all.slice(0, maxCasesPerOp) : all);
 
-  if (op === 'extract-intent') {
-    const cases = limitCases(loadJsonl<ExtractIntentCase>(DATASET_FILES[op]));
+  if (op === 'search-intent') {
+    const cases = limitCases(loadJsonl<SearchIntentCase>(DATASET_FILES[op]));
     const results = await runCasesWithCost(cases, candidate.model, async (c, onLatency) => {
       const result = await callWithRateLimitRetry(candidate.model, () => provider.generateStructured({
-        op: 'extract-intent', system: SYSTEM_INSTRUCTIONS_AGENT1_TEXT_INPUT, user: buildExtractIntentUserPrompt(c.input), schema: ExtractIntentSchema
+        op: 'extract-search-intent', system: SYSTEM_INSTRUCTIONS_SEARCH_INTENT, user: buildSearchIntentUserPrompt(c.input), schema: SearchIntentSchema
       }), onLatency);
-      return { metrics: computeExtractIntentMetrics(c.expected, result.data), usage: result.usage };
+      return { metrics: computeSearchIntentMetrics(c.expected, result.data), usage: result.usage };
     });
-    const agg = aggregateExtractIntent(results);
+    const agg = aggregateSearchIntent(results);
     return {
       operation: op,
       totalCases: cases.length,
@@ -238,44 +229,13 @@ async function runOperationForStrategy(op: OperationName, candidate: ModelCandid
         propertyTypeMatchRate: agg.propertyTypeMatchRate,
         currencyMatchRate: agg.currencyMatchRate,
         countryMatchRate: agg.countryMatchRate,
-        bedroomsMatchRate: agg.bedroomsMatchRate,
+        bedroomsMinMatchRate: agg.bedroomsMinMatchRate,
         budgetMeanAbsError: agg.budgetMeanAbsError,
         budgetNullMismatchRate: agg.budgetNullMismatchRate,
-        zonesPrecision: agg.zonesPrecision,
-        zonesRecall: agg.zonesRecall,
-        keyFeaturesPrecision: agg.keyFeaturesPrecision,
-        keyFeaturesRecall: agg.keyFeaturesRecall,
-        desconocidaRate: agg.desconocidaRate,
-        falseDesconocidaRate: agg.falseDesconocidaRate
-      }
-    };
-  }
-
-  if (op === 'zone') {
-    const cases = limitCases(loadJsonl<ZoneCase>(DATASET_FILES[op]));
-    const results = await runCasesWithCost(cases, candidate.model, async (c, onLatency) => {
-      const result = await callWithRateLimitRetry(candidate.model, () => provider.generateStructured({
-        op: 'extract-zone', system: SYSTEM_INSTRUCTIONS_AGENT2, user: buildZoneUserPrompt(c.input, c.operacion_hint ?? undefined), schema: ZoneLlmOutputSchema
-      }), onLatency);
-      const actual = toZoneIntentPlaceholder(result.data, c.operacion_hint ?? undefined);
-      return { metrics: computeZoneMetrics(c.expected, actual), usage: result.usage };
-    });
-    const agg = aggregateZone(results);
-    return {
-      operation: op,
-      totalCases: cases.length,
-      executedCases: agg.n,
-      executionErrors: results.filter(r => r.executionError).map(r => ({ id: r.id, error: r.executionError! })),
-      latency: latencyStats(results),
-      meanCostUsdPerCall: meanCost(results),
-      metrics: {
-        zonaCorrectaRate: agg.zonaCorrectaRate,
-        zonaPrecision: agg.zonaPrecision,
-        zonaRecall: agg.zonaRecall,
-        dormitoriosMatchRate: agg.dormitoriosMatchRate,
-        caracteristicasPrecision: agg.caracteristicasPrecision,
-        caracteristicasRecall: agg.caracteristicasRecall,
-        operacionMatchRate: agg.operacionMatchRate,
+        locationMentionsPrecision: agg.locationMentionsPrecision,
+        locationMentionsRecall: agg.locationMentionsRecall,
+        featuresPrecision: agg.featuresPrecision,
+        featuresRecall: agg.featuresRecall,
         desconocidaRate: agg.desconocidaRate,
         falseDesconocidaRate: agg.falseDesconocidaRate
       }
@@ -328,17 +288,11 @@ async function runOperationForStrategy(op: OperationName, candidate: ModelCandid
 
 // --- Prompts de usuario (idénticos a los que arman las operaciones reales en src/ai/operations) ---
 
-function buildExtractIntentUserPrompt(freeText: string): string {
+function buildSearchIntentUserPrompt(freeText: string): string {
   return `Analiza el texto libre provisto por el usuario en un formulario de búsqueda, estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:
 <USER_TEXT>
 ${freeText}
 </USER_TEXT>`;
-}
-
-function buildZoneUserPrompt(messageTexto: string, operacion?: string): string {
-  return operacion && operacion !== 'desconocido'
-    ? `Operación identificada por el Agente 1: ${operacion}\n\nClasifica la zona e intención del texto provisto estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:\n<USER_TEXT>\n${messageTexto}\n</USER_TEXT>`
-    : `Clasifica la zona e intención del texto provisto estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:\n<USER_TEXT>\n${messageTexto}\n</USER_TEXT>`;
 }
 
 function buildSegmentUserPrompt(messageTexto: string): string {
@@ -361,9 +315,9 @@ interface ModelReport {
   label: string;
   model: string;
   operations: OperationComparisonResult[];
-  // Una "búsqueda" real de producción hace 1 llamada de extract-intent + 1 de zone por segmento
-  // (ver BE-09: hoy son 2 llamadas separadas) — segment/excel-mapping son flujos distintos, no se
-  // suman acá. Si extract-intent o zone no corrieron (--ops), queda en 0, no indefinido.
+  // BE-09: una "búsqueda" real de producción hace UNA sola llamada de search-intent por segmento
+  // (antes: extract-intent + zone, dos llamadas). costPerSearchUsd es directamente el costo medio
+  // de la operación 'search-intent' — segment/excel-mapping son flujos distintos, no se suman.
   costPerSearchUsd: number;
   costPer1000SearchesUsd: number;
 }
@@ -382,7 +336,7 @@ function buildMarkdownReport(date: string, modelReports: ModelReport[]): string 
   for (const m of modelReports) {
     lines.push(`## ${m.label} (\`${m.model}\`)`);
     lines.push('');
-    lines.push(`- **Costo estimado por búsqueda** (extract-intent + zone): $${m.costPerSearchUsd.toFixed(6)}`);
+    lines.push(`- **Costo estimado por búsqueda** (search-intent): $${m.costPerSearchUsd.toFixed(6)}`);
     lines.push(`- **Costo estimado por 1.000 búsquedas**: $${m.costPer1000SearchesUsd.toFixed(2)}`);
     lines.push('');
 
@@ -465,9 +419,7 @@ async function main() {
       console.log(`\n→ ${op}`);
       operationResults.push(await runOperationForStrategy(op, candidate, maxCasesPerOp));
     }
-    const extractIntentCost = operationResults.find(r => r.operation === 'extract-intent')?.meanCostUsdPerCall ?? 0;
-    const zoneCost = operationResults.find(r => r.operation === 'zone')?.meanCostUsdPerCall ?? 0;
-    const costPerSearchUsd = extractIntentCost + zoneCost;
+    const costPerSearchUsd = operationResults.find(r => r.operation === 'search-intent')?.meanCostUsdPerCall ?? 0;
     modelReports.push({
       label: candidate.label,
       model: candidate.model,

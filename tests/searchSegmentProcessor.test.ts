@@ -5,15 +5,16 @@ import * as aiService from '../src/ai';
 import * as blindMatchingService from '../src/services/blindMatching';
 import * as notificationsService from '../src/services/notifications';
 import * as realtimeHubService from '../src/services/realtimeHub';
+import { SearchIntent } from '../src/ai';
 
-const DEFAULT_EXTRACTED_DATA = {
+const DEFAULT_SEARCH_INTENT: SearchIntent = {
   operation: 'venta' as const,
   property_type: 'casa' as const,
-  zones: [],
+  location_mentions: [] as string[],
   max_budget: 100000,
   currency: 'USD' as const,
-  bedrooms: 2,
-  key_features: [],
+  bedrooms_min: 2,
+  features: [] as string[],
   country: 'indiferente' as const
 };
 
@@ -21,20 +22,38 @@ const DEFAULT_ZONE_INTENT = {
   zone_status: 'INDEFINIDA' as const,
   zona_ids: [] as string[],
   zona_nombres: [] as string[],
-  texto_ubicacion_original: '',
-  dormitorios_min: null,
-  caracteristicas_claves: [] as string[],
-  operacion: 'DESCONOCIDO' as const
+  texto_ubicacion_original: ''
+};
+
+// BE-09: shape LEGACY (zones/bedrooms/key_features) — lo que realmente queda persistido en
+// active_searches.criteria (ver searchSegmentProcessor.ts#toLegacyCriteriaShape), no el
+// SearchIntent interno.
+const DEFAULT_LEGACY_CRITERIA = {
+  operation: 'venta' as const,
+  property_type: 'casa' as const,
+  zones: [] as string[],
+  max_budget: 100000,
+  currency: 'USD' as const,
+  bedrooms: 2,
+  key_features: [] as string[],
+  country: 'indiferente' as const
 };
 
 const DEFAULT_SEARCH_ROW = {
   id: 'search-1',
-  criteria: DEFAULT_EXTRACTED_DATA,
+  criteria: DEFAULT_LEGACY_CRITERIA,
   zone_status: 'INDEFINIDA',
   zone_names: [] as string[],
   created_at: '2026-08-24T00:00:00.000Z',
   expires_at: '2026-08-31T00:00:00.000Z'
 };
+
+function mockExtractSearchIntent(t: any, intentOverrides: Partial<SearchIntent> = {}, zoneOverrides: Partial<typeof DEFAULT_ZONE_INTENT> = {}) {
+  return t.mock.method(aiService, 'extractSearchIntent', async () => ({
+    intent: { ...DEFAULT_SEARCH_INTENT, ...intentOverrides },
+    zone: { ...DEFAULT_ZONE_INTENT, ...zoneOverrides }
+  }));
+}
 
 const DEFAULT_PROFILE_ROW = {
   full_name: 'Juan Perez',
@@ -134,8 +153,7 @@ function makeTenantSupabaseMock(options: {
 }
 
 test('processSingleSearchSegment - operation "desconocido" devuelve error sin tocar DB ni zona/matching', async (t) => {
-  t.mock.method(aiService, 'extractFromTextInput', async () => ({ ...DEFAULT_EXTRACTED_DATA, operation: 'desconocido' }));
-  const extractZoneMock = t.mock.method(aiService, 'extractZoneIntent', async () => DEFAULT_ZONE_INTENT);
+  const extractMock = mockExtractSearchIntent(t, { operation: 'desconocido' });
   const findMatchesMock = t.mock.method(blindMatchingService, 'findCrossTenantMatches', async () => []);
   const tenantSupabase = makeTenantSupabaseMock();
 
@@ -143,14 +161,13 @@ test('processSingleSearchSegment - operation "desconocido" devuelve error sin to
 
   assert.strictEqual(result.success, false);
   assert.ok(result.error);
-  assert.strictEqual(extractZoneMock.mock.callCount(), 0, 'No debe resolver zona si ni siquiera se clasificó la operación.');
+  assert.strictEqual(extractMock.mock.callCount(), 1, 'Debe haber llamado la extracción unificada una sola vez.');
   assert.strictEqual(findMatchesMock.mock.callCount(), 0);
   assert.strictEqual(tenantSupabase.calls.length, 0, 'No debe insertar nada en active_searches.');
 });
 
 test('processSingleSearchSegment - sin matches cross-tenant, no toca profiles/blind_matches ni notifica', async (t) => {
-  t.mock.method(aiService, 'extractFromTextInput', async () => DEFAULT_EXTRACTED_DATA);
-  t.mock.method(aiService, 'extractZoneIntent', async () => DEFAULT_ZONE_INTENT);
+  mockExtractSearchIntent(t);
   t.mock.method(blindMatchingService, 'findCrossTenantMatches', async () => []);
   const notifyMock = t.mock.method(notificationsService, 'notifyMatchFound', async () => 'push' as const);
   const broadcastMock = t.mock.method(realtimeHubService, 'broadcastMatchCountChanged', () => {});
@@ -167,8 +184,7 @@ test('processSingleSearchSegment - sin matches cross-tenant, no toca profiles/bl
 });
 
 test('processSingleSearchSegment - un match nuevo se persiste, notifica en ambas direcciones y devuelve el id insertado', async (t) => {
-  t.mock.method(aiService, 'extractFromTextInput', async () => DEFAULT_EXTRACTED_DATA);
-  t.mock.method(aiService, 'extractZoneIntent', async () => DEFAULT_ZONE_INTENT);
+  mockExtractSearchIntent(t);
   t.mock.method(blindMatchingService, 'findCrossTenantMatches', async () => [sampleMatch()]);
   const notifyMock = t.mock.method(notificationsService, 'notifyMatchFound', async () => 'push' as const);
   const broadcastMock = t.mock.method(realtimeHubService, 'broadcastMatchCountChanged', () => {});
@@ -195,8 +211,7 @@ test('processSingleSearchSegment - un match nuevo se persiste, notifica en ambas
 });
 
 test('processSingleSearchSegment - matches de varios dueños agrupa y notifica una vez por dueño único', async (t) => {
-  t.mock.method(aiService, 'extractFromTextInput', async () => DEFAULT_EXTRACTED_DATA);
-  t.mock.method(aiService, 'extractZoneIntent', async () => DEFAULT_ZONE_INTENT);
+  mockExtractSearchIntent(t);
   t.mock.method(blindMatchingService, 'findCrossTenantMatches', async () => [
     sampleMatch({ tenant_id: 'tenant-owner-a' }),
     sampleMatch({ tenant_id: 'tenant-owner-b' }),
@@ -215,8 +230,7 @@ test('processSingleSearchSegment - matches de varios dueños agrupa y notifica u
 });
 
 test('processSingleSearchSegment - si falla el insert de active_searches, propaga el error y no sigue al matching', async (t) => {
-  t.mock.method(aiService, 'extractFromTextInput', async () => DEFAULT_EXTRACTED_DATA);
-  t.mock.method(aiService, 'extractZoneIntent', async () => DEFAULT_ZONE_INTENT);
+  mockExtractSearchIntent(t);
   const findMatchesMock = t.mock.method(blindMatchingService, 'findCrossTenantMatches', async () => [sampleMatch()]);
   const tenantSupabase = makeTenantSupabaseMock({ searchInsertError: { message: 'fallo simulado de insert' } });
 
@@ -230,8 +244,7 @@ test('processSingleSearchSegment - si falla el insert de active_searches, propag
 });
 
 test('processSingleSearchSegment - si falla la persistencia de blind_matches (best-effort), igual devuelve éxito y notifica', async (t) => {
-  t.mock.method(aiService, 'extractFromTextInput', async () => DEFAULT_EXTRACTED_DATA);
-  t.mock.method(aiService, 'extractZoneIntent', async () => DEFAULT_ZONE_INTENT);
+  mockExtractSearchIntent(t);
   t.mock.method(blindMatchingService, 'findCrossTenantMatches', async () => [sampleMatch()]);
   const notifyMock = t.mock.method(notificationsService, 'notifyMatchFound', async () => 'push' as const);
   t.mock.method(realtimeHubService, 'broadcastMatchCountChanged', () => {});

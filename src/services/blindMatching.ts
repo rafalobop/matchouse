@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { supabase as serviceRoleSupabase } from './supabase';
 import { checkMatch } from '../utils/matcher';
-import { ExtractedRealEstateRequest, ZoneIntentRequest, ZoneStatus } from '../ai';
+import { SearchIntent, ZoneIntentRequest, ZoneStatus } from '../ai';
 import { Property } from './excel';
 import { logger } from './logger';
 import { resolvePropertyZoneId, resolveMultipleNeighborhoodsByText } from './zonesService';
@@ -53,7 +53,7 @@ export function mapDbRowToProperty(row: any): Property {
  * depender de Supabase.
  */
 export function matchRequestAgainstProperties(
-  request: ExtractedRealEstateRequest,
+  request: SearchIntent,
   candidates: TenantScopedProperty[],
   zoneIntent?: ZoneIntentRequest
 ): CrossTenantMatch[] {
@@ -147,7 +147,7 @@ async function stampNeighborhoodIds(candidates: TenantScopedProperty[]): Promise
  */
 export async function findCrossTenantMatches(
   tenantId: string,
-  request: ExtractedRealEstateRequest,
+  request: SearchIntent,
   zoneIntent?: ZoneIntentRequest,
   client: SupabaseClient = serviceRoleSupabase,
   pagination?: CrossTenantMatchesPagination
@@ -200,7 +200,7 @@ export interface ActiveSearchCandidate {
   tenant_id: string;
   search_id: string;
   raw_text: string;
-  criteria: ExtractedRealEstateRequest;
+  criteria: SearchIntent;
   zoneIntent: ZoneIntentRequest;
 }
 
@@ -235,11 +235,30 @@ export function matchActiveSearchesAgainstProperty(
   return matches.sort((a, b) => b.score - a.score);
 }
 
-// Reconstruye un ZoneIntentRequest "mínimo" a partir de las columnas persistidas de
-// active_searches (zone_status/zone_ids/zone_names/zone_text_original). dormitorios_min y
-// caracteristicas_claves del Agente 2 nunca se persistieron (ni antes ni con este cambio) — ya
-// están cubiertos por `criteria` (Agente 1), así que quedan en null/[] acá; solo se reconstruye lo
-// necesario para que ZoneMatchingStrategy funcione.
+// Reconstruye un ZoneIntentRequest a partir de las columnas persistidas de active_searches
+// (zone_status/zone_ids/zone_names/zone_text_original) — BE-09: `ZoneIntentRequest` ya no carga
+// `dormitorios_min`/`caracteristicas_claves`/`operacion` (eran la copia de Agente 2 de campos que
+// `criteria` ya tiene, ver schemas/zoneIntent.schema.ts), así que esta reconstrucción es ahora 1:1
+// con las columnas reales, sin ningún campo relleno con un valor inventado.
+// BE-09: `active_searches.criteria` se persiste con las keys LEGACY (`zones`/`bedrooms`/
+// `key_features`, ver searchSegmentProcessor.ts#toLegacyCriteriaShape) por compatibilidad con
+// brokaza-frontend — reconstruye el `SearchIntent` real que espera matcher.ts
+// (`bedrooms_min`/`features`) a partir de esas columnas. `location_mentions` se reconstruye desde
+// `zones` solo por completitud de tipo: matcher.ts ya no lee la zona de `request` (viene de
+// `zoneIntent`, reconstruido aparte por `reconstructZoneIntentFromRow`).
+export function reconstructSearchIntentFromCriteria(criteria: any): SearchIntent {
+  return {
+    operation: criteria.operation,
+    property_type: criteria.property_type,
+    location_mentions: criteria.zones || [],
+    max_budget: criteria.max_budget,
+    currency: criteria.currency,
+    bedrooms_min: criteria.bedrooms,
+    features: criteria.key_features || [],
+    country: criteria.country
+  };
+}
+
 function reconstructZoneIntentFromRow(row: {
   zone_status: string;
   zone_ids: string[] | null;
@@ -250,10 +269,7 @@ function reconstructZoneIntentFromRow(row: {
     zone_status: row.zone_status as ZoneStatus,
     zona_ids: row.zone_ids || [],
     zona_nombres: row.zone_names || [],
-    texto_ubicacion_original: row.zone_text_original || '',
-    dormitorios_min: null,
-    caracteristicas_claves: [],
-    operacion: 'DESCONOCIDO'
+    texto_ubicacion_original: row.zone_text_original || ''
   };
 }
 
@@ -362,7 +378,7 @@ export async function findMatchingActiveSearchesForProperty(
       tenant_id: row.tenant_id,
       search_id: row.id,
       raw_text: row.raw_text,
-      criteria: row.criteria as ExtractedRealEstateRequest,
+      criteria: reconstructSearchIntentFromCriteria(row.criteria),
       zoneIntent: reconstructZoneIntentFromRow({
         zone_status: effective.zone_status,
         zone_ids: effective.zona_ids,

@@ -1,17 +1,7 @@
-import { z } from 'zod';
-
-// BE-06: schema de la salida CRUDA del Agente 2 (zona), tal como la devuelve el LLM — distinto de
-// `ZoneIntentRequest` (ver más abajo), que es el shape YA RESUELTO contra `neighborhoods` en
-// código (operations/extractZoneIntent.ts#resolveZoneIntent). KAN-22: el LLM nunca devuelve
-// zona_ids — solo extrae menciones de ubicación en texto libre.
-export const ZoneLlmOutputSchema = z.object({
-  ubicaciones: z.array(z.string()),
-  dormitorios_min: z.number().nullable(),
-  caracteristicas_claves: z.array(z.string()),
-  operacion: z.enum(['ALQUILER', 'COMPRA', 'DESCONOCIDO'])
-});
-
-export type ZoneLlmOutput = z.infer<typeof ZoneLlmOutputSchema>;
+// BE-09: `ZoneLlmOutputSchema` (el schema de la respuesta cruda de Agente 2) se elimina — ya no
+// hay una llamada LLM separada para zona, se extrae junto con todo lo demás en
+// `SearchIntentSchema` (ver searchIntent.schema.ts). Lo que queda acá es solo el shape YA
+// RESUELTO contra `neighborhoods` en código (operations/extractSearchIntent.ts#resolveZoneIntent).
 
 // Estado de resolución de zona de una búsqueda. INDEFINIDA: no se mencionó ninguna ubicación (no
 // filtra por zona). DEFINIDA: se resolvió contra neighborhoods/neighborhood_aliases (1+ zonas,
@@ -19,10 +9,13 @@ export type ZoneLlmOutput = z.infer<typeof ZoneLlmOutputSchema>;
 // filtro duro (bloquea matches) hasta que se cure (self-healing, ver blindMatching.ts).
 export type ZoneStatus = 'INDEFINIDA' | 'DEFINIDA' | 'DESCONOCIDA';
 
-// No se deriva de un Zod schema (a diferencia de ExtractedRealEstateRequest) porque mezcla datos
-// que SÍ vienen del LLM (dormitorios_min, caracteristicas_claves, operacion, texto_ubicacion_original)
-// con datos que se resuelven DESPUÉS contra la base (zone_status, zona_ids, zona_nombres) — no hay
-// un único "parse" de entrada que produzca este shape completo de una sola vez.
+// BE-09: antes tenía además `dormitorios_min`/`caracteristicas_claves`/`operacion` — eran la
+// copia de Agente 2 de campos que Agente 1 YA extraía por su cuenta. Con una sola extracción
+// (`SearchIntent`), esos campos viven ahí una sola vez — cargarlos también acá era pura
+// redundancia (confirmado además por `blindMatching.ts#reconstructZoneIntentFromRow`: para
+// búsquedas reconstruidas desde la DB esos 3 campos SIEMPRE eran null/[]/DESCONOCIDO, nunca se
+// persistieron). `matcher.ts` ya no los lee de acá (ver OperationMatchingStrategy/
+// BedroomsMatchingStrategy/FeaturesMatchingStrategy, simplificadas en este mismo ticket).
 export interface ZoneIntentRequest {
   zone_status: ZoneStatus;
   // UUIDs de `neighborhoods.id` resueltos. Puede tener más de uno (zonas alternativas OR, ej.
@@ -35,7 +28,4 @@ export interface ZoneIntentRequest {
   // ubicaciones, vienen unidas con ' | ' — se persiste así en active_searches.zone_text_original
   // para poder reintentar la resolución más tarde sin volver a invocar al LLM.
   texto_ubicacion_original: string;
-  dormitorios_min: number | null;
-  caracteristicas_claves: string[];
-  operacion: 'ALQUILER' | 'COMPRA' | 'DESCONOCIDO';
 }

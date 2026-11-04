@@ -8,37 +8,35 @@
 // fallback Gemini→OpenAI, como en producción) y arma el reporte. evals/compare-models.ts reusa el
 // mismo módulo de métricas para aislar un único modelo por vez.
 //
-// Tokens y costo USD/1.000 búsquedas: desde BE-03/BE-04, extractFromTextInput/extractZoneIntent/
-// segmentSearchRequests/suggestExcelColumnMapping ya persisten cada llamada real en la tabla
-// llm_calls (tenant_id/search_id quedan null acá, al no venir de un request real) — el costo de
-// ESTE pipeline (con fallback) se puede consultar ahí. La comparativa aislada por modelo (BE-46)
-// vive en evals/compare-models.ts y docs/model-selection.md.
+// Tokens y costo USD/1.000 búsquedas: desde BE-03/BE-04, extractSearchIntent/segmentSearchRequests/
+// suggestExcelColumnMapping ya persisten cada llamada real en la tabla llm_calls (tenant_id/
+// search_id quedan null acá, al no venir de un request real) — el costo de ESTE pipeline (con
+// fallback) se puede consultar ahí. La comparativa aislada por modelo (BE-46) vive en
+// evals/compare-models.ts y docs/model-selection.md.
+//
+// BE-09: extract-intent + zone se consolidan en 'search-intent' (una sola llamada LLM) — ver
+// evals/metrics.ts para el detalle de la migración de datasets.
 
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-  extractFromTextInput,
-  extractZoneIntent,
+  extractSearchIntent,
   segmentSearchRequests,
-  suggestExcelColumnMapping,
-  ZoneIntentRequest
+  suggestExcelColumnMapping
 } from '../src/ai';
 import { config } from '../src/config/env';
 import {
   ALL_OPERATIONS,
   OperationName,
-  ExtractIntentCase,
-  ZoneCase,
+  SearchIntentCase,
   SegmentCase,
   ExcelMappingCase,
   DATASET_FILES,
   loadJsonl,
   runCases,
   latencyStats,
-  computeExtractIntentMetrics,
-  aggregateExtractIntent,
-  computeZoneMetrics,
-  aggregateZone,
+  computeSearchIntentMetrics,
+  aggregateSearchIntent,
   computeSegmentMetrics,
   aggregateSegment,
   computeExcelMappingMetrics,
@@ -49,14 +47,9 @@ import {
 
 // --- Llamadas al pipeline completo (con fallback) por operación ---
 
-async function evalExtractIntentCase(c: ExtractIntentCase) {
-  const actual = await extractFromTextInput(c.input);
-  return computeExtractIntentMetrics(c.expected, actual);
-}
-
-async function evalZoneCase(c: ZoneCase) {
-  const actual: ZoneIntentRequest = await extractZoneIntent(c.input, c.operacion_hint ?? undefined);
-  return computeZoneMetrics(c.expected, actual);
+async function evalSearchIntentCase(c: SearchIntentCase) {
+  const { intent } = await extractSearchIntent(c.input);
+  return computeSearchIntentMetrics(c.expected, intent);
 }
 
 async function evalSegmentCase(c: SegmentCase) {
@@ -89,10 +82,10 @@ async function runOperation(op: OperationName, maxCasesPerOp?: number): Promise<
   console.log(`\n→ ${op}`);
   const limitCases = <T,>(all: T[]): T[] => (maxCasesPerOp !== undefined ? all.slice(0, maxCasesPerOp) : all);
 
-  if (op === 'extract-intent') {
-    const cases = limitCases(loadJsonl<ExtractIntentCase>(DATASET_FILES[op]));
-    const results = await runCases(cases, evalExtractIntentCase);
-    const agg = aggregateExtractIntent(results);
+  if (op === 'search-intent') {
+    const cases = limitCases(loadJsonl<SearchIntentCase>(DATASET_FILES[op]));
+    const results = await runCases(cases, evalSearchIntentCase);
+    const agg = aggregateSearchIntent(results);
     const executionErrors = results.filter(r => r.executionError).map(r => ({ id: r.id, error: r.executionError! }));
     return {
       operation: op,
@@ -106,39 +99,13 @@ async function runOperation(op: OperationName, maxCasesPerOp?: number): Promise<
         propertyTypeMatchRate: agg.propertyTypeMatchRate,
         currencyMatchRate: agg.currencyMatchRate,
         countryMatchRate: agg.countryMatchRate,
-        bedroomsMatchRate: agg.bedroomsMatchRate,
+        bedroomsMinMatchRate: agg.bedroomsMinMatchRate,
         budgetMeanAbsError: agg.budgetMeanAbsError,
         budgetNullMismatchRate: agg.budgetNullMismatchRate,
-        zonesPrecision: agg.zonesPrecision,
-        zonesRecall: agg.zonesRecall,
-        keyFeaturesPrecision: agg.keyFeaturesPrecision,
-        keyFeaturesRecall: agg.keyFeaturesRecall,
-        desconocidaRate: agg.desconocidaRate,
-        falseDesconocidaRate: agg.falseDesconocidaRate
-      }
-    };
-  }
-
-  if (op === 'zone') {
-    const cases = limitCases(loadJsonl<ZoneCase>(DATASET_FILES[op]));
-    const results = await runCases(cases, evalZoneCase);
-    const agg = aggregateZone(results);
-    const executionErrors = results.filter(r => r.executionError).map(r => ({ id: r.id, error: r.executionError! }));
-    return {
-      operation: op,
-      totalCases: cases.length,
-      executedCases: agg.n,
-      executionErrors,
-      criticalFailure: cases.length > 0 && agg.n === 0,
-      latency: latencyStats(results),
-      metrics: {
-        zonaCorrectaRate: agg.zonaCorrectaRate,
-        zonaPrecision: agg.zonaPrecision,
-        zonaRecall: agg.zonaRecall,
-        dormitoriosMatchRate: agg.dormitoriosMatchRate,
-        caracteristicasPrecision: agg.caracteristicasPrecision,
-        caracteristicasRecall: agg.caracteristicasRecall,
-        operacionMatchRate: agg.operacionMatchRate,
+        locationMentionsPrecision: agg.locationMentionsPrecision,
+        locationMentionsRecall: agg.locationMentionsRecall,
+        featuresPrecision: agg.featuresPrecision,
+        featuresRecall: agg.featuresRecall,
         desconocidaRate: agg.desconocidaRate,
         falseDesconocidaRate: agg.falseDesconocidaRate
       }
@@ -259,9 +226,9 @@ async function main() {
   const outDirIdx = args.findIndex(a => a === '--out-dir');
   const outDir = outDirIdx !== -1 ? args[outDirIdx + 1] : null;
 
-  // BE-01's extract-intent.jsonl ejercita extractFromTextInput (KAN-36), que rechaza si el flag
-  // está apagado — el eval mide la calidad de la extracción, no el flag de feature, así que se
-  // fuerza habilitado para esta corrida sin importar el .env.
+  // evals/search-intent.jsonl ejercita extractSearchIntent (KAN-36), que rechaza si el flag está
+  // apagado — el eval mide la calidad de la extracción, no el flag de feature, así que se fuerza
+  // habilitado para esta corrida sin importar el .env.
   config.freeTextExtractionEnabled = true;
 
   const operations = requestedOp ? [requestedOp] : ALL_OPERATIONS;
