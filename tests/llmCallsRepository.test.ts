@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import { recordLlmCall, getLlmCostByTenantForMonth } from '../src/services/llmCallsRepository';
+import { recordLlmCall, getLlmCostByTenantForMonth, getTotalLlmCostForMonth } from '../src/services/llmCallsRepository';
 import { createFakeSupabaseClient, chainableResult } from './helpers/fakeSupabaseClient';
 
 test('BE-04: recordLlmCall inserta una fila en llm_calls con los campos mapeados a snake_case', async () => {
@@ -119,4 +119,55 @@ test('BE-04: getLlmCostByTenantForMonth devuelve 0 sin filas y propaga errores r
 
   const erroringClient = createFakeSupabaseClient(() => chainableResult({ data: null, error: { message: 'db down' } }));
   await assert.rejects(() => getLlmCostByTenantForMonth(erroringClient, 'tenant-2', 2026, 12));
+});
+
+test('BE-45: getTotalLlmCostForMonth suma cost_usd de TODOS los tenants del rango del mes, sin filtrar por tenant_id', async () => {
+  let capturedFilters: { eqCalled: boolean; gte?: string; lt?: string } = { eqCalled: false };
+  const client = createFakeSupabaseClient(() => {
+    const handler: any = {
+      select: () => handler,
+      eq: () => { capturedFilters.eqCalled = true; return handler; },
+      gte: (_col: string, value: string) => { capturedFilters.gte = value; return handler; },
+      lt: (_col: string, value: string) => { capturedFilters.lt = value; return handler; },
+      then: (resolve: any) => Promise.resolve({
+        data: [{ cost_usd: 0.01 }, { cost_usd: 0.02 }, { cost_usd: 0.005 }],
+        error: null
+      }).then(resolve)
+    };
+    return handler;
+  });
+
+  const total = await getTotalLlmCostForMonth(client, 2026, 11);
+
+  assert.strictEqual(capturedFilters.eqCalled, false, 'No debe filtrar por tenant_id (agregado de toda la plataforma).');
+  assert.strictEqual(capturedFilters.gte, new Date(Date.UTC(2026, 10, 1)).toISOString());
+  assert.strictEqual(capturedFilters.lt, new Date(Date.UTC(2026, 11, 1)).toISOString());
+  assert.ok(Math.abs(total - 0.035) < 1e-9, `costo total inesperado: ${total}`);
+});
+
+test('BE-45: getTotalLlmCostForMonth devuelve 0 sin filas y propaga errores reales de la query', async () => {
+  const emptyClient = createFakeSupabaseClient(() => chainableResult({ data: [], error: null }));
+  const total = await getTotalLlmCostForMonth(emptyClient, 2026, 12);
+  assert.strictEqual(total, 0);
+
+  const erroringClient = createFakeSupabaseClient(() => chainableResult({ data: null, error: { message: 'db down' } }));
+  await assert.rejects(() => getTotalLlmCostForMonth(erroringClient, 2026, 12));
+});
+
+test('BE-45: getTotalLlmCostForMonth maneja diciembre (cruce de año) igual que getLlmCostByTenantForMonth', async () => {
+  let capturedFilters: { gte?: string; lt?: string } = {};
+  const client = createFakeSupabaseClient(() => {
+    const handler: any = {
+      select: () => handler,
+      gte: (_col: string, value: string) => { capturedFilters.gte = value; return handler; },
+      lt: (_col: string, value: string) => { capturedFilters.lt = value; return handler; },
+      then: (resolve: any) => Promise.resolve({ data: [], error: null }).then(resolve)
+    };
+    return handler;
+  });
+
+  await getTotalLlmCostForMonth(client, 2026, 12);
+
+  assert.strictEqual(capturedFilters.gte, new Date(Date.UTC(2026, 11, 1)).toISOString());
+  assert.strictEqual(capturedFilters.lt, new Date(Date.UTC(2027, 0, 1)).toISOString());
 });

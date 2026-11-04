@@ -46,6 +46,12 @@ export async function recordLlmCall(client: TypedSupabaseClient, record: LlmCall
   }
 }
 
+function monthRangeUtc(year: number, month: number): { start: string; end: string } {
+  const start = new Date(Date.UTC(year, month - 1, 1)).toISOString();
+  const end = new Date(Date.UTC(month === 12 ? year + 1 : year, month === 12 ? 0 : month, 1)).toISOString();
+  return { start, end };
+}
+
 // Costo total en USD de un tenant dentro de un mes calendario (año/mes en UTC). `month` es 1-12.
 // Usada por BE-45 (endpoint de métricas del panel admin) — acá solo se deja la query probada y
 // funcionando, ver criterio de aceptación "consulta de costo por tenant/mes funciona".
@@ -55,13 +61,34 @@ export async function getLlmCostByTenantForMonth(
   year: number,
   month: number
 ): Promise<number> {
-  const start = new Date(Date.UTC(year, month - 1, 1)).toISOString();
-  const end = new Date(Date.UTC(month === 12 ? year + 1 : year, month === 12 ? 0 : month, 1)).toISOString();
+  const { start, end } = monthRangeUtc(year, month);
 
   const { data, error } = await client
     .from('llm_calls')
     .select('cost_usd')
     .eq('tenant_id', tenantId)
+    .gte('created_at', start)
+    .lt('created_at', end);
+
+  if (error) throw error;
+  return (data ?? []).reduce((sum, row) => sum + Number(row.cost_usd), 0);
+}
+
+// BE-45: costo total en USD de TODA la plataforma (todos los tenants, incluyendo tenant_id null —
+// llamadas que no vienen de un request real, ej. evals) dentro de un mes calendario — a diferencia
+// de getLlmCostByTenantForMonth (un tenant puntual, pensado a futuro para billing), esta es la
+// señal agregada que necesita GET /api/metrics para detectar un blowout de gasto a nivel
+// plataforma sin tener que iterar tenant por tenant.
+export async function getTotalLlmCostForMonth(
+  client: TypedSupabaseClient,
+  year: number,
+  month: number
+): Promise<number> {
+  const { start, end } = monthRangeUtc(year, month);
+
+  const { data, error } = await client
+    .from('llm_calls')
+    .select('cost_usd')
     .gte('created_at', start)
     .lt('created_at', end);
 

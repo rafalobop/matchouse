@@ -23,6 +23,7 @@ import {
   clearAdminSessionCache
 } from './adminAuth';
 import { sendAdminMagicLinkEmail } from './services/notifier-email';
+import { getTotalLlmCostForMonth } from './services/llmCallsRepository';
 
 // KAN-127: distribuido (Postgres) — el panel admin puede correr detrás de más de una instancia
 // igual que el resto de la app, ver src/utils/rateLimit.ts.
@@ -316,6 +317,19 @@ export function mountAdminRouter(app: express.Application): void {
       const agentsWithPortfolio = portfolioChecksPerTenant.filter((r: any) => (r.count ?? 0) > 0).length;
       const agentsWithSearch = new Set((everSearchedTenants.data ?? []).map((r: any) => r.tenant_id)).size;
 
+      // BE-45: costo total de LLM del mes en curso (todos los tenants) — señal agregada para
+      // detectar un blowout de gasto a nivel plataforma (ver getTotalLlmCostForMonth, BE-04/BE-45).
+      // Best-effort y separado del resto del endpoint a propósito: es una métrica de observabilidad
+      // secundaria (igual que mrr/churn, más abajo), no debe poder tumbar el resto de /api/metrics
+      // si `llm_calls` tuviera un problema puntual.
+      let llmCostThisMonthUsd: number | null = null;
+      try {
+        const now = new Date();
+        llmCostThisMonthUsd = await getTotalLlmCostForMonth(supabase, now.getUTCFullYear(), now.getUTCMonth() + 1);
+      } catch (err: any) {
+        logger.error({ err: err.message }, '[ADMIN] Error calculando llmCostThisMonthUsd (no bloquea el resto de /api/metrics)');
+      }
+
       res.json({
         totalMatches: matchesCount.count ?? 0,
         registeredUsers: profileIds.data?.length ?? 0,
@@ -326,6 +340,7 @@ export function mountAdminRouter(app: express.Application): void {
         // una búsqueda realizada (histórico, no solo activas), sumados a totalMatches de arriba.
         agentsWithPortfolio,
         agentsWithSearch,
+        llmCostThisMonthUsd,
         mrr: null,
         churn: null,
         billingNote: 'Pendiente — sin cobros integrados todavía.'
