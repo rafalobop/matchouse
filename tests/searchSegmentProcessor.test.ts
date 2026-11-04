@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import { processSingleSearchSegment } from '../src/services/searchSegmentProcessor';
-import * as aiService from '../src/services/ai';
+import * as aiService from '../src/ai';
 import * as blindMatchingService from '../src/services/blindMatching';
 import * as notificationsService from '../src/services/notifications';
 import * as realtimeHubService from '../src/services/realtimeHub';

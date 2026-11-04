@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert';
 import * as express from 'express';
 import { createSearch } from '../src/controllers/searchController';
-import * as aiService from '../src/services/ai';
+import * as aiService from '../src/ai';
 import * as searchSegmentProcessorService from '../src/services/searchSegmentProcessor';
 import * as planLimitsService from '../src/services/planLimits';
-import { AIExtractionFailedError, AITimeoutError } from '../src/services/ai';
+import { AIExtractionFailedError, AITimeoutError } from '../src/ai';
 
 // Fase 1 pre-lanzamiento: cuota mensual de búsquedas del plan (10/mes en FREE, ver
 // src/config/planLimits.ts). createSearch no expone un shape fácil de invocar vía HTTP real (no hay

@@ -19,7 +19,7 @@ name: Eval Gate
 on:
   pull_request:
     paths:
-      - 'src/services/ai.ts'
+      - 'src/ai/**'
       - 'evals/**'
 
 jobs:

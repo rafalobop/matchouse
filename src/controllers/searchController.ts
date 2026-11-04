@@ -1,5 +1,5 @@
 import * as express from 'express';
-import { segmentSearchRequests, ZoneIntentRequest, AITimeoutError, AIExtractionFailedError } from '../services/ai';
+import { segmentSearchRequests, ZoneIntentRequest, AITimeoutError, AIExtractionFailedError } from '../ai';
 import { findCrossTenantMatches } from '../services/blindMatching';
 import { validateFreeSearchText } from '../utils/searchValidation';
 import { calculateDaysRemaining } from '../utils/activeSearches';

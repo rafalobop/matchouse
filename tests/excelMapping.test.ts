@@ -7,7 +7,7 @@ import {
   ExcelMappingServiceError,
   HEURISTIC_CONFIDENCE_THRESHOLD
 } from '../src/services/excelMapping';
-import { ExcelColumnMappingSuggestion } from '../src/services/ai';
+import { ExcelColumnMappingSuggestion } from '../src/ai';
 
 // Mock del builder encadenable de Supabase, acotado a las dos operaciones que usa
 // excelMapping.ts: `select().eq().eq().maybeSingle()` (lectura del mapeo guardado) y

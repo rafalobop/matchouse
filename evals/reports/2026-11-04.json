@@ -1,0 +1,86 @@
+{
+  "date": "2026-11-04",
+  "reports": [
+    {
+      "operation": "extract-intent",
+      "totalCases": 78,
+      "executedCases": 78,
+      "executionErrors": [],
+      "criticalFailure": false,
+      "latency": {
+        "p50": 1496,
+        "p95": 2727,
+        "meanMs": 1568.1923076923076
+      },
+      "metrics": {
+        "operationMatchRate": 0.9743589743589743,
+        "propertyTypeMatchRate": 0.9358974358974359,
+        "currencyMatchRate": 0.9743589743589743,
+        "countryMatchRate": 0.9871794871794872,
+        "bedroomsMatchRate": 1,
+        "budgetMeanAbsError": 0,
+        "budgetNullMismatchRate": 0,
+        "zonesPrecision": 0.6730769230769231,
+        "zonesRecall": 0.6730769230769231,
+        "keyFeaturesPrecision": 0.9807692307692307,
+        "keyFeaturesRecall": 0.9871794871794872,
+        "desconocidaRate": 0.0641025641025641,
+        "falseDesconocidaRate": 0.038461538461538464
+      }
+    },
+    {
+      "operation": "zone",
+      "totalCases": 30,
+      "executedCases": 30,
+      "executionErrors": [],
+      "criticalFailure": false,
+      "latency": {
+        "p50": 1445,
+        "p95": 1875,
+        "meanMs": 1418.5666666666666
+      },
+      "metrics": {
+        "zonaCorrectaRate": 0.9666666666666667,
+        "zonaPrecision": 0.9666666666666667,
+        "zonaRecall": 0.9666666666666667,
+        "dormitoriosMatchRate": 1,
+        "caracteristicasPrecision": 1,
+        "caracteristicasRecall": 1,
+        "operacionMatchRate": 1,
+        "desconocidaRate": 0.13333333333333333,
+        "falseDesconocidaRate": 0
+      }
+    },
+    {
+      "operation": "segment",
+      "totalCases": 27,
+      "executedCases": 27,
+      "executionErrors": [],
+      "criticalFailure": false,
+      "latency": {
+        "p50": 1212,
+        "p95": 1495,
+        "meanMs": 1219.148148148148
+      },
+      "metrics": {
+        "segmentCountMatchRate": 1,
+        "segmentExactMatchRate": 0.6296296296296297
+      }
+    },
+    {
+      "operation": "excel-mapping",
+      "totalCases": 25,
+      "executedCases": 25,
+      "executionErrors": [],
+      "criticalFailure": false,
+      "latency": {
+        "p50": 2955,
+        "p95": 3412,
+        "meanMs": 3014.44
+      },
+      "metrics": {
+        "fieldAccuracy": 0.9927272727272727
+      }
+    }
+  ]
+}

@@ -36,9 +36,15 @@ src/
 ├── routes/*Routes.ts      # un router por dominio: auth, profile, upload, catalog, search, matches,
 │                          # notifications, internal — define paths/middleware (auth, rate limit)
 ├── controllers/*Controller.ts  # la lógica de request/response de cada router, en pares 1:1
-├── services/               # lógica de negocio pura: ai.ts (extracción/IA), blindMatching.ts
-│                          # (motor de matching), excel.ts (parseo de cartera), webPush.ts,
-│                          # notifier-email.ts, realtimeHub.ts (WebSocket), searchExpiration.ts, etc.
+├── ai/                     # capa de IA (BE-06): schemas/ (un schema Zod por operación),
+│                          # providers/ (GeminiProvider/OpenAIProvider/FallbackProvider),
+│                          # operations/ (extractFromTextInput, extractZoneIntent,
+│                          # segmentSearchRequests, suggestExcelColumnMapping), prompts.ts,
+│                          # index.ts (único punto de entrada público)
+├── services/               # lógica de negocio pura: blindMatching.ts (motor de matching),
+│                          # excel.ts (parseo de cartera), webPush.ts, notifier-email.ts,
+│                          # realtimeHub.ts (WebSocket), searchExpiration.ts, llmCallsRepository.ts
+│                          # (persistencia de métricas de IA), tracing.ts (Langfuse), etc.
 ├── config/env.ts          # validación fail-fast de variables de entorno al arrancar
 ├── utils/                 # helpers puros (rate limiting, validaciones, whitelist de body, etc.)
 └── types/database.types.ts # tipos generados desde el schema real de Supabase (no se edita a mano)

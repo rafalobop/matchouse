@@ -9,7 +9,7 @@ import {
   BudgetMatchingStrategy,
   FeaturesMatchingStrategy
 } from '../src/utils/matcher';
-import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../src/services/ai';
+import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../src/ai';
 import { Property } from '../src/services/excel';
 
 function baseRequest(overrides: Partial<ExtractedRealEstateRequest> = {}): ExtractedRealEstateRequest {

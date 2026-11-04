@@ -1,4 +1,4 @@
-import { extractFromTextInput, extractZoneIntent } from './ai';
+import { extractFromTextInput, extractZoneIntent } from '../ai';
 import { findCrossTenantMatches } from './blindMatching';
 import { sendWebPushToTenant, buildIncomingMatchPushPayload, hasActivePushSubscriptions } from './webPush';
 import { sendIncomingMatchEmailFallback } from './notifier-email';

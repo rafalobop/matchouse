@@ -1,11 +1,11 @@
 # Evals — datasets de calidad de extracción LLM
 
 Datasets de casos con respuesta esperada (`expected`) para medir la calidad real de cada
-operación de IA del backend (`src/services/ai.ts`), no solo el plumbing que ya cubre
+operación de IA del backend (`src/ai/`, ver BE-06), no solo el plumbing que ya cubre
 `tests/ai.test.ts` (que mockea el LLM). Implementa BE-01 del backlog de IA.
 
 El runner que ejecuta estos datasets contra el LLM real (`pnpm eval`, `evals/run.ts`) es BE-02 —
-corre el pipeline completo de `ai.ts` (con fallback Gemini→OpenAI, como en producción). BE-46
+corre el pipeline completo de `src/ai/` (con fallback Gemini→OpenAI, como en producción). BE-46
 (`pnpm eval:compare-models`, `evals/compare-models.ts`) corre los mismos datasets contra UN modelo
 aislado por vez (sin fallback), para comparar accuracy × costo × latencia entre modelos — ver
 `docs/model-selection.md`. Las funciones de carga de datasets y cálculo de métricas que usan ambos
@@ -13,7 +13,7 @@ scripts viven en `evals/metrics.ts`, no duplicadas.
 
 ## Eval gate de CI (BE-05)
 
-`.github/workflows/eval-gate.yml` corre en cada PR que toca `src/services/ai.ts` o `evals/**`: una
+`.github/workflows/eval-gate.yml` corre en cada PR que toca `src/ai/**` o `evals/**`: una
 muestra chica (`pnpm eval --max-cases 10`) de los 4 datasets, comparada contra el baseline
 commiteado en la rama base (`pnpm eval:compare-baseline`, `evals/compare-to-baseline.ts`) — falla
 el job si algún campo retrocede más de 5 puntos porcentuales, y publica el resultado como
@@ -68,7 +68,7 @@ Campos comunes a los 4 archivos:
   `seg-`, `em-`). No reusar ni reordenar IDs existentes — un reporte de evals puede referenciarlos.
 - `input`: el input real que recibe la función de la operación (ver detalle por archivo abajo).
 - `expected`: la salida esperada, en el mismo shape que devuelve la función pública de
-  `src/services/ai.ts` para esa operación (después de normalizar, no la respuesta cruda del LLM).
+  `src/ai/` para esa operación (después de normalizar, no la respuesta cruda del LLM).
 - `tags`: array de strings para filtrar/agrupar casos en los reportes. Tags en uso: `zona-explicita`,
   `moneda-explicita`, `moneda-implicita`, `multi-zona`, `multi-busqueda`, `multi-feature`,
   `caracteristica-especial`, `typo`, `ruido-whatsapp`, `adversarial`, `sin-presupuesto`,
@@ -80,7 +80,7 @@ Campos comunes a los 4 archivos:
 
 - `input`: `string` — el texto libre tal cual lo escribiría un usuario en el formulario de
   búsqueda (lo que recibe `extractFromTextInput(freeText)`).
-- `expected`: objeto `ExtractedRealEstateRequest` (ver `src/services/ai.ts`): `operation`,
+- `expected`: objeto `ExtractedRealEstateRequest` (ver `src/ai/`): `operation`,
   `property_type`, `zones`, `max_budget`, `currency`, `bedrooms`, `key_features`, `country`.
 - Los `zones` esperados respetan el mapeo de barrios a municipios que hoy vive hardcodeado en el
   prompt del Agente 1 (SYSTEM_INSTRUCTIONS_AGENT1, regla 3) — ese mapeo se va a eliminar en BE-10,
@@ -110,7 +110,7 @@ Campos comunes a los 4 archivos:
   el caso la simula (tercer argumento opcional de `extractZoneIntent`). `null` si el caso no pasa
   ninguna.
 - `expected`: solo los 4 campos que el LLM controla directamente, ya con el fill de
-  `operacion_hint` aplicado (ver `normalizeAgent2` en `ai.ts`): `ubicaciones` (menciones de
+  `operacion_hint` aplicado (ver `toZoneIntentPlaceholder` en `src/ai/operations/extractZoneIntent.ts`): `ubicaciones` (menciones de
   ubicación en texto plano, SIN resolver contra `neighborhoods` — esa resolución pasa por DB en
   `resolveZoneIntent` y no es parte de este dataset), `dormitorios_min`, `caracteristicas_claves`,
   `operacion` (`'ALQUILER' | 'COMPRA' | 'DESCONOCIDO'`).

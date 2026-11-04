@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { supabase as serviceRoleSupabase } from './supabase';
 import { checkMatch } from '../utils/matcher';
-import { ExtractedRealEstateRequest, ZoneIntentRequest, ZoneStatus } from './ai';
+import { ExtractedRealEstateRequest, ZoneIntentRequest, ZoneStatus } from '../ai';
 import { Property } from './excel';
 import { logger } from './logger';
 import { resolvePropertyZoneId, resolveMultipleNeighborhoodsByText } from './zonesService';

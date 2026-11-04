@@ -10,7 +10,7 @@ import {
   HeuristicMappingResult,
   FieldMatch
 } from '../utils/excelHeaderMatcher';
-import { suggestExcelColumnMapping, ExcelColumnMappingSuggestion } from './ai';
+import { suggestExcelColumnMapping, ExcelColumnMappingSuggestion } from '../ai';
 
 // Contrato explícito user-facing vs. debug (auditoria.md #7): `userFacing: true` marca un mensaje
 // redactado a mano, seguro para devolver tal cual al cliente (ej. validación de negocio). Con

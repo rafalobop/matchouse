@@ -1,6 +1,6 @@
 // KAN-70: extraído de src/index.ts (nació ahí para las llamadas a Supabase Auth en
-// tenantAuthMiddleware/session/exchange-token) a un módulo compartido para que src/services/ai.ts
-// pueda reusarlo sin depender de index.ts. Comportamiento sin cambios.
+// tenantAuthMiddleware/session/exchange-token) a un módulo compartido para que src/ai/ (BE-06,
+// antes src/services/ai.ts) pueda reusarlo sin depender de index.ts. Comportamiento sin cambios.
 
 /**
  * Error específico lanzado cuando una promesa no resuelve dentro del plazo de `withTimeout`.

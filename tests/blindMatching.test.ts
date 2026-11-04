@@ -10,7 +10,7 @@ import {
   MAX_CROSS_TENANT_MATCHES,
   MAX_QUERY_ROWS
 } from '../src/services/blindMatching';
-import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../src/services/ai';
+import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../src/ai';
 import { Property } from '../src/services/excel';
 import { __clearZoneKeywordCacheForTests } from '../src/services/zonesService';
 

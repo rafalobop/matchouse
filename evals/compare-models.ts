@@ -1,32 +1,35 @@
-// BE-46: comparativa de modelos — corre los mismos datasets de evals/ contra UNA estrategia/modelo
-// aislada por vez (sin el loop de fallback de AIExtractorContext), para poder medir accuracy ×
-// costo × latencia de cada modelo por separado y justificar con datos la elección de
-// gemini-2.5-flash-lite como primario / gpt-4o-mini como fallback (hoy hardcodeada sin evidencia,
-// ver ai.ts). Resultado consumido por docs/model-selection.md.
+// BE-46: comparativa de modelos — corre los mismos datasets de evals/ contra UN modelo aislado
+// por vez (sin el loop de fallback de FallbackProvider), para poder medir accuracy × costo ×
+// latencia de cada modelo por separado y justificar con datos la elección de
+// gemini-2.5-flash-lite como primario / gpt-4o-mini como fallback. Resultado consumido por
+// docs/model-selection.md.
 //
+// BE-06 (reescrito): antes llamaba directo a los métodos de GeminiStrategy/OpenAIStrategy y
+// normalizaba a mano con normalizeAgent1/normalizeAgent2/etc. Ahora llama directo a
+// provider.generateStructured(schema) — la validación de schema (antes manual) la hace el
+// provider mismo, así que el resultado ya viene tipado y validado; solo queda aplicar la MISMA
+// limpieza de negocio post-schema que usan las operaciones reales (toZoneIntentPlaceholder para
+// zona, toSegments para el segmentador — exportadas desde src/ai justo para esta reutilización).
 // A propósito NO pasa por extractFromTextInput/extractZoneIntent/etc. (que sí tienen fallback,
-// tracing y persistencia en llm_calls) — acá se llama directo al método de la estrategia y se
-// normaliza con las mismas funciones puras de ai.ts (normalizeAgent1/normalizeAgent2/
-// normalizeSegmentResult/normalizeExcelMappingResult), así que el resultado es exactamente
-// comparable al de evals/run.ts pero aislando una sola llamada LLM por caso, sin red de
-// seguridad de fallback ni resolución de zona contra la base (ninguna métrica de esta operación
-// depende de zona_ids/zona_nombres — ver evals/metrics.ts#ZoneActualShape).
+// tracing y persistencia en llm_calls) ni por resolveZoneIntent (ninguna métrica de esta
+// operación depende de zona_ids/zona_nombres — ver evals/metrics.ts#ZoneActualShape).
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-  GeminiStrategy,
-  OpenAIStrategy,
-  AIStrategy,
-  UsageCallback,
-  normalizeAgent1,
-  normalizeAgent2,
-  normalizeSegmentResult,
-  normalizeExcelMappingResult,
+  GeminiProvider,
+  OpenAIProvider,
+  LLMProvider,
+  ExtractIntentSchema,
+  ZoneLlmOutputSchema,
+  SegmentSchema,
+  ExcelMappingSchema,
+  toZoneIntentPlaceholder,
+  toSegments,
   SYSTEM_INSTRUCTIONS_AGENT1_TEXT_INPUT,
   SYSTEM_INSTRUCTIONS_AGENT2,
   SYSTEM_INSTRUCTIONS_SEGMENTER,
   SYSTEM_INSTRUCTIONS_EXCEL_MAPPING
-} from '../src/services/ai';
+} from '../src/ai';
 import { estimateCostUsd } from '../src/config/modelPricing';
 import {
   ALL_OPERATIONS,
@@ -59,21 +62,20 @@ import {
 interface ModelCandidate {
   label: string;
   model: string;
-  makeStrategy: () => AIStrategy;
+  makeProvider: () => LLMProvider;
 }
 
 const CANDIDATES: ModelCandidate[] = [
-  { label: 'gemini-2.5-flash-lite (primario actual)', model: 'gemini-2.5-flash-lite', makeStrategy: () => new GeminiStrategy('gemini-2.5-flash-lite') },
-  { label: 'gpt-4o-mini (fallback actual)', model: 'gpt-4o-mini', makeStrategy: () => new OpenAIStrategy('gpt-4o-mini') },
-  { label: 'gemini-2.5-flash (candidato "más grande")', model: 'gemini-2.5-flash', makeStrategy: () => new GeminiStrategy('gemini-2.5-flash') }
+  { label: 'gemini-2.5-flash-lite (primario actual)', model: 'gemini-2.5-flash-lite', makeProvider: () => new GeminiProvider('gemini-2.5-flash-lite') },
+  { label: 'gpt-4o-mini (fallback actual)', model: 'gpt-4o-mini', makeProvider: () => new OpenAIProvider('gpt-4o-mini') },
+  { label: 'gemini-2.5-flash (candidato "más grande")', model: 'gemini-2.5-flash', makeProvider: () => new GeminiProvider('gemini-2.5-flash') }
 ];
 
 // --- Throttle + retry ante 429 de cuota ---
 // Hallazgo de la primera corrida real (2026-10-30): con la API key de Gemini free tier usada en
 // este entorno, gemini-2.5-flash-lite y gemini-2.5-flash devolvieron 429 RESOURCE_EXHAUSTED en la
 // mayoría de los casos (10 req/min y 5 req/min respectivamente — ver
-// https://ai.google.dev/gemini-api/docs/rate-limits) al no haber ningún espaciado entre llamadas
-// (ai.ts no reintenta llamadas a LLM, withRetry.ts documenta explícitamente que no es para IA).
+// https://ai.google.dev/gemini-api/docs/rate-limits) al no haber ningún espaciado entre llamadas.
 // gpt-4o-mini no tuvo ningún 429 en la misma corrida (0 errores en 160 casos). Sin este fix, la
 // comparativa mediría cuota agotada, no calidad del modelo.
 const RATE_LIMIT_MIN_INTERVAL_MS: Record<string, number> = {
@@ -121,11 +123,9 @@ function isRateLimitError(error: unknown): boolean {
 
 // Hallazgo real (2026-10-30, mismo día): además del límite por minuto, el free tier de Gemini
 // tiene un tope DIARIO por modelo ("Generate content requests per day limit exceeded", 20 req/día
-// para gemini-2.5-flash-lite) — con un retryDelay del orden de horas, no segundos. Reintentar o
-// (peor) dormir ese retryDelay literal rompería el script durante horas. Una vez detectado, se
-// marca el modelo como agotado por hoy — ninguna llamada posterior a ESE modelo intenta siquiera
-// pegarle a la red, solo falla rápido (evita gastar los pocos requests que puedan quedar en
-// reintentos inútiles y acelera el resto de la corrida).
+// para gemini-2.5-flash-lite) — con un retryDelay del orden de horas, no segundos. Una vez
+// detectado, se marca el modelo como agotado por hoy — ninguna llamada posterior a ESE modelo
+// intenta siquiera pegarle a la red, solo falla rápido.
 const dailyQuotaExhausted = new Set<string>();
 
 function isDailyQuotaError(error: unknown): boolean {
@@ -134,13 +134,10 @@ function isDailyQuotaError(error: unknown): boolean {
 }
 
 // El throttle proactivo evita la gran mayoría de los 429 por minuto; esto es la red de seguridad
-// para el resto (ráfagas en el borde de la ventana, retraso de reloj, etc.) — hasta 3 reintentos,
-// esperando lo que el proveedor indique (`retryDelay`) o 65s por defecto (la ventana de cuota por
-// minuto de Gemini es de 60s). Un 429 de cuota DIARIA nunca se reintenta (ver dailyQuotaExhausted
-// arriba). Cualquier otro error se relanza de inmediato, sin reintentar.
-// `onLatency` reporta SOLO el tiempo del intento que efectivamente respondió (éxito o error no
-// reintentable) — el tiempo de espera de throttleForModel/sleep nunca entra en la latencia
-// reportada, para no mezclar "cuánto tardó el proveedor" con "cuánto esperamos por cuota".
+// para el resto — hasta 3 reintentos, esperando lo que el proveedor indique (`retryDelay`) o 65s
+// por defecto. Un 429 de cuota DIARIA nunca se reintenta (ver dailyQuotaExhausted arriba).
+// `onLatency` reporta SOLO el tiempo del intento que efectivamente respondió — el tiempo de
+// espera de throttleForModel/sleep nunca entra en la latencia reportada.
 async function callWithRateLimitRetry<T>(model: string, fn: () => Promise<T>, onLatency: (ms: number) => void): Promise<T> {
   if (dailyQuotaExhausted.has(model)) {
     onLatency(0);
@@ -171,7 +168,7 @@ async function callWithRateLimitRetry<T>(model: string, fn: () => Promise<T>, on
   throw new Error('unreachable');
 }
 
-// --- Ejecuta un dataset completo contra UNA estrategia, capturando costo por caso ---
+// --- Ejecuta un dataset completo contra UN provider, capturando costo por caso ---
 
 interface ExecutedCaseWithCost<TMetrics> extends ExecutedCase<TMetrics> {
   costUsd: number;
@@ -180,18 +177,13 @@ interface ExecutedCaseWithCost<TMetrics> extends ExecutedCase<TMetrics> {
 async function runCasesWithCost<TCase extends { id: string; tags: string[] }, TMetrics>(
   cases: TCase[],
   model: string,
-  callAndEvaluate: (c: TCase, onUsage: UsageCallback, onLatency: (ms: number) => void) => Promise<TMetrics>
+  callAndEvaluate: (c: TCase, onLatency: (ms: number) => void) => Promise<{ metrics: TMetrics; usage?: { inputTokens: number; outputTokens: number } }>
 ): Promise<ExecutedCaseWithCost<TMetrics>[]> {
   const results: ExecutedCaseWithCost<TMetrics>[] = [];
   for (const c of cases) {
-    let usage: { inputTokens: number; outputTokens: number } | undefined;
     let latencyMs = 0;
     try {
-      const metrics = await callAndEvaluate(
-        c,
-        info => { usage = { inputTokens: info.inputTokens, outputTokens: info.outputTokens }; },
-        ms => { latencyMs = ms; }
-      );
+      const { metrics, usage } = await callAndEvaluate(c, ms => { latencyMs = ms; });
       results.push({ id: c.id, tags: c.tags, latencyMs, metrics, costUsd: estimateCostUsd(model, usage) });
     } catch (error) {
       results.push({ id: c.id, tags: c.tags, latencyMs, executionError: (error as Error).message, costUsd: 0 });
@@ -207,7 +199,7 @@ function meanCost(results: ExecutedCaseWithCost<unknown>[]): number {
   return mean(successful.map(r => r.costUsd));
 }
 
-// --- Una operación contra una estrategia aislada ---
+// --- Una operación contra un provider aislado ---
 
 interface OperationComparisonResult {
   operation: OperationName;
@@ -220,17 +212,18 @@ interface OperationComparisonResult {
 }
 
 // maxCasesPerOp: toma solo los primeros N casos de cada dataset — pensado para modelos con cuota
-// diaria de free tier escasa (ver dailyQuotaExhausted arriba), donde correr el dataset completo
-// (78/30/27/25 casos) no entra en lo que queda de cuota del día. undefined = dataset completo.
+// diaria de free tier escasa (ver dailyQuotaExhausted arriba). undefined = dataset completo.
 async function runOperationForStrategy(op: OperationName, candidate: ModelCandidate, maxCasesPerOp?: number): Promise<OperationComparisonResult> {
-  const strategy = candidate.makeStrategy();
+  const provider = candidate.makeProvider();
   const limitCases = <T,>(all: T[]): T[] => (maxCasesPerOp !== undefined ? all.slice(0, maxCasesPerOp) : all);
 
   if (op === 'extract-intent') {
     const cases = limitCases(loadJsonl<ExtractIntentCase>(DATASET_FILES[op]));
-    const results = await runCasesWithCost(cases, candidate.model, async (c, onUsage, onLatency) => {
-      const raw = await callWithRateLimitRetry(candidate.model, () => strategy.extractFromFreeText(c.input, SYSTEM_INSTRUCTIONS_AGENT1_TEXT_INPUT, onUsage), onLatency);
-      return computeExtractIntentMetrics(c.expected, normalizeAgent1(raw));
+    const results = await runCasesWithCost(cases, candidate.model, async (c, onLatency) => {
+      const result = await callWithRateLimitRetry(candidate.model, () => provider.generateStructured({
+        op: 'extract-intent', system: SYSTEM_INSTRUCTIONS_AGENT1_TEXT_INPUT, user: buildExtractIntentUserPrompt(c.input), schema: ExtractIntentSchema
+      }), onLatency);
+      return { metrics: computeExtractIntentMetrics(c.expected, result.data), usage: result.usage };
     });
     const agg = aggregateExtractIntent(results);
     return {
@@ -260,10 +253,12 @@ async function runOperationForStrategy(op: OperationName, candidate: ModelCandid
 
   if (op === 'zone') {
     const cases = limitCases(loadJsonl<ZoneCase>(DATASET_FILES[op]));
-    const results = await runCasesWithCost(cases, candidate.model, async (c, onUsage, onLatency) => {
-      const raw = await callWithRateLimitRetry(candidate.model, () => strategy.extractZoneIntent(c.input, SYSTEM_INSTRUCTIONS_AGENT2, c.operacion_hint ?? undefined, onUsage), onLatency);
-      const actual = normalizeAgent2(raw, c.operacion_hint ?? undefined);
-      return computeZoneMetrics(c.expected, actual);
+    const results = await runCasesWithCost(cases, candidate.model, async (c, onLatency) => {
+      const result = await callWithRateLimitRetry(candidate.model, () => provider.generateStructured({
+        op: 'extract-zone', system: SYSTEM_INSTRUCTIONS_AGENT2, user: buildZoneUserPrompt(c.input, c.operacion_hint ?? undefined), schema: ZoneLlmOutputSchema
+      }), onLatency);
+      const actual = toZoneIntentPlaceholder(result.data, c.operacion_hint ?? undefined);
+      return { metrics: computeZoneMetrics(c.expected, actual), usage: result.usage };
     });
     const agg = aggregateZone(results);
     return {
@@ -289,10 +284,12 @@ async function runOperationForStrategy(op: OperationName, candidate: ModelCandid
 
   if (op === 'segment') {
     const cases = limitCases(loadJsonl<SegmentCase>(DATASET_FILES[op]));
-    const results = await runCasesWithCost(cases, candidate.model, async (c, onUsage, onLatency) => {
-      const raw = await callWithRateLimitRetry(candidate.model, () => strategy.segmentSearchRequests(c.input, SYSTEM_INSTRUCTIONS_SEGMENTER, onUsage), onLatency);
-      const actual = normalizeSegmentResult(raw, c.input);
-      return computeSegmentMetrics(c.expected.segments, actual);
+    const results = await runCasesWithCost(cases, candidate.model, async (c, onLatency) => {
+      const result = await callWithRateLimitRetry(candidate.model, () => provider.generateStructured({
+        op: 'segment', system: SYSTEM_INSTRUCTIONS_SEGMENTER, user: buildSegmentUserPrompt(c.input), schema: SegmentSchema
+      }), onLatency);
+      const actual = toSegments(result.data, c.input);
+      return { metrics: computeSegmentMetrics(c.expected.segments, actual), usage: result.usage };
     });
     const agg = aggregateSegment(results);
     return {
@@ -311,10 +308,11 @@ async function runOperationForStrategy(op: OperationName, candidate: ModelCandid
 
   // excel-mapping
   const cases = limitCases(loadJsonl<ExcelMappingCase>(DATASET_FILES[op]));
-  const results = await runCasesWithCost(cases, candidate.model, async (c, onUsage, onLatency) => {
-    const raw = await callWithRateLimitRetry(candidate.model, () => strategy.suggestExcelColumnMapping(c.input.headers, SYSTEM_INSTRUCTIONS_EXCEL_MAPPING, onUsage), onLatency);
-    const actual = normalizeExcelMappingResult(raw);
-    return computeExcelMappingMetrics(c.expected.mapping, actual);
+  const results = await runCasesWithCost(cases, candidate.model, async (c, onLatency) => {
+    const result = await callWithRateLimitRetry(candidate.model, () => provider.generateStructured({
+      op: 'map-excel-columns', system: SYSTEM_INSTRUCTIONS_EXCEL_MAPPING, user: buildExcelMappingUserPrompt(c.input.headers), schema: ExcelMappingSchema
+    }), onLatency);
+    return { metrics: computeExcelMappingMetrics(c.expected.mapping, result.data.mapping), usage: result.usage };
   });
   const agg = aggregateExcelMapping(results);
   return {
@@ -328,6 +326,35 @@ async function runOperationForStrategy(op: OperationName, candidate: ModelCandid
   };
 }
 
+// --- Prompts de usuario (idénticos a los que arman las operaciones reales en src/ai/operations) ---
+
+function buildExtractIntentUserPrompt(freeText: string): string {
+  return `Analiza el texto libre provisto por el usuario en un formulario de búsqueda, estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:
+<USER_TEXT>
+${freeText}
+</USER_TEXT>`;
+}
+
+function buildZoneUserPrompt(messageTexto: string, operacion?: string): string {
+  return operacion && operacion !== 'desconocido'
+    ? `Operación identificada por el Agente 1: ${operacion}\n\nClasifica la zona e intención del texto provisto estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:\n<USER_TEXT>\n${messageTexto}\n</USER_TEXT>`
+    : `Clasifica la zona e intención del texto provisto estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:\n<USER_TEXT>\n${messageTexto}\n</USER_TEXT>`;
+}
+
+function buildSegmentUserPrompt(messageTexto: string): string {
+  return `Analiza el texto provisto estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:
+<USER_TEXT>
+${messageTexto}
+</USER_TEXT>`;
+}
+
+function buildExcelMappingUserPrompt(headers: string[]): string {
+  return `Estas son las columnas (headers) de una hoja de cálculo Excel, en el orden en que aparecen, dentro de las etiquetas <EXCEL_HEADERS> y </EXCEL_HEADERS>:
+<EXCEL_HEADERS>
+${JSON.stringify(headers)}
+</EXCEL_HEADERS>`;
+}
+
 // --- Reporte ---
 
 interface ModelReport {
@@ -336,7 +363,7 @@ interface ModelReport {
   operations: OperationComparisonResult[];
   // Una "búsqueda" real de producción hace 1 llamada de extract-intent + 1 de zone por segmento
   // (ver BE-09: hoy son 2 llamadas separadas) — segment/excel-mapping son flujos distintos, no se
-  // sumsn acá. Si extract-intent o zone no corrieron (--op), queda en 0, no indefinido.
+  // suman acá. Si extract-intent o zone no corrieron (--ops), queda en 0, no indefinido.
   costPerSearchUsd: number;
   costPer1000SearchesUsd: number;
 }
@@ -346,7 +373,7 @@ function buildMarkdownReport(date: string, modelReports: ModelReport[]): string 
   lines.push(`# Comparativa de modelos — ${date}`);
   lines.push('');
   lines.push('Generado por `pnpm eval:compare-models` (evals/compare-models.ts, BE-46) — cada modelo');
-  lines.push('corre AISLADO (sin el fallback de `AIExtractorContext`) contra los mismos datasets de');
+  lines.push('corre AISLADO (sin el fallback de `FallbackProvider`) contra los mismos datasets de');
   lines.push('`evals/`, para medir accuracy/latencia/costo por modelo sin que un fallo de uno se');
   lines.push('tape con el resultado del otro. Ver `docs/model-selection.md` para la tabla resumen y');
   lines.push('la decisión final.');
@@ -397,9 +424,6 @@ function parseValueArg(args: string[], flag: string): string | null {
 async function main() {
   const args = process.argv.slice(2);
 
-  // --max-cases: para modelos con cuota diaria de free tier escasa, no entra correr el dataset
-  // completo en un solo día (ver dailyQuotaExhausted) — ver docs/model-selection.md para cómo se
-  // usó esto en la corrida real.
   const maxCasesArg = parseValueArg(args, '--max-cases');
   const maxCasesPerOp = maxCasesArg !== null ? parseInt(maxCasesArg, 10) : undefined;
   if (maxCasesArg !== null && (!Number.isFinite(maxCasesPerOp) || (maxCasesPerOp as number) <= 0)) {
@@ -408,8 +432,7 @@ async function main() {
     return;
   }
 
-  // --out-suffix: nombre de archivo distinto para no pisar un reporte previo del mismo día (ej. al
-  // correr una muestra reducida de un modelo por separado del resto).
+  // --out-suffix: nombre de archivo distinto para no pisar un reporte previo del mismo día.
   const outSuffix = parseValueArg(args, '--out-suffix') ?? '';
 
   const requestedOps = parseListArg(args, '--ops');

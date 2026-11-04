@@ -4,7 +4,7 @@
 // completo de ai.ts en run.ts, una única estrategia/modelo aislada en compare-models.ts).
 import * as fs from 'fs';
 import * as path from 'path';
-import { ExtractedRealEstateRequest, ExcelColumnMappingSuggestion } from '../src/services/ai';
+import { ExtractedRealEstateRequest, ExcelColumnMappingSuggestion } from '../src/ai';
 
 // --- Tipos de los datasets (ver evals/README.md) ---
 

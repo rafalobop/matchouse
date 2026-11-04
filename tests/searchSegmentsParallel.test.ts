@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import { AITimeoutError } from '../src/services/ai';
+import { AITimeoutError } from '../src/ai';
 
 // KAN-132: no hay harness de supertest/Express en este repo (src/index.ts no exporta `app`, ver
 // tests/errorMessageLeak.test.ts), así que se combina: 1) un test a nivel de código fuente que

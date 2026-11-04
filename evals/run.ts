@@ -1,10 +1,10 @@
 // BE-02: eval runner — corre los datasets de evals/ (BE-01) contra la implementación REAL de
-// src/services/ai.ts (llama a Gemini/OpenAI de verdad, no hay mocks) y escribe un reporte
+// src/ai/ (llama a Gemini/OpenAI de verdad, no hay mocks) y escribe un reporte
 // reproducible por campo, latencia y tasa de "no supo responder" (DESCONOCIDO/otro). Pensado para
 // correr local (`pnpm eval`) y, más adelante, como gate de CI (BE-05).
 //
 // BE-46: las definiciones de dataset y las funciones de métricas/agregación viven ahora en
-// evals/metrics.ts — este archivo solo orquesta: llama al pipeline completo de ai.ts (con
+// evals/metrics.ts — este archivo solo orquesta: llama al pipeline completo de src/ai/ (con
 // fallback Gemini→OpenAI, como en producción) y arma el reporte. evals/compare-models.ts reusa el
 // mismo módulo de métricas para aislar un único modelo por vez.
 //
@@ -22,7 +22,7 @@ import {
   segmentSearchRequests,
   suggestExcelColumnMapping,
   ZoneIntentRequest
-} from '../src/services/ai';
+} from '../src/ai';
 import { config } from '../src/config/env';
 import {
   ALL_OPERATIONS,
@@ -187,7 +187,7 @@ function buildMarkdownReport(date: string, reports: OperationReport[]): string {
   lines.push(`# Reporte de evals — ${date}`);
   lines.push('');
   lines.push('Generado por `pnpm eval` (evals/run.ts, BE-02) contra la implementación real de');
-  lines.push('`src/services/ai.ts` — sin mocks, llamadas reales a los proveedores de IA configurados');
+  lines.push('`src/ai/` — sin mocks, llamadas reales a los proveedores de IA configurados');
   lines.push('(pipeline completo con fallback Gemini→OpenAI, como en producción).');
   lines.push('');
   lines.push('**Costo/tokens de ESTE pipeline (con fallback):** cada llamada queda persistida en la');
