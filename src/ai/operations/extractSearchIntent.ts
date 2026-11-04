@@ -7,7 +7,7 @@ import { FallbackProvider } from '../providers/fallbackProvider';
 import { AllProvidersFailedError } from '../providers/types';
 import { SearchIntentSchema, SearchIntent } from '../schemas/searchIntent.schema';
 import { ZoneIntentRequest } from '../schemas/zoneIntent.schema';
-import { SYSTEM_INSTRUCTIONS_SEARCH_INTENT } from '../prompts';
+import { SYSTEM_INSTRUCTIONS_SEARCH_INTENT, SEARCH_INTENT_PROMPT_VERSION } from '../prompts';
 
 // KAN-70: error específico para cuando TODAS las estrategias de IA configuradas agotaron su
 // timeout en el camino síncrono de un request HTTP (POST /api/search, ver src/index.ts). A
@@ -107,7 +107,7 @@ export async function extractSearchIntent(
   try {
     const intent = await fallbackProvider.generateStructured({
       op: 'extract-search-intent',
-      promptVersion: 'search-intent-v1',
+      promptVersion: SEARCH_INTENT_PROMPT_VERSION,
       system: SYSTEM_INSTRUCTIONS_SEARCH_INTENT,
       user: buildUserPrompt(freeText),
       schema: SearchIntentSchema,

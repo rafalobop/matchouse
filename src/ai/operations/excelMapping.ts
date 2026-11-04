@@ -2,7 +2,7 @@ import { logger } from '../../services/logger';
 import { FallbackProvider } from '../providers/fallbackProvider';
 import { AllProvidersFailedError } from '../providers/types';
 import { ExcelMappingSchema, ExcelColumnMappingSuggestion } from '../schemas/excelMapping.schema';
-import { SYSTEM_INSTRUCTIONS_EXCEL_MAPPING } from '../prompts';
+import { SYSTEM_INSTRUCTIONS_EXCEL_MAPPING, EXCEL_MAPPING_PROMPT_VERSION } from '../prompts';
 
 function buildUserPrompt(headers: string[]): string {
   return `Estas son las columnas (headers) de una hoja de cálculo Excel, en el orden en que aparecen, dentro de las etiquetas <EXCEL_HEADERS> y </EXCEL_HEADERS>:
@@ -25,7 +25,7 @@ export async function suggestExcelColumnMapping(
   try {
     const raw = await fallbackProvider.generateStructured({
       op: 'map-excel-columns',
-      promptVersion: 'excel-mapping-v1',
+      promptVersion: EXCEL_MAPPING_PROMPT_VERSION,
       system: SYSTEM_INSTRUCTIONS_EXCEL_MAPPING,
       user: buildUserPrompt(headers),
       schema: ExcelMappingSchema,

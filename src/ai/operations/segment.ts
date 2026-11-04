@@ -2,7 +2,7 @@ import { logger } from '../../services/logger';
 import { FallbackProvider } from '../providers/fallbackProvider';
 import { AllProvidersFailedError } from '../providers/types';
 import { SegmentSchema, SegmentLlmOutput } from '../schemas/segment.schema';
-import { SYSTEM_INSTRUCTIONS_SEGMENTER } from '../prompts';
+import { SYSTEM_INSTRUCTIONS_SEGMENTER, SEGMENTER_PROMPT_VERSION } from '../prompts';
 
 function buildUserPrompt(messageTexto: string): string {
   return `Analiza el texto provisto estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:
@@ -32,7 +32,7 @@ export async function segmentSearchRequests(
   try {
     const raw = await fallbackProvider.generateStructured({
       op: 'segment',
-      promptVersion: 'segmenter-v1',
+      promptVersion: SEGMENTER_PROMPT_VERSION,
       system: SYSTEM_INSTRUCTIONS_SEGMENTER,
       user: buildUserPrompt(messageTexto),
       schema: SegmentSchema,
