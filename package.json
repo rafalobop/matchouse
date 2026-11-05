@@ -11,7 +11,8 @@
     "test": "ts-node tests/runner.ts",
     "eval": "ts-node evals/run.ts",
     "eval:compare-models": "ts-node evals/compare-models.ts",
-    "eval:compare-baseline": "ts-node evals/compare-to-baseline.ts"
+    "eval:compare-baseline": "ts-node evals/compare-to-baseline.ts",
+    "eval:zone-resolution": "ts-node evals/run-zone-resolution.ts"
   },
   "keywords": [],
   "author": "",

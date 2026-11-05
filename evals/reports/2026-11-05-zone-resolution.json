@@ -1,0 +1,166 @@
+{
+  "date": "2026-11-05",
+  "totalPass": 12,
+  "total": 12,
+  "byTag": {
+    "keyword": {
+      "pass": 4,
+      "total": 4
+    },
+    "alias": {
+      "pass": 1,
+      "total": 1
+    },
+    "semantic-colloquial": {
+      "pass": 4,
+      "total": 4
+    },
+    "limitacion-conocida": {
+      "pass": 2,
+      "total": 2
+    },
+    "sin-sentido": {
+      "pass": 1,
+      "total": 1
+    },
+    "adversarial": {
+      "pass": 1,
+      "total": 1
+    },
+    "multi-zona": {
+      "pass": 1,
+      "total": 1
+    }
+  },
+  "results": [
+    {
+      "id": "zr-001",
+      "tags": [
+        "keyword"
+      ],
+      "pass": true,
+      "expected": "YERBA_BUENA",
+      "resolved": [
+        "YERBA_BUENA"
+      ]
+    },
+    {
+      "id": "zr-002",
+      "tags": [
+        "keyword"
+      ],
+      "pass": true,
+      "expected": "ZONA_CENTRO",
+      "resolved": [
+        "ZONA_CENTRO"
+      ]
+    },
+    {
+      "id": "zr-003",
+      "tags": [
+        "alias"
+      ],
+      "pass": true,
+      "expected": "YERBA_BUENA",
+      "resolved": [
+        "YERBA_BUENA"
+      ]
+    },
+    {
+      "id": "zr-004",
+      "tags": [
+        "keyword"
+      ],
+      "pass": true,
+      "expected": "BARRIO_NORTE",
+      "resolved": [
+        "BARRIO_NORTE"
+      ]
+    },
+    {
+      "id": "zr-005",
+      "tags": [
+        "semantic-colloquial"
+      ],
+      "pass": true,
+      "expected": "BARRIO_AEROPUERTO",
+      "resolved": [
+        "BARRIO_AEROPUERTO"
+      ]
+    },
+    {
+      "id": "zr-006",
+      "tags": [
+        "semantic-colloquial"
+      ],
+      "pass": true,
+      "expected": "MONUMENTO_BICENTENARIO",
+      "resolved": [
+        "MONUMENTO_BICENTENARIO"
+      ]
+    },
+    {
+      "id": "zr-007",
+      "tags": [
+        "semantic-colloquial"
+      ],
+      "pass": true,
+      "expected": "BARRIO_PRIVADO_QUINTA_AZUCENA",
+      "resolved": [
+        "BARRIO_PRIVADO_QUINTA_AZUCENA"
+      ]
+    },
+    {
+      "id": "zr-008",
+      "tags": [
+        "semantic-colloquial"
+      ],
+      "pass": true,
+      "expected": "CASA_DE_GOBIERNO",
+      "resolved": [
+        "CASA_DE_GOBIERNO"
+      ]
+    },
+    {
+      "id": "zr-009",
+      "tags": [
+        "limitacion-conocida"
+      ],
+      "pass": true,
+      "expected": null,
+      "resolved": []
+    },
+    {
+      "id": "zr-010",
+      "tags": [
+        "limitacion-conocida"
+      ],
+      "pass": true,
+      "expected": null,
+      "resolved": []
+    },
+    {
+      "id": "zr-011",
+      "tags": [
+        "sin-sentido",
+        "adversarial"
+      ],
+      "pass": true,
+      "expected": null,
+      "resolved": []
+    },
+    {
+      "id": "zr-012",
+      "tags": [
+        "multi-zona",
+        "keyword"
+      ],
+      "pass": true,
+      "expected": "VILLA_LUJAN",
+      "resolved": [
+        "VILLA_LUJAN",
+        "ZONA_TAFI_VIEJO"
+      ]
+    }
+  ]
+}

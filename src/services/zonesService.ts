@@ -1,5 +1,8 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import { supabase } from './supabase';
+import { logger } from './logger';
+import { config } from '../config/env';
+import { generateEmbedding, toPgVectorLiteral, EmbeddingServiceError } from './embeddings';
 
 export interface NeighborhoodGroup {
   id: string;
@@ -249,6 +252,58 @@ export interface NeighborhoodTextMatch {
   name: string;
 }
 
+// BE-20 (EP-07): umbral mínimo de similitud de coseno para aceptar un match semántico. Fijado
+// con datos reales (no a ojo): verificando `match_neighborhoods_by_embedding` contra frases
+// coloquiales reales, un match genuino y sin ambigüedad ("quiero vivir cerca de donde aterrizan
+// los aviones" -> BARRIO_AEROPUERTO) dio 0.55 con el segundo candidato lejos (0.39); una consulta
+// vaga sin una zona real en mente ("una zona tranquila, residencial, con countries") dio top-1 en
+// 0.48 con el segundo candidato muy cerca (0.46, señal de ambigüedad real); y un caso de cobertura
+// pobre del texto embebido (`TERMINAL_DE_OMNIBUS` solo tiene 3 alias cortos) dio un FALSO positivo
+// en 0.47. 0.5 separa el primer caso de los otros dos sin descartarlo — es conservador a
+// propósito: un falso negativo (quedar en DESCONOCIDA) es el mismo comportamiento de antes de
+// este ticket; un falso positivo (resolver a la zona incorrecta) es peor, porque bloquea o
+// entrega matches erróneos con falsa confianza.
+const SEMANTIC_MATCH_MIN_SIMILARITY = 0.5;
+
+interface SemanticMatchRow {
+  id: string;
+  name: string;
+  similarity: number;
+}
+
+/**
+ * Fallback semántico — se invoca SOLO cuando el keyword matching (`getZoneKeywordIndex`) no
+ * encontró ningún match para una mención. Nunca lanza: un fallo del proveedor de embeddings, del
+ * RPC, o la ausencia de `OPENAI_API_KEY` degradan a `null` (la mención queda sin resolver, mismo
+ * comportamiento que existía antes de BE-20) — el fallback es una mejora de recall, nunca puede
+ * convertirse en un nuevo punto de falla para `POST /api/search`.
+ */
+async function resolveNeighborhoodSemantically(mention: string, client: SupabaseClient): Promise<NeighborhoodTextMatch | null> {
+  if (!config.zoneSemanticFallbackEnabled) return null;
+
+  try {
+    const embedding = await generateEmbedding(mention);
+    const { data, error } = await client.rpc('match_neighborhoods_by_embedding', {
+      query_embedding: toPgVectorLiteral(embedding),
+      match_count: 1
+    });
+
+    if (error) {
+      logger.warn({ error: error.message, mention }, '[ZONES] Fallback semántico: el RPC falló, la mención queda sin resolver.');
+      return null;
+    }
+
+    const top = (data as SemanticMatchRow[] | null)?.[0];
+    if (!top || top.similarity < SEMANTIC_MATCH_MIN_SIMILARITY) return null;
+
+    return { id: top.id, name: top.name };
+  } catch (error) {
+    const detail = error instanceof EmbeddingServiceError ? error.message : error instanceof Error ? error.message : String(error);
+    logger.warn({ error: detail, mention }, '[ZONES] Fallback semántico: no se pudo generar el embedding, la mención queda sin resolver.');
+    return null;
+  }
+}
+
 /**
  * Resuelve la zona (`neighborhoods.id` + `name`) a partir de texto libre, buscando el nombre de
  * zona o alias más específico (más largo) contenido en el texto. Reemplaza al heurístico
@@ -257,6 +312,15 @@ export interface NeighborhoodTextMatch {
  * una lista estática de ~15 zonas. Devuelve `null` (no es un error) si ningún keyword conocido
  * aparece en el texto. KAN-92: expone también el `name` legible (no solo el `id`/UUID) para que
  * los llamadores puedan mostrarlo al usuario en vez del id interno.
+ *
+ * **Sin fallback semántico a propósito (BE-20/EP-07):** esta función resuelve la DIRECCIÓN de una
+ * PROPIEDAD durante alta/carga masiva (`resolvePropertyZoneId`/`resolvePropertiesZoneInfoBatch`,
+ * llamada potencialmente cientos de veces por una carga de Excel) — someter cada fila sin match a
+ * una llamada real a la API de embeddings sería costo sin control y, conceptualmente, una
+ * dirección estructurada no necesita "entendimiento semántico" como sí lo necesita una mención de
+ * zona en texto libre de un usuario. El fallback semántico vive en `resolveMultipleNeighborhoodsByText`
+ * (ver abajo), consumida únicamente por la resolución de zona de BÚSQUEDAS (acotada a 1-3
+ * menciones por búsqueda, nunca por fila de un archivo masivo).
  */
 export async function resolveNeighborhoodByText(text: string, client: SupabaseClient = supabase): Promise<NeighborhoodTextMatch | null> {
   const normalized = text.toLowerCase();
@@ -271,9 +335,12 @@ export async function resolveNeighborhoodByText(text: string, client: SupabaseCl
  * Resuelve MÚLTIPLES menciones de ubicación (ej. ["villa lujan", "tafi viejo"]) contra el mismo
  * índice cacheado que `resolveNeighborhoodByText`, en vez de quedarse solo con la primera.
  * Deduplica por `neighborhoodId` (si dos menciones distintas resuelven a la misma zona, aparece
- * una sola vez en el resultado). Menciones que no resuelven ningún keyword simplemente se omiten
- * del resultado — no es un error por mención individual, el llamador decide si "ninguna resolvió"
- * implica un estado bloqueante (ver ai.ts#resolveZoneIntent).
+ * una sola vez en el resultado). **BE-20:** las menciones que el keyword matching no resuelve
+ * pasan por el fallback semántico (nunca al revés — el keyword matching es más barato y más
+ * preciso cuando encuentra algo, así que siempre tiene prioridad). Una mención que tampoco
+ * resuelve semánticamente simplemente se omite del resultado — no es un error por mención
+ * individual, el llamador decide si "ninguna resolvió" implica un estado bloqueante (ver
+ * `operations/extractSearchIntent.ts#resolveZoneIntent`).
  */
 export async function resolveMultipleNeighborhoodsByText(
   mentions: string[],
@@ -281,13 +348,25 @@ export async function resolveMultipleNeighborhoodsByText(
 ): Promise<NeighborhoodTextMatch[]> {
   const keywords = await getZoneKeywordIndex(client);
   const results = new Map<string, NeighborhoodTextMatch>();
+  const unresolvedMentions: string[] = [];
 
   for (const mention of mentions) {
     const normalized = mention.toLowerCase();
     if (!normalized.trim()) continue;
     const match = keywords.find((entry) => normalized.includes(entry.keyword));
-    if (match && !results.has(match.neighborhoodId)) {
-      results.set(match.neighborhoodId, { id: match.neighborhoodId, name: match.neighborhoodName });
+    if (match) {
+      if (!results.has(match.neighborhoodId)) {
+        results.set(match.neighborhoodId, { id: match.neighborhoodId, name: match.neighborhoodName });
+      }
+    } else {
+      unresolvedMentions.push(mention);
+    }
+  }
+
+  for (const mention of unresolvedMentions) {
+    const semanticMatch = await resolveNeighborhoodSemantically(mention, client);
+    if (semanticMatch && !results.has(semanticMatch.id)) {
+      results.set(semanticMatch.id, semanticMatch);
     }
   }
 

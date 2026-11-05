@@ -200,3 +200,32 @@ Yerba Buena, Tafí Viejo/Lomas de Tafí → Tafí Viejo) se esperan **sin normal
 4. Si el caso ejercita una regla nueva de un prompt (ej. un sinónimo de feature que no estaba
    cubierto), dejalo explícito en el `id` o en un comentario en el PR — no hace falta anotarlo en
    este README.
+
+## `zone-resolution.jsonl` + `pnpm eval:zone-resolution` (BE-20/BE-21, EP-07)
+
+A diferencia de los 3 datasets de arriba (que miden la EXTRACCIÓN de un LLM), este mide la
+RESOLUCIÓN de zona en sí — no hay LLM de por medio. El "modelo" bajo prueba es
+`zonesService.ts#resolveMultipleNeighborhoodsByText`: keyword matching contra
+`neighborhoods`/`neighborhood_aliases` primero, y si no encuentra nada, fallback semántico
+(embeddings de OpenAI `text-embedding-3-small` + búsqueda por similitud de coseno en pgvector,
+BE-20) antes de dejar la mención sin resolver.
+
+- `input`: `{ "mentions": string[] }` — una o más menciones de ubicación, mismo shape que recibe
+  `resolveMultipleNeighborhoodsByText`.
+- `expected`: `{ "expectedZoneName": string | null }` — el `neighborhoods.name` (técnico, ej.
+  `"BARRIO_AEROPUERTO"`) que debe aparecer entre los resueltos, o `null` si el caso espera que
+  NINGUNA mención resuelva.
+- Tags en uso: `keyword`/`alias` (ya resolvían antes de BE-20, sirven de regresión — confirman que
+  el fallback semántico nunca se interpone cuando el keyword matching ya encontró algo),
+  `semantic-colloquial` (la cobertura nueva de BE-20: frases que NO contienen ningún
+  keyword/alias curado pero sí identifican una zona real sin ambigüedad), `limitacion-conocida`
+  (casos donde el fallback semántico, a propósito, NO resuelve — el texto embebido de esa zona es
+  muy escueto para la frase, mejor dejar sin resolver que forzar una zona incorrecta con falsa
+  confianza; ver el comentario de `SEMANTIC_MATCH_MIN_SIMILARITY` en `zonesService.ts`), más los
+  tags genéricos ya documentados arriba (`adversarial`, `sin-sentido`, `multi-zona`).
+- **Corre contra servicios reales, no mocks:** Supabase real (`neighborhoods`/`neighborhood_aliases`
+  reales) y la API real de embeddings de OpenAI para las menciones sin match de keyword — mismo
+  criterio de "nunca mockear el sistema bajo prueba" que `evals/run.ts` (BE-02).
+- Reporte: `evals/reports/YYYY-MM-DD-zone-resolution.{md,json}`, con el desglose pass/total por tag
+  (la forma más directa de ver, con evidencia, cuánta cobertura nueva le suma el fallback semántico
+  sobre la base de 8/151 zonas con alias curados que KAN-337 ya había documentado).

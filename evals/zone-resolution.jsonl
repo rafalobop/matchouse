@@ -1,0 +1,12 @@
+{"id":"zr-001","mentions":["yerba buena"],"expectedZoneName":"YERBA_BUENA","tags":["keyword"]}
+{"id":"zr-002","mentions":["zona centro"],"expectedZoneName":"ZONA_CENTRO","tags":["keyword"]}
+{"id":"zr-003","mentions":["yb"],"expectedZoneName":"YERBA_BUENA","tags":["alias"]}
+{"id":"zr-004","mentions":["barrio norte"],"expectedZoneName":"BARRIO_NORTE","tags":["keyword"]}
+{"id":"zr-005","mentions":["quiero vivir cerca de donde aterrizan los aviones"],"expectedZoneName":"BARRIO_AEROPUERTO","tags":["semantic-colloquial"]}
+{"id":"zr-006","mentions":["donde hay un monumento grande en homenaje a los 200 años del país"],"expectedZoneName":"MONUMENTO_BICENTENARIO","tags":["semantic-colloquial"]}
+{"id":"zr-007","mentions":["zona con casas quinta, lejos del ruido de la ciudad"],"expectedZoneName":"BARRIO_PRIVADO_QUINTA_AZUCENA","tags":["semantic-colloquial"]}
+{"id":"zr-008","mentions":["donde funciona el gobierno de la provincia"],"expectedZoneName":"CASA_DE_GOBIERNO","tags":["semantic-colloquial"]}
+{"id":"zr-009","mentions":["la parte mas antigua y tradicional de la ciudad"],"expectedZoneName":null,"tags":["limitacion-conocida"]}
+{"id":"zr-010","mentions":["busco algo cerca de donde salen los colectivos de larga distancia"],"expectedZoneName":null,"tags":["limitacion-conocida"]}
+{"id":"zr-011","mentions":["asdkjaslkdj qwoeiqwoe sin sentido alguno"],"expectedZoneName":null,"tags":["sin-sentido","adversarial"]}
+{"id":"zr-012","mentions":["villa lujan","tafi viejo"],"expectedZoneName":"VILLA_LUJAN","tags":["multi-zona","keyword"]}

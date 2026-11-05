@@ -19,6 +19,7 @@ export interface Config {
   resendApiKey: string;
   notificationIntervalMinutes: number;
   freeTextExtractionEnabled: boolean;
+  zoneSemanticFallbackEnabled: boolean;
   searchExpirationIntervalMinutes: number;
   reengagementIntervalMinutes: number;
   aiRequestTimeoutMs: number;
@@ -75,6 +76,13 @@ export function validateConfig(): Config {
   // POST /api/search. Habilitada por default desde KAN-38: hace falta
   // FREE_TEXT_EXTRACTION_ENABLED=false explícito para apagarla.
   const freeTextExtractionEnabled = cleanEnvVar(process.env.FREE_TEXT_EXTRACTION_ENABLED) !== 'false';
+  // BE-20 (EP-07): fallback semántico de zonas (embeddings + pgvector, zonesService.ts) cuando el
+  // keyword matching no resuelve ninguna mención. Habilitado por default (es barato — 1 llamada a
+  // embeddings de OpenAI por mención sin resolver, nunca por búsqueda completa) pero con kill
+  // switch explícito, mismo criterio que FREE_TEXT_EXTRACTION_ENABLED: si algo saliera mal con el
+  // proveedor de embeddings o la calidad de los matches en producción, se puede apagar sin un
+  // deploy — degrada a DESCONOCIDA (el comportamiento de antes de este ticket), nunca rompe.
+  const zoneSemanticFallbackEnabled = cleanEnvVar(process.env.ZONE_SEMANTIC_FALLBACK_ENABLED) !== 'false';
   // KAN-41: frecuencia del servicio en segundo plano que marca 'active_searches' vencidas
   // (expires_at < ahora) como 'expired'. Default 60 min: el vencimiento es a 7 días, no hace
   // falta chequear con más frecuencia que una vez por hora.
@@ -248,6 +256,7 @@ export function validateConfig(): Config {
     resendApiKey,
     notificationIntervalMinutes,
     freeTextExtractionEnabled,
+    zoneSemanticFallbackEnabled,
     searchExpirationIntervalMinutes,
     reengagementIntervalMinutes,
     aiRequestTimeoutMs,

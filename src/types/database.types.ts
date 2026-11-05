@@ -1,9 +1,3 @@
-// KAN-139: generado por Supabase MCP (`generate_typescript_types`) contra el proyecto real
-// `brokaza` (bbadahhljpddlckyrmvi), reflejando el schema real de Postgres al momento de generarlo
-// — no escrito a mano. Regenerar con el mismo comando (o `supabase gen types typescript`) cada vez
-// que cambie el schema (nueva columna/tabla/función) para que no quede desactualizado. No editar
-// a mano. Última regeneración: 2026-10-29 (BE-04, agrega tabla llm_calls y corrige drift de
-// active_searches.trace_id que BE-03 había agregado en la base real sin regenerar este archivo).
 export type Json =
   | string
   | number
@@ -359,6 +353,7 @@ export type Database = {
         Row: {
           boundary: unknown
           created_at: string
+          embedding: string | null
           group_id: string | null
           id: string
           name: string
@@ -366,6 +361,7 @@ export type Database = {
         Insert: {
           boundary: unknown
           created_at?: string
+          embedding?: string | null
           group_id?: string | null
           id?: string
           name: string
@@ -373,6 +369,7 @@ export type Database = {
         Update: {
           boundary?: unknown
           created_at?: string
+          embedding?: string | null
           group_id?: string | null
           id?: string
           name?: string
@@ -967,6 +964,14 @@ export type Database = {
       geomfromewkt: { Args: { "": string }; Returns: unknown }
       gettransactionid: { Args: never; Returns: unknown }
       longtransactionsenabled: { Args: never; Returns: boolean }
+      match_neighborhoods_by_embedding: {
+        Args: { match_count?: number; query_embedding: string }
+        Returns: {
+          id: string
+          name: string
+          similarity: number
+        }[]
+      }
       neighborhood_for_point: {
         Args: { lat: number; lon: number; max_distance_meters?: number }
         Returns: {

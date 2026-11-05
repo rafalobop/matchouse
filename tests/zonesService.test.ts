@@ -14,6 +14,24 @@ import {
   __clearZoneKeywordCacheForTests,
   ZonesServiceError
 } from '../src/services/zonesService';
+import { __setOpenAIEmbeddingsClientForTests } from '../src/services/embeddings';
+import { config } from '../src/config/env';
+
+// BE-20 (EP-07): este archivo instala fakes puntuales del cliente de embeddings para los tests
+// de fallback semántico de abajo — este `after` restaura el `null` global que ya instala
+// tests/runner.ts antes de cualquier test (este archivo es, a la fecha, el último en importarse
+// ahí, pero el reset explícito no depende de ese orden para seguir siendo correcto).
+test.after(() => {
+  __setOpenAIEmbeddingsClientForTests(null);
+});
+
+function fakeOpenAIEmbeddings(embedding: number[]) {
+  return {
+    embeddings: {
+      create: async ({ input }: { input: string[] }) => ({ data: input.map((_, index) => ({ embedding, index })) })
+    }
+  } as any;
+}
 
 // Mock minimo de un query builder de Supabase encadenable, mismo estilo que searchExpiration.test.ts.
 function makeMockClient(options: { rows?: any; error?: any; single?: any } = {}) {
@@ -519,6 +537,96 @@ test('resolveMultipleNeighborhoodsByText - array vacío de menciones devuelve ar
   const result = await resolveMultipleNeighborhoodsByText([], mockClient as any);
 
   assert.deepStrictEqual(result, []);
+});
+
+// --- BE-20 (EP-07): fallback semántico de zonas (embeddings + pgvector) ---
+
+test('resolveMultipleNeighborhoodsByText (BE-20) - el fallback semántico resuelve una mención sin match de keyword cuando la similitud supera el umbral', async () => {
+  __clearZoneKeywordCacheForTests();
+  __setOpenAIEmbeddingsClientForTests(fakeOpenAIEmbeddings([0.1, 0.2, 0.3]));
+  const mockClient = makeTableAwareMockClient(
+    { neighborhoods: { rows: [] }, neighborhood_aliases: { rows: [] } },
+    { rows: [{ id: 'n-aero', name: 'BARRIO_AEROPUERTO', similarity: 0.55 }] }
+  );
+
+  const result = await resolveMultipleNeighborhoodsByText(['cerca de donde aterrizan los aviones'], mockClient as any);
+
+  assert.strictEqual(result.length, 1);
+  assert.deepStrictEqual(result[0], { id: 'n-aero', name: 'BARRIO_AEROPUERTO' });
+  assert.ok(mockClient.calls.some((c: any) => c.method === 'rpc' && c.args[0] === 'match_neighborhoods_by_embedding'));
+});
+
+test('resolveMultipleNeighborhoodsByText (BE-20) - similitud por debajo del umbral (0.5) no resuelve, se mantiene sin match', async () => {
+  __clearZoneKeywordCacheForTests();
+  __setOpenAIEmbeddingsClientForTests(fakeOpenAIEmbeddings([0.1, 0.2, 0.3]));
+  const mockClient = makeTableAwareMockClient(
+    { neighborhoods: { rows: [] }, neighborhood_aliases: { rows: [] } },
+    { rows: [{ id: 'n-x', name: 'ZONA_X', similarity: 0.3 }] }
+  );
+
+  const result = await resolveMultipleNeighborhoodsByText(['algo ambiguo'], mockClient as any);
+
+  assert.deepStrictEqual(result, []);
+});
+
+test('resolveMultipleNeighborhoodsByText (BE-20) - el keyword matching tiene prioridad: nunca llama al fallback semántico si ya resolvió', async () => {
+  __clearZoneKeywordCacheForTests();
+  let semanticCalled = false;
+  __setOpenAIEmbeddingsClientForTests({
+    embeddings: { create: async () => { semanticCalled = true; return { data: [] }; } }
+  } as any);
+  const mockClient = makeTableAwareMockClient({
+    neighborhoods: { rows: [{ id: 'n-yb', name: 'Yerba Buena' }] },
+    neighborhood_aliases: { rows: [] }
+  });
+
+  const result = await resolveMultipleNeighborhoodsByText(['yerba buena'], mockClient as any);
+
+  assert.strictEqual(result[0].id, 'n-yb');
+  assert.strictEqual(semanticCalled, false, 'No debe intentar el fallback semántico si el keyword matching ya resolvió.');
+});
+
+test('resolveMultipleNeighborhoodsByText (BE-20) - con zoneSemanticFallbackEnabled=false nunca intenta el fallback semántico (kill switch)', async () => {
+  __clearZoneKeywordCacheForTests();
+  const original = config.zoneSemanticFallbackEnabled;
+  config.zoneSemanticFallbackEnabled = false;
+  let semanticCalled = false;
+  __setOpenAIEmbeddingsClientForTests({
+    embeddings: { create: async () => { semanticCalled = true; return { data: [] }; } }
+  } as any);
+
+  try {
+    const mockClient = makeTableAwareMockClient({ neighborhoods: { rows: [] }, neighborhood_aliases: { rows: [] } });
+    const result = await resolveMultipleNeighborhoodsByText(['zona sin keyword'], mockClient as any);
+    assert.deepStrictEqual(result, []);
+    assert.strictEqual(semanticCalled, false);
+  } finally {
+    config.zoneSemanticFallbackEnabled = original;
+  }
+});
+
+test('resolveMultipleNeighborhoodsByText (BE-20) - un fallo al generar el embedding (sin cliente configurado) degrada a sin match, nunca lanza', async () => {
+  __clearZoneKeywordCacheForTests();
+  __setOpenAIEmbeddingsClientForTests(null);
+  const mockClient = makeTableAwareMockClient({ neighborhoods: { rows: [] }, neighborhood_aliases: { rows: [] } });
+
+  const result = await resolveMultipleNeighborhoodsByText(['zona rara'], mockClient as any);
+
+  assert.deepStrictEqual(result, []);
+});
+
+test('resolveNeighborhoodByText (camino de propiedades) - NO usa el fallback semántico a propósito (BE-20: resuelve direcciones masivas, no menciones de búsqueda)', async () => {
+  __clearZoneKeywordCacheForTests();
+  let semanticCalled = false;
+  __setOpenAIEmbeddingsClientForTests({
+    embeddings: { create: async () => { semanticCalled = true; return { data: [{ embedding: [1], index: 0 }] }; } }
+  } as any);
+  const mockClient = makeTableAwareMockClient({ neighborhoods: { rows: [] }, neighborhood_aliases: { rows: [] } });
+
+  const result = await resolveNeighborhoodByText('una dirección cualquiera sin zona reconocible', mockClient as any);
+
+  assert.strictEqual(result, null);
+  assert.strictEqual(semanticCalled, false, 'resolveNeighborhoodByText (usado por la resolución de zona de propiedades) nunca debe intentar el fallback semántico.');
 });
 
 // --- KAN-130: findNeighborhoodsForPoints (versión batch de findNeighborhoodByPoint) ---
