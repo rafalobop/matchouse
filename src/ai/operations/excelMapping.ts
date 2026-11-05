@@ -3,11 +3,19 @@ import { FallbackProvider } from '../providers/fallbackProvider';
 import { AllProvidersFailedError } from '../providers/types';
 import { ExcelMappingSchema, ExcelColumnMappingSuggestion } from '../schemas/excelMapping.schema';
 import { SYSTEM_INSTRUCTIONS_EXCEL_MAPPING, EXCEL_MAPPING_PROMPT_VERSION } from '../prompts';
+import { escapeForXmlTag } from '../promptSafety';
 
-function buildUserPrompt(headers: string[]): string {
+// BE-11: cada header se escapa ANTES de stringificar el array — `JSON.stringify` no escapa `<`/`>`
+// (solo caracteres de control/comillas), así que un header malicioso con un cierre de tag literal
+// seguiría rompiendo el wrapper si solo se stringificara. El escape no afecta el emparejamiento
+// downstream: `resolveAiFields` (services/excelMapping.ts) valida el `header` que devuelve la IA
+// contra los headers REALES (sin escapar) — si el modelo llegara a devolver el header escapado tal
+// cual, simplemente no matchea y ese campo degrada a `null` (mismo fail-soft que ya existía para
+// cualquier header alucinado).
+export function buildUserPrompt(headers: string[]): string {
   return `Estas son las columnas (headers) de una hoja de cálculo Excel, en el orden en que aparecen, dentro de las etiquetas <EXCEL_HEADERS> y </EXCEL_HEADERS>:
 <EXCEL_HEADERS>
-${JSON.stringify(headers)}
+${JSON.stringify(headers.map(escapeForXmlTag))}
 </EXCEL_HEADERS>`;
 }
 

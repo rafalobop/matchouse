@@ -23,14 +23,31 @@ import { z } from 'zod';
 // es el único que coincide con el valor real persistido en `properties.operation` — el de Agente 2
 // ('ALQUILER'/'COMPRA'/'DESCONOCIDO') nunca se persistía en ninguna columna, era una convención
 // interna de su propio prompt.
+// BE-12 (EP-03): rangos plausibles de salida. Antes del cambio, `max_budget`/`bedrooms_min` eran
+// `z.number().nullable()` sin signo ni tope — un valor alucinado (negativo, cero, o
+// absurdamente grande, ej. un typo de unidades o un intento de manipular `matcher.ts`, que hace
+// `request.max_budget * 1.05` sin re-validar) pasaba el schema igual que un valor real. Y
+// `location_mentions`/`features` no tenían tope de cantidad ni de longitud por elemento — una
+// respuesta patológica (bucle del modelo, o un intento deliberado de inflar el JSON persistido en
+// `active_searches.criteria`) también pasaba sin que nada lo frenara. Los topes de abajo no son
+// arbitrarios: cotas generosas frente al dominio real (mercado inmobiliario de Tucumán, ver
+// `evals/search-intent.jsonl` — el `max_budget` más alto del dataset es 400.000) para no rechazar
+// ningún caso legítimo, pero sí capaces de rechazar un valor que ya no tiene relación posible con
+// un presupuesto o una cantidad de dormitorios reales.
 export const SearchIntentSchema = z.object({
   operation: z.enum(['venta', 'alquiler', 'desconocido']),
   property_type: z.enum(['departamento', 'casa', 'terreno', 'local', 'oficina', 'otro']),
-  location_mentions: z.array(z.string()),
-  max_budget: z.number().nullable(),
+  // Tope de cantidad (nunca se vieron más de 2-3 ubicaciones alternativas en un pedido real) y de
+  // longitud por mención (texto libre de ubicación, no una oración completa).
+  location_mentions: z.array(z.string().max(200)).max(20),
+  // Positivo (un presupuesto de $0 no es un presupuesto, es "no especificado" -> null) y con un
+  // tope que cubre cómodamente tanto USD como ARS con inflación real, sin acercarse a magnitudes
+  // sin sentido.
+  max_budget: z.number().int().positive().max(1_000_000_000).nullable(),
   currency: z.enum(['USD', 'ARS', 'desconocido']),
-  bedrooms_min: z.number().nullable(),
-  features: z.array(z.string()),
+  // Ninguna propiedad real tiene más de ~20 dormitorios; 0 es válido ("monoambiente").
+  bedrooms_min: z.number().int().min(0).max(20).nullable(),
+  features: z.array(z.string().max(60)).max(30),
   country: z.enum(['si', 'no', 'indiferente'])
 });
 

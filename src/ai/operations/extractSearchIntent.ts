@@ -8,6 +8,7 @@ import { AllProvidersFailedError } from '../providers/types';
 import { SearchIntentSchema, SearchIntent } from '../schemas/searchIntent.schema';
 import { ZoneIntentRequest } from '../schemas/zoneIntent.schema';
 import { SYSTEM_INSTRUCTIONS_SEARCH_INTENT, SEARCH_INTENT_PROMPT_VERSION } from '../prompts';
+import { escapeForXmlTag } from '../promptSafety';
 
 // KAN-70: error específico para cuando TODAS las estrategias de IA configuradas agotaron su
 // timeout en el camino síncrono de un request HTTP (POST /api/search, ver src/index.ts). A
@@ -46,10 +47,13 @@ export interface SearchIntentResult {
   zone: ZoneIntentRequest;
 }
 
-function buildUserPrompt(freeText: string): string {
+// BE-11: `freeText` se escapa (no se interpola crudo) antes de entrar en el wrapper — ver
+// promptSafety.ts para el por qué (previene que un cierre de tag literal en el input rompa el
+// límite entre datos no confiables e instrucciones).
+export function buildUserPrompt(freeText: string): string {
   return `Analiza el texto libre provisto por el usuario en un formulario de búsqueda, estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:
 <USER_TEXT>
-${freeText}
+${escapeForXmlTag(freeText)}
 </USER_TEXT>`;
 }
 

@@ -15,7 +15,12 @@ export const ExcelMappingSchema = z.object({
     // ya constrainen en la generación), "confidence" es un float libre — si el modelo lo
     // stringifica ("0.9" en vez de 0.9), coercionarlo es una red de seguridad de TIPO, no una
     // decisión de negocio, así que vive acá (en el schema) y no en código de la operación.
-    confidence: z.coerce.number()
+    // BE-12 (EP-03): rango plausible de salida — el propio prompt define "confidence" como "un
+    // número de 0 a 1" (ver SYSTEM_INSTRUCTIONS_EXCEL_MAPPING); antes del cambio no había nada que
+    // hiciera cumplir ese contrato, así que un 1.5 o un -3 alucinado pasaba el schema igual y
+    // llegaba intacto a `AI_FIELD_CONFIDENCE_THRESHOLD` (services/excelMapping.ts), pudiendo
+    // aceptar un mapeo de baja confianza real como si fuera alta (o rechazar uno válido).
+    confidence: z.coerce.number().min(0).max(1)
   }))
 });
 

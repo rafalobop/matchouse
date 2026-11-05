@@ -11,6 +11,8 @@ import {
   AllProvidersFailedError,
   SchemaValidationError,
   SearchIntentSchema,
+  SegmentSchema,
+  ExcelMappingSchema,
   AITimeoutError,
   AIExtractionFailedError,
   __setLlmCallsClientForTests,
@@ -92,6 +94,41 @@ test('AI Service - SearchIntentSchema (BE-09) acepta/rechaza variaciones del con
 
   const casoNulls = { ...casoCompleto, max_budget: null, bedrooms_min: null };
   assert.strictEqual(SearchIntentSchema.safeParse(casoNulls).success, true, 'max_budget/bedrooms_min nullable deben aceptar null.');
+});
+
+test('AI Service - SearchIntentSchema (BE-12) rechaza valores por fuera de un rango plausible', () => {
+  const base = {
+    operation: 'venta', property_type: 'departamento', location_mentions: ['Yerba Buena'], max_budget: 80000,
+    currency: 'USD', bedrooms_min: 2, features: ['cochera', 'pileta'], country: 'no'
+  };
+
+  assert.strictEqual(SearchIntentSchema.safeParse({ ...base, max_budget: 0 }).success, false, 'max_budget 0 no es un presupuesto válido (debe ser null si no se especificó).');
+  assert.strictEqual(SearchIntentSchema.safeParse({ ...base, max_budget: -500 }).success, false, 'max_budget negativo debe rechazarse.');
+  assert.strictEqual(SearchIntentSchema.safeParse({ ...base, max_budget: 50_000_000_000 }).success, false, 'max_budget fuera del tope plausible (1e9) debe rechazarse.');
+  assert.strictEqual(SearchIntentSchema.safeParse({ ...base, max_budget: 1500.5 }).success, false, 'max_budget no entero debe rechazarse.');
+  assert.strictEqual(SearchIntentSchema.safeParse({ ...base, max_budget: 1_000_000_000 }).success, true, 'max_budget justo en el tope debe aceptarse.');
+
+  assert.strictEqual(SearchIntentSchema.safeParse({ ...base, bedrooms_min: -1 }).success, false, 'bedrooms_min negativo debe rechazarse.');
+  assert.strictEqual(SearchIntentSchema.safeParse({ ...base, bedrooms_min: 21 }).success, false, 'bedrooms_min por encima del tope plausible (20) debe rechazarse.');
+  assert.strictEqual(SearchIntentSchema.safeParse({ ...base, bedrooms_min: 0 }).success, true, 'bedrooms_min 0 (monoambiente) debe aceptarse.');
+
+  assert.strictEqual(SearchIntentSchema.safeParse({ ...base, location_mentions: Array(21).fill('zona') }).success, false, 'más de 20 menciones de ubicación debe rechazarse.');
+  assert.strictEqual(SearchIntentSchema.safeParse({ ...base, location_mentions: ['x'.repeat(201)] }).success, false, 'una mención de ubicación de más de 200 caracteres debe rechazarse.');
+  assert.strictEqual(SearchIntentSchema.safeParse({ ...base, features: Array(31).fill('cochera') }).success, false, 'más de 30 features debe rechazarse.');
+});
+
+test('AI Service - SegmentSchema (BE-12) acota cantidad y longitud de segmentos', () => {
+  assert.strictEqual(SegmentSchema.safeParse({ segments: ['Busco depto en alquiler'] }).success, true);
+  assert.strictEqual(SegmentSchema.safeParse({ segments: Array(21).fill('segmento') }).success, false, 'más de 20 segmentos debe rechazarse.');
+  assert.strictEqual(SegmentSchema.safeParse({ segments: ['x'.repeat(2001)] }).success, false, 'un segmento de más de 2000 caracteres debe rechazarse.');
+});
+
+test('AI Service - ExcelMappingSchema (BE-12) acota "confidence" a [0, 1]', () => {
+  const entradaValida = { field: 'precio', header: 'Precio', confidence: 0.9 };
+  assert.strictEqual(ExcelMappingSchema.safeParse({ mapping: [entradaValida] }).success, true);
+  assert.strictEqual(ExcelMappingSchema.safeParse({ mapping: [{ ...entradaValida, confidence: 1.5 }] }).success, false, 'confidence > 1 debe rechazarse.');
+  assert.strictEqual(ExcelMappingSchema.safeParse({ mapping: [{ ...entradaValida, confidence: -0.1 }] }).success, false, 'confidence negativo debe rechazarse.');
+  assert.strictEqual(ExcelMappingSchema.safeParse({ mapping: [{ ...entradaValida, confidence: '0.8' }] }).success, true, 'confidence stringificado debe coercionarse a número y seguir validando el rango.');
 });
 
 // --- KAN-70: timeout en las llamadas reales a los SDKs ---

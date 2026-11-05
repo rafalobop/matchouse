@@ -32,6 +32,7 @@ import './nodeEnvCheck.test';
 import './notifier-email.test';
 import './planLimits.test';
 import './profileValidation.test';
+import './promptSafety.test';
 import './propertyMatchWebhook.test';
 import './rateLimit.test';
 import './realtimeHub.test';

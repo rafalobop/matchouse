@@ -3,11 +3,14 @@ import { FallbackProvider } from '../providers/fallbackProvider';
 import { AllProvidersFailedError } from '../providers/types';
 import { SegmentSchema, SegmentLlmOutput } from '../schemas/segment.schema';
 import { SYSTEM_INSTRUCTIONS_SEGMENTER, SEGMENTER_PROMPT_VERSION } from '../prompts';
+import { escapeForXmlTag } from '../promptSafety';
 
-function buildUserPrompt(messageTexto: string): string {
+// BE-11: ver el comentario equivalente en operations/extractSearchIntent.ts — mismo escape, mismo
+// motivo (previene breakout del tag <USER_TEXT> con un cierre literal en el input).
+export function buildUserPrompt(messageTexto: string): string {
   return `Analiza el texto provisto estrictamente dentro de las etiquetas <USER_TEXT> y </USER_TEXT>:
 <USER_TEXT>
-${messageTexto}
+${escapeForXmlTag(messageTexto)}
 </USER_TEXT>`;
 }
 
