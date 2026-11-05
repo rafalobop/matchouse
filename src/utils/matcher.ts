@@ -1,6 +1,7 @@
 import { SearchIntent, ZoneIntentRequest } from '../ai';
 import { Property } from '../services/excel';
 import { getDolarBlueRate } from '../services/dolar';
+import { cosineSimilarity } from '../services/embeddings';
 
 export interface MatchResult {
   isMatch: boolean;
@@ -19,7 +20,13 @@ export interface IMatchingStrategy {
   evaluate(
     request: SearchIntent,
     property: Property,
-    zoneIntent?: ZoneIntentRequest
+    zoneIntent?: ZoneIntentRequest,
+    // BE-24 (EP-07): embedding de `request.features` (ver computeFeaturesEmbeddingLiteral,
+    // calculado una sola vez por búsqueda en searchSegmentProcessor.ts) — solo lo usa
+    // FeaturesMatchingStrategy; el resto de las estrategias lo ignoran, mismo criterio que
+    // `zoneIntent` (parámetro opcional compartido en la interfaz, relevante para una sola
+    // implementación).
+    requestFeaturesEmbedding?: number[] | null
   ): MatchingResult;
 }
 
@@ -243,12 +250,26 @@ export class BudgetMatchingStrategy implements IMatchingStrategy {
   }
 }
 
+// BE-24 (EP-07): umbral de similitud para el crédito semántico de características. A diferencia
+// de SEMANTIC_MATCH_MIN_SIMILARITY en zonesService.ts (que decide si UNA mención resuelve a UNA
+// zona puntual), acá no hay un embedding por característica individual — solo UNO para el
+// conjunto completo pedido (`request.features.join(', ')`) y UNO para el texto completo de
+// `property.features`. Es una señal más gruesa ("esta propiedad en su conjunto describe algo
+// semánticamente parecido a lo pedido"), nunca "esta característica puntual matchea" — por eso
+// nunca elimina la deducción por faltantes del todo, solo la atenúa (ver más abajo).
+export const SEMANTIC_FEATURES_MIN_SIMILARITY = 0.5;
+
 export class FeaturesMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Características';
 
   // BE-09: antes UNÍA `request.key_features` (Agente 1) con `zoneIntent.caracteristicas_claves`
   // (Agente 2) — con una sola extracción, `request.features` ya es el conjunto completo.
-  evaluate(request: SearchIntent, property: Property): MatchingResult {
+  evaluate(
+    request: SearchIntent,
+    property: Property,
+    _zoneIntent?: ZoneIntentRequest,
+    requestFeaturesEmbedding?: number[] | null
+  ): MatchingResult {
     const requiredFeatures = Array.from(new Set(request.features));
 
     if (requiredFeatures.length > 0 && property.features) {
@@ -293,7 +314,27 @@ export class FeaturesMatchingStrategy implements IMatchingStrategy {
 
       if (missingFeatures.length > 0) {
         reasons.push(`Características faltantes: ${missingFeatures.join(', ')}`);
-        scoreDeduction += (missingFeatures.length * 5);
+        let missingDeduction = missingFeatures.length * 5;
+
+        // BE-24 (EP-07): crédito semántico — la propiedad puede describir alguna de las
+        // características "faltantes" con otras palabras, sin compartir texto con ningún sinónimo
+        // hardcodeado de arriba (ej. verificado con embeddings reales: "espacio para guardar el
+        // auto" vs. "cochera cubierta" da 0.55 de similitud, por encima del umbral). Nunca anula
+        // la deducción del todo (no sabemos CUÁL característica faltante es la que matchea
+        // semánticamente, el embedding es del conjunto completo) — solo la atenúa a la mitad.
+        // Límite real, verificado y no escondido: no toda paráfrasis cruza el umbral — "lugar para
+        // hacer asados" vs. "cuenta con parrilla" da solo 0.35, por debajo de 0.5 (mismo tipo de
+        // límite ya documentado para el fallback de zonas, ver SEMANTIC_MATCH_MIN_SIMILARITY en
+        // zonesService.ts).
+        if (requestFeaturesEmbedding && property.features_embedding) {
+          const similarity = cosineSimilarity(requestFeaturesEmbedding, property.features_embedding);
+          if (similarity >= SEMANTIC_FEATURES_MIN_SIMILARITY) {
+            missingDeduction = Math.round(missingDeduction / 2);
+            reasons.push(`Posible coincidencia semántica en características no detectadas por palabra clave (similitud ${(similarity * 100).toFixed(0)}%)`);
+          }
+        }
+
+        scoreDeduction += missingDeduction;
       }
 
       return {
@@ -324,13 +365,14 @@ const matchingStrategies: IMatchingStrategy[] = [
 export function checkMatch(
   request: SearchIntent,
   property: Property,
-  zoneIntent?: ZoneIntentRequest
+  zoneIntent?: ZoneIntentRequest,
+  requestFeaturesEmbedding?: number[] | null
 ): MatchResult {
   const reasons: string[] = [];
   let score = 100;
 
   for (const strategy of matchingStrategies) {
-    const result = strategy.evaluate(request, property, zoneIntent);
+    const result = strategy.evaluate(request, property, zoneIntent, requestFeaturesEmbedding);
 
     if (!result.isMatch) {
       return {

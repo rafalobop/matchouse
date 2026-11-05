@@ -11,6 +11,7 @@ import { logger } from '../services/logger';
 import { processSingleSearchSegment, SearchSegmentResult } from '../services/searchSegmentProcessor';
 import { getTenantPlanLimits, countTenantSearchesThisMonth } from '../services/planLimits';
 import { traceSearchRequest } from '../services/tracing';
+import { fromPgVectorLiteral } from '../services/embeddings';
 
 // KAN-37: motor de matching bidireccional entre tenants, dirección búsqueda→cartera. Un tenant
 // describe lo que busca en texto libre y recibe matches de la cartera de OTROS tenants (excluye
@@ -146,7 +147,7 @@ export async function listSearches(req: express.Request, res: express.Response) 
   try {
     const { data: searches, error } = await tenantSupabase
       .from('active_searches')
-      .select('id, raw_text, criteria, status, zone_status, zone_ids, zone_names, zone_text_original, created_at, expires_at')
+      .select('id, raw_text, criteria, status, zone_status, zone_ids, zone_names, zone_text_original, features_embedding, created_at, expires_at')
       .eq('tenant_id', tenantId)
       .in('status', ['active', 'expired'])
       .order('created_at', { ascending: false });
@@ -166,7 +167,11 @@ export async function listSearches(req: express.Request, res: express.Response) 
         };
         // BE-09: search.criteria tiene el shape LEGACY de persistencia (zones/bedrooms/
         // key_features) — reconstruye el SearchIntent real que espera matcher.ts.
-        const matches = await findCrossTenantMatches(tenantId, reconstructSearchIntentFromCriteria(search.criteria), zoneIntent);
+        // BE-24 (EP-07): el recálculo en vivo también respeta la señal semántica de features,
+        // mismo criterio que el zoneIntent reconstruido arriba — no solo el matching en el
+        // momento de crear la búsqueda.
+        const requestFeaturesVector = search.features_embedding ? fromPgVectorLiteral(search.features_embedding) : null;
+        const matches = await findCrossTenantMatches(tenantId, reconstructSearchIntentFromCriteria(search.criteria), zoneIntent, undefined, undefined, requestFeaturesVector);
         matchesCount = matches.length;
       } catch (matchError: any) {
         logger.error({ error: matchError.message || matchError, tenantId, searchId: search.id }, '[BUSQUEDAS] Error al calcular el conteo de matches de una búsqueda activa');

@@ -22,6 +22,7 @@ import { geocodeAddress, GeocodeResult } from './geocoding';
 import { buildGeocodableQuery } from '../utils/addressParser';
 import { ExcelMappingField, EXCEL_MAPPING_FIELDS, computeHeaderSignature } from '../utils/excelHeaderMatcher';
 import { FIELD_MAX_LENGTHS } from '../utils/textFieldLimits';
+import { generateEmbeddings, toPgVectorLiteral, EmbeddingServiceError } from './embeddings';
 
 // Trunca (no rechaza) valores de celda que excedan el límite compartido con el alta manual —
 // mismo criterio de "degradar, no abortar el import" que ya aplica acá para precio no parseable.
@@ -54,6 +55,12 @@ export interface Property {
   // estampado por findCrossTenantMatches SOLO cuando la búsqueda trae un zoneIntent concreto —
   // no se resuelve en el resto de los flujos (upload, arranque). Solo runtime, no se persiste en BD.
   neighborhood_id?: string | null;
+  // BE-22/BE-24 (EP-07): embedding de `features` ya parseado a `number[]` (runtime, nunca se
+  // persiste bajo este nombre — la columna real es `properties.features_embedding`, un literal de
+  // pgvector). Estampado por `mapDbRowToProperty` cuando la fila de origen lo trae. `undefined` si
+  // nunca se estampó (ej. un Property armado a mano en un test); `null` si la propiedad no tiene
+  // features o todavía no se le calculó el embedding.
+  features_embedding?: number[] | null;
 
   // Metadata
   sheet_name: string;          // era: sheetName
@@ -537,7 +544,7 @@ export async function syncPropertiesToDatabase(
     // lat/lng ya resueltas para no re-geocodificar en cada subida una propiedad sin cambios).
     const { data: dbProps, error: fetchErr } = await client
       .from('properties')
-      .select('id, address, floor, unit, block, lot, price, contact_info, sheet_name, latitude, longitude')
+      .select('id, address, floor, unit, block, lot, price, contact_info, sheet_name, latitude, longitude, features, features_embedding')
       .eq('tenant_id', tenantId);
 
     if (fetchErr) {
@@ -549,16 +556,24 @@ export async function syncPropertiesToDatabase(
     // 2. Mapear en memoria los registros actuales
     const dbPropsMap = new Map<string, string>(); // clave -> id
     const dbCoordsMap = new Map<string, { latitude: number | null; longitude: number | null }>(); // id -> coords ya resueltas
+    // BE-23 (EP-07): features/embedding ya persistidos, para no recalcular (ni gastar una llamada
+    // real a la API de embeddings) en cada fila de cada re-sync si el texto de features no cambió.
+    const dbFeaturesMap = new Map<string, { features: string | null; embedding: string | null }>();
     dbProperties.forEach((p: any) => {
       const key = `${p.address}_${p.floor || ''}_${p.unit || ''}_${p.block || ''}_${p.lot || ''}_${p.price}_${p.contact_info || ''}_${p.sheet_name}`.toLowerCase().trim();
       dbPropsMap.set(key, p.id);
       dbCoordsMap.set(p.id, { latitude: p.latitude ?? null, longitude: p.longitude ?? null });
+      dbFeaturesMap.set(p.id, { features: p.features ?? null, embedding: p.features_embedding ?? null });
     });
 
     // 3. Iterar las propiedades frescas, clasificarlas y resolver lat/lng
     const upsertList: any[] = [];
     const matchedIds = new Set<string>();
     let geocodedCount = 0;
+    // BE-23 (EP-07): filas cuyo texto de `features` es nuevo o cambió respecto a lo ya
+    // persistido — se les calcula el embedding DESPUÉS del loop, en batch (ver más abajo), nunca
+    // una llamada por fila dentro de este loop.
+    const pendingEmbeddingEntries: { index: number; features: string }[] = [];
 
     for (const p of properties) {
       const key = `${p.address}_${p.floor || ''}_${p.unit || ''}_${p.block || ''}_${p.lot || ''}_${p.price}_${p.contact_info || ''}_${p.sheet_name}`.toLowerCase().trim();
@@ -591,6 +606,14 @@ export async function syncPropertiesToDatabase(
         }
       }
 
+      // BE-23: el embedding de una fila sin cambios de `features` se CARGA del valor ya
+      // persistido (`prevFeatures.embedding`) — el upsert reemplaza la fila completa, así que si
+      // no se re-adjunta acá explícitamente, se perdería el embedding calculado en una
+      // sincronización anterior cada vez que se vuelve a subir el mismo Excel sin cambios.
+      const featuresText = p.features || null;
+      const prevFeatures = existingId ? dbFeaturesMap.get(existingId) : undefined;
+      const featuresUnchanged = prevFeatures !== undefined && prevFeatures.features === featuresText;
+
       const propertyPayload = {
         id: existingId || randomUUID(),
         address: p.address,
@@ -602,7 +625,8 @@ export async function syncPropertiesToDatabase(
         currency: p.currency,
         maintenance_fees: p.maintenance_fees ?? 0,
         bedrooms: p.bedrooms,
-        features: p.features || null,
+        features: featuresText,
+        features_embedding: featuresUnchanged ? prevFeatures!.embedding : null,
         contact_info: p.contact_info || null,
         operation: p.operation,
         property_type: p.property_type,
@@ -616,6 +640,31 @@ export async function syncPropertiesToDatabase(
         matchedIds.add(existingId);
       }
       upsertList.push(propertyPayload);
+
+      if (featuresText && !featuresUnchanged) {
+        pendingEmbeddingEntries.push({ index: upsertList.length - 1, features: featuresText });
+      }
+    }
+
+    // BE-23: embeddings de las filas con features nuevas/cambiadas, en batch (mismo criterio que
+    // scripts/backfill-neighborhood-embeddings.ts) — nunca una llamada por fila. Fail-soft: un
+    // error real de la API de embeddings (red, cuota, etc.) no aborta la sincronización completa
+    // — las filas afectadas quedan con `features_embedding: null` (degradan a sin señal
+    // semántica para el re-rank, nada más; el resto de la sincronización sigue intacta).
+    if (pendingEmbeddingEntries.length > 0) {
+      const EMBEDDING_BATCH_SIZE = 50;
+      try {
+        for (let i = 0; i < pendingEmbeddingEntries.length; i += EMBEDDING_BATCH_SIZE) {
+          const batch = pendingEmbeddingEntries.slice(i, i + EMBEDDING_BATCH_SIZE);
+          const embeddings = await generateEmbeddings(batch.map((entry) => entry.features));
+          batch.forEach((entry, j) => {
+            upsertList[entry.index].features_embedding = toPgVectorLiteral(embeddings[j]);
+          });
+        }
+      } catch (error) {
+        const detail = error instanceof EmbeddingServiceError ? error.message : error instanceof Error ? error.message : String(error);
+        logger.warn({ error: detail, tenantId, affected: pendingEmbeddingEntries.length }, '[EXCEL] No se pudieron calcular embeddings de features para algunas propiedades; se sincronizan sin esa señal semántica (no bloquea la sincronización).');
+      }
     }
 
     // 4. Generar lista de eliminaciones

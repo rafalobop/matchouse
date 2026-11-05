@@ -1,6 +1,7 @@
 import { OpenAI } from 'openai';
 import { config } from '../config/env';
 import { withTimeout } from '../utils/withTimeout';
+import { logger } from './logger';
 
 // BE-19 (EP-07): servicio de embeddings — hoy solo lo consume el fallback semántico de zonas
 // (zonesService.ts#resolveNeighborhoodBySemanticSearch, BE-20) y su script de backfill
@@ -77,6 +78,62 @@ export async function generateEmbedding(text: string): Promise<number[]> {
  */
 export function toPgVectorLiteral(embedding: number[]): string {
   return `[${embedding.join(',')}]`;
+}
+
+/**
+ * Inverso de `toPgVectorLiteral` — el cliente de Supabase devuelve una columna `vector` como el
+ * mismo literal de texto `"[0.1,0.2,...]"` que se usó para escribirla (BE-22/BE-24: necesario
+ * para comparar `properties.features_embedding` contra `active_searches.features_embedding` en
+ * código de aplicación, ver `matcher.ts`).
+ */
+export function fromPgVectorLiteral(literal: string): number[] {
+  const trimmed = literal.trim().replace(/^\[/, '').replace(/\]$/, '');
+  if (trimmed.length === 0) return [];
+  return trimmed.split(',').map(Number);
+}
+
+/**
+ * Similitud de coseno entre dos vectores del mismo largo — mismo cálculo que hace
+ * `match_neighborhoods_by_embedding` en SQL (`1 - (a <=> b)`, ver migración de BE-18), pero en
+ * código de aplicación: BE-24 compara embeddings de `properties`/`active_searches` (tablas de
+ * alto volumen, sin índice ANN a propósito, ver comentario de la migración de BE-22) contra el
+ * conjunto ya filtrado y acotado de candidatos de cada matching, no contra la tabla completa.
+ */
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+/**
+ * BE-23 (EP-07): helper fail-soft para los call sites reales de escritura
+ * (`propertiesController.ts`, `excel.ts`) — centraliza "qué hacer si falla" (log + `null`, nunca
+ * lanza) en un solo lugar en vez de repetir el mismo try/catch en cada caller. El embedding de
+ * features es una señal de RE-RANK, nunca debe poder romper un alta/edición de propiedad ni una
+ * sincronización de Excel completa. `null`/string vacío → `null` directo, sin llamar a la API.
+ */
+export async function computeFeaturesEmbeddingLiteral(features: string | null | undefined): Promise<string | null> {
+  const trimmed = (features ?? '').trim();
+  if (trimmed.length === 0) return null;
+
+  try {
+    const embedding = await generateEmbedding(trimmed);
+    return toPgVectorLiteral(embedding);
+  } catch (error) {
+    const detail = error instanceof EmbeddingServiceError ? error.message : error instanceof Error ? error.message : String(error);
+    logger.warn({ error: detail }, '[EMBEDDINGS] No se pudo calcular el embedding de features; se guarda sin ese dato (degrada a sin señal semántica, no bloquea la escritura).');
+    return null;
+  }
 }
 
 function normalizeNeighborhoodName(name: string): string {

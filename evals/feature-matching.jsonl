@@ -1,0 +1,5 @@
+{"id":"fm-001","requestFeatures":["cochera"],"propertyFeatures":"Cuenta con cochera y balcón","expectedSemanticCredit":false,"tags":["keyword"]}
+{"id":"fm-002","requestFeatures":["espacio para guardar el auto"],"propertyFeatures":"casa amplia con cochera cubierta para 2 autos","expectedSemanticCredit":true,"tags":["semantic-colloquial"]}
+{"id":"fm-003","requestFeatures":["lugar para hacer asados"],"propertyFeatures":"departamento moderno, cuenta con parrilla y balcón","expectedSemanticCredit":false,"tags":["limitacion-conocida"]}
+{"id":"fm-004","requestFeatures":["quincho y espacio verde"],"propertyFeatures":"cuenta con quincho, parque y pileta","expectedSemanticCredit":false,"tags":["limitacion-conocida"]}
+{"id":"fm-005","requestFeatures":["lugar para hacer asados"],"propertyFeatures":"departamento céntrico, apto crédito, sin balcón","expectedSemanticCredit":false,"tags":["control-negativo"]}

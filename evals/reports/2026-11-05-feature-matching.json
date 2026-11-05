@@ -1,0 +1,57 @@
+{
+  "date": "2026-11-05",
+  "totalPass": 5,
+  "total": 5,
+  "results": [
+    {
+      "id": "fm-001",
+      "tags": [
+        "keyword"
+      ],
+      "pass": true,
+      "expected": false,
+      "actual": false,
+      "reason": "Características que coinciden: cochera"
+    },
+    {
+      "id": "fm-002",
+      "tags": [
+        "semantic-colloquial"
+      ],
+      "pass": true,
+      "expected": true,
+      "actual": true,
+      "reason": "Características faltantes: espacio para guardar el auto. Posible coincidencia semántica en características no detectadas por palabra clave (similitud 55%)"
+    },
+    {
+      "id": "fm-003",
+      "tags": [
+        "limitacion-conocida"
+      ],
+      "pass": true,
+      "expected": false,
+      "actual": false,
+      "reason": "Características faltantes: lugar para hacer asados"
+    },
+    {
+      "id": "fm-004",
+      "tags": [
+        "limitacion-conocida"
+      ],
+      "pass": true,
+      "expected": false,
+      "actual": false,
+      "reason": "Características faltantes: quincho y espacio verde"
+    },
+    {
+      "id": "fm-005",
+      "tags": [
+        "control-negativo"
+      ],
+      "pass": true,
+      "expected": false,
+      "actual": false,
+      "reason": "Características faltantes: lugar para hacer asados"
+    }
+  ]
+}

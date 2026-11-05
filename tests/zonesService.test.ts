@@ -17,10 +17,13 @@ import {
 import { __setOpenAIEmbeddingsClientForTests } from '../src/services/embeddings';
 import { config } from '../src/config/env';
 
-// BE-20 (EP-07): este archivo instala fakes puntuales del cliente de embeddings para los tests
-// de fallback semántico de abajo — este `after` restaura el `null` global que ya instala
-// tests/runner.ts antes de cualquier test (este archivo es, a la fecha, el último en importarse
-// ahí, pero el reset explícito no depende de ese orden para seguir siendo correcto).
+// BE-20 (EP-07): este archivo instala fakes puntuales del cliente de embeddings para los tests de
+// fallback semántico de abajo — cada uno de esos tests instala su propio fake explícito ANTES de
+// sus asserts (nunca depende de lo que haya quedado de un test anterior). Este `after` es solo
+// higiene final: un `test.after()` sin `describe()` se adjunta al root suite compartido por TODO
+// el proceso de `pnpm test` (corre una sola vez al final de todo, no "al final de este archivo"),
+// así que no aísla a los archivos que corren después en el mismo proceso — ver el comentario
+// equivalente en tests/embeddings.test.ts.
 test.after(() => {
   __setOpenAIEmbeddingsClientForTests(null);
 });

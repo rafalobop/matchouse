@@ -11,6 +11,7 @@ import { requireOwner } from '../utils/agencyOwnership';
 import { parsePagination } from '../utils/pagination';
 import { isValidUUID } from '../utils/idValidation';
 import { FIELD_MAX_LENGTHS } from '../utils/textFieldLimits';
+import { computeFeaturesEmbeddingLiteral } from '../services/embeddings';
 
 // KAN-273: CRUD de propiedades para la tabla interactiva del dashboard (visualización, edición,
 // filtros/orden, alta y baja desde la UI, sin depender de un re-upload del Excel). Todas las rutas
@@ -248,6 +249,13 @@ export async function createProperty(req: express.Request, res: express.Response
       return res.status(403).json({ error: `Llegaste al límite de propiedades de tu plan (${maxProperties}).` });
     }
 
+    // BE-23 (EP-07): embedding semántico de `features`, bloqueante pero best-effort (ver
+    // computeFeaturesEmbeddingLiteral — nunca lanza, degrada a `null` ante cualquier fallo). Se
+    // calcula ANTES del insert (no como un segundo UPDATE posterior, a diferencia de la zona por
+    // punto más abajo) porque solo depende del body del request, no de datos que recién existen
+    // después de insertar (como el `id`/`latitude`/`longitude` resueltos).
+    const featuresEmbedding = await computeFeaturesEmbeddingLiteral(req.body.features);
+
     const payload = {
       address: req.body.address.trim(),
       floor: req.body.floor || null,
@@ -259,6 +267,7 @@ export async function createProperty(req: express.Request, res: express.Response
       maintenance_fees: req.body.maintenance_fees ?? 0,
       bedrooms: req.body.bedrooms ?? 0,
       features: req.body.features || null,
+      features_embedding: featuresEmbedding,
       contact_info: req.body.contact_info || null,
       operation: req.body.operation,
       property_type: req.body.property_type,
@@ -337,6 +346,14 @@ export async function updateProperty(req: express.Request, res: express.Response
   }
   if (typeof updatePayload.address === 'string') {
     updatePayload.address = updatePayload.address.trim();
+  }
+
+  // BE-23 (EP-07): solo se recalcula si el caller mandó `features` explícitamente en este PATCH —
+  // evitar recomputar (y gastar una llamada real a la API de embeddings) en una edición que no
+  // tocó ese campo. `updatePayload.features` ya puede ser `null` acá (string vacío normalizado
+  // arriba) — `computeFeaturesEmbeddingLiteral(null)` devuelve `null` directo sin llamar a nada.
+  if ('features' in updatePayload) {
+    updatePayload.features_embedding = await computeFeaturesEmbeddingLiteral(updatePayload.features);
   }
 
   try {

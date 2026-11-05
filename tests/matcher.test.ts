@@ -296,3 +296,58 @@ test('Matcher - FeaturesMatchingStrategy: penaliza fuertemente el score cuando n
   assert.strictEqual(result.isMatch, true);
   assert.ok(result.scoreDeduction > 0, 'Debe penalizar el score aunque no descarte el match.');
 });
+
+// --- BE-24 (EP-07): crédito semántico sobre características "faltantes" por palabra clave ---
+
+test('Matcher - FeaturesMatchingStrategy (BE-24): con similitud semántica alta, atenúa (no elimina) la deducción por características faltantes', () => {
+  const strategy = new FeaturesMatchingStrategy();
+  const requestEmbedding = [1, 0];
+  const propertyEmbedding = [1, 0]; // similitud 1.0 (idéntico)
+
+  const sinCredito = strategy.evaluate(
+    baseRequest({ features: ['parrilla'] }),
+    baseProperty({ features: 'Living amplio con balcón al frente' })
+  );
+  const conCredito = strategy.evaluate(
+    baseRequest({ features: ['parrilla'] }),
+    baseProperty({ features: 'Living amplio con balcón al frente', features_embedding: propertyEmbedding }),
+    undefined,
+    requestEmbedding
+  );
+
+  assert.strictEqual(conCredito.isMatch, true);
+  assert.ok(conCredito.scoreDeduction < sinCredito.scoreDeduction, 'La deducción con crédito semántico debe ser menor que sin él.');
+  assert.ok(conCredito.scoreDeduction > 0, 'Nunca debe anular la deducción del todo (no se sabe CUÁL feature matchea).');
+  assert.ok(conCredito.reason?.includes('semántic'), 'El motivo debe mencionar la coincidencia semántica.');
+});
+
+test('Matcher - FeaturesMatchingStrategy (BE-24): con similitud semántica baja (< 0.5), no aplica ningún crédito', () => {
+  const strategy = new FeaturesMatchingStrategy();
+  const requestEmbedding = [1, 0];
+  const propertyEmbedding = [0, 1]; // similitud 0 (ortogonal)
+
+  const sinEmbeddings = strategy.evaluate(
+    baseRequest({ features: ['parrilla'] }),
+    baseProperty({ features: 'Living amplio con balcón al frente' })
+  );
+  const conEmbeddingsBajos = strategy.evaluate(
+    baseRequest({ features: ['parrilla'] }),
+    baseProperty({ features: 'Living amplio con balcón al frente', features_embedding: propertyEmbedding }),
+    undefined,
+    requestEmbedding
+  );
+
+  assert.strictEqual(conEmbeddingsBajos.scoreDeduction, sinEmbeddings.scoreDeduction, 'Sin similitud suficiente, la deducción debe ser idéntica a no tener embeddings.');
+});
+
+test('Matcher - FeaturesMatchingStrategy (BE-24): sin embedding de la propiedad (aunque el pedido sí tenga), no aplica crédito ni rompe', () => {
+  const strategy = new FeaturesMatchingStrategy();
+  const result = strategy.evaluate(
+    baseRequest({ features: ['parrilla'] }),
+    baseProperty({ features: 'Living amplio con balcón al frente', features_embedding: null }),
+    undefined,
+    [1, 0]
+  );
+  assert.strictEqual(result.isMatch, true);
+  assert.ok(!result.reason?.includes('semántic'));
+});

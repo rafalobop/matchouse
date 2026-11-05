@@ -4,6 +4,26 @@ import * as xlsx from 'xlsx';
 import { processExcelBuffer, processExcelBufferWithColumnMap, peekExcelHeaders, syncPropertiesToDatabase, Property } from '../src/services/excel';
 import { GeocodeResult } from '../src/services/geocoding';
 import { computeHeaderSignature, matchHeadersHeuristically } from '../src/utils/excelHeaderMatcher';
+import { __setOpenAIEmbeddingsClientForTests } from '../src/services/embeddings';
+
+// BE-23 (EP-07): este archivo instala fakes puntuales del cliente de embeddings — cada test que
+// lo necesita lo instala explícito antes de sus asserts. Este `after` es higiene final de todo el
+// proceso de `pnpm test`, no aislamiento entre archivos (ver el comentario equivalente, con el
+// detalle completo, en tests/embeddings.test.ts).
+test.after(() => {
+  __setOpenAIEmbeddingsClientForTests(null);
+});
+
+function fakeOpenAIEmbeddings(impl: (input: string[]) => number[][]) {
+  return {
+    embeddings: {
+      create: async ({ input }: { input: string[] }) => {
+        const vectors = impl(input);
+        return { data: input.map((_, index) => ({ embedding: vectors[index], index })) };
+      }
+    }
+  } as any;
+}
 
 // Mock mínimo del builder encadenable de Supabase, mismo patrón que tests/searchExpiration.test.ts.
 // `selectResult` controla la respuesta del fetch inicial (paso 1); `mutationResult` controla
@@ -148,6 +168,86 @@ test('Excel Service - syncPropertiesToDatabase no lanza si la sincronización es
   });
 
   await assert.doesNotReject(() => syncPropertiesToDatabase([buildSampleProperty()], 'tenant-1', client));
+});
+
+// --- BE-23 (EP-07): embeddings de `features` durante la sincronización de Excel ---
+
+test('Excel Service (BE-23) - una propiedad nueva con features calcula el embedding y lo manda en el upsert', async () => {
+  __setOpenAIEmbeddingsClientForTests(fakeOpenAIEmbeddings(() => [[1, 2, 3]]));
+  const upsertedRows: any[] = [];
+  const client = buildMockSupabaseClient({ selectResult: { data: [], error: null }, upsertedRows });
+
+  await syncPropertiesToDatabase([buildSampleProperty({ features: 'con cochera' })], 'tenant-1', client);
+
+  assert.strictEqual(upsertedRows.length, 1);
+  assert.strictEqual(upsertedRows[0].features_embedding, '[1,2,3]');
+});
+
+test('Excel Service (BE-23) - sin features, nunca llama a la API de embeddings y persiste features_embedding null', async () => {
+  let called = false;
+  __setOpenAIEmbeddingsClientForTests(fakeOpenAIEmbeddings((input) => { called = true; return input.map(() => [0]); }));
+  const upsertedRows: any[] = [];
+  const client = buildMockSupabaseClient({ selectResult: { data: [], error: null }, upsertedRows });
+
+  await syncPropertiesToDatabase([buildSampleProperty({ features: undefined })], 'tenant-1', client);
+
+  assert.strictEqual(called, false);
+  assert.strictEqual(upsertedRows[0].features_embedding, null);
+});
+
+test('Excel Service (BE-23) - features SIN cambios respecto a la fila ya persistida: no recalcula, conserva el embedding anterior', async () => {
+  let called = false;
+  __setOpenAIEmbeddingsClientForTests(fakeOpenAIEmbeddings((input) => { called = true; return input.map(() => [9, 9, 9]); }));
+  const upsertedRows: any[] = [];
+  const existingRow = {
+    id: 'prop-1',
+    address: 'Calle Falsa 123',
+    floor: null, unit: null, block: null, lot: null,
+    price: 100000,
+    contact_info: null,
+    sheet_name: 'Hoja1',
+    latitude: -26.82,
+    longitude: -65.2,
+    features: 'con cochera',
+    features_embedding: '[1,1,1]'
+  };
+  const client = buildMockSupabaseClient({ selectResult: { data: [existingRow], error: null }, upsertedRows });
+
+  await syncPropertiesToDatabase([buildSampleProperty({ features: 'con cochera' })], 'tenant-1', client);
+
+  assert.strictEqual(called, false, 'No debe recalcular si el texto de features no cambió.');
+  assert.strictEqual(upsertedRows[0].features_embedding, '[1,1,1]', 'Debe conservar el embedding ya persistido (el upsert reemplaza la fila completa).');
+});
+
+test('Excel Service (BE-23) - features CAMBIADAS respecto a la fila ya persistida: recalcula el embedding', async () => {
+  __setOpenAIEmbeddingsClientForTests(fakeOpenAIEmbeddings(() => [[5, 5, 5]]));
+  const upsertedRows: any[] = [];
+  const existingRow = {
+    id: 'prop-1',
+    address: 'Calle Falsa 123',
+    floor: null, unit: null, block: null, lot: null,
+    price: 100000,
+    contact_info: null,
+    sheet_name: 'Hoja1',
+    latitude: -26.82,
+    longitude: -65.2,
+    features: 'con cochera',
+    features_embedding: '[1,1,1]'
+  };
+  const client = buildMockSupabaseClient({ selectResult: { data: [existingRow], error: null }, upsertedRows });
+
+  await syncPropertiesToDatabase([buildSampleProperty({ features: 'con pileta' })], 'tenant-1', client);
+
+  assert.strictEqual(upsertedRows[0].features_embedding, '[5,5,5]');
+});
+
+test('Excel Service (BE-23) - un fallo real de la API de embeddings no aborta la sincronización (fail-soft, features_embedding queda null)', async () => {
+  __setOpenAIEmbeddingsClientForTests({ embeddings: { create: async () => { throw new Error('503 de OpenAI'); } } } as any);
+  const upsertedRows: any[] = [];
+  const client = buildMockSupabaseClient({ selectResult: { data: [], error: null }, upsertedRows });
+
+  await assert.doesNotReject(() => syncPropertiesToDatabase([buildSampleProperty({ features: 'con cochera' })], 'tenant-1', client));
+  assert.strictEqual(upsertedRows[0].features_embedding, null);
 });
 
 // Simula el bloque try/catch real de `POST /api/upload` (src/index.ts) con la función real

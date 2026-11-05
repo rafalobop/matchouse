@@ -4,15 +4,21 @@ import {
   generateEmbeddings,
   generateEmbedding,
   toPgVectorLiteral,
+  fromPgVectorLiteral,
+  cosineSimilarity,
   buildNeighborhoodEmbeddingText,
   EmbeddingServiceError,
   __setOpenAIEmbeddingsClientForTests
 } from '../src/services/embeddings';
 
 // Cada test de este archivo instala su propio fake con `__setOpenAIEmbeddingsClientForTests`
-// (variable de módulo global, compartida por todo el proceso de `pnpm test`) — este `after` evita
-// que el último fake quede pisado para los archivos de test que corren después en el mismo
-// proceso (ej. zonesService.test.ts, que depende del guard global a `null` de tests/runner.ts).
+// (variable de módulo global, compartida por todo el proceso de `pnpm test`). Nota real sobre
+// este `after`: un `test.after()` de nivel de archivo (sin `describe()` que lo contenga) se
+// adjunta al root suite COMPARTIDO entre todos los archivos de este proceso — corre una sola vez
+// al final de TODA la suite, no "al final de este archivo". No reemplaza el guard global
+// (`__setOpenAIEmbeddingsClientForTests(null)` al principio de tests/runner.ts, ANTES de
+// importar cualquier test) ni exime a otros archivos de instalar su propio fake si les importa —
+// es solo higiene final del proceso completo.
 test.after(() => {
   __setOpenAIEmbeddingsClientForTests(null);
 });
@@ -92,4 +98,26 @@ test('buildNeighborhoodEmbeddingText - normaliza el nombre técnico y concatena 
 
 test('buildNeighborhoodEmbeddingText - sin alias, solo el nombre normalizado', () => {
   assert.strictEqual(buildNeighborhoodEmbeddingText('BARRIO_NORTE', []), 'barrio norte');
+});
+
+test('fromPgVectorLiteral - parsea el literal de pgvector de vuelta a un array de números (inverso de toPgVectorLiteral)', () => {
+  assert.deepStrictEqual(fromPgVectorLiteral('[0.1,-0.2,3]'), [0.1, -0.2, 3]);
+  assert.deepStrictEqual(fromPgVectorLiteral('[]'), []);
+  const original = [0.1, 0.2, -0.3, 42];
+  assert.deepStrictEqual(fromPgVectorLiteral(toPgVectorLiteral(original)), original);
+});
+
+test('cosineSimilarity - 1 para vectores idénticos, 0 para ortogonales, -1 para opuestos', () => {
+  assert.strictEqual(cosineSimilarity([1, 0], [1, 0]), 1);
+  assert.strictEqual(cosineSimilarity([1, 0], [0, 1]), 0);
+  assert.strictEqual(cosineSimilarity([1, 0], [-1, 0]), -1);
+});
+
+test('cosineSimilarity - vectores de distinto largo o vacíos devuelven 0 en vez de lanzar', () => {
+  assert.strictEqual(cosineSimilarity([1, 2], [1, 2, 3]), 0);
+  assert.strictEqual(cosineSimilarity([], []), 0);
+});
+
+test('cosineSimilarity - un vector de ceros (norma 0) devuelve 0 en vez de NaN (división por cero)', () => {
+  assert.strictEqual(cosineSimilarity([0, 0], [1, 1]), 0);
 });

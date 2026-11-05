@@ -12,6 +12,7 @@ import {
   groupMatchesByMatchedTenant,
   SearcherSnapshot
 } from '../utils/blindMatchPersistence';
+import { computeFeaturesEmbeddingLiteral, fromPgVectorLiteral } from './embeddings';
 
 // BE-09: `active_searches.criteria` sigue escribiéndose con las keys VIEJAS (`zones`/`bedrooms`/
 // `key_features`) a propósito, aunque la extracción interna ya use el schema unificado
@@ -77,6 +78,12 @@ async function processSingleSearchSegmentImpl(
     return { success: false, raw_text: segmentText, error: 'No pudimos clasificar el texto como un pedido de propiedad.' };
   }
 
+  // BE-23 (EP-07): embedding de las features pedidas, calculado UNA sola vez acá (las búsquedas
+  // son inmutables tras crearse, a diferencia de las propiedades — nunca hace falta recalcularlo
+  // después). Best-effort (ver computeFeaturesEmbeddingLiteral): si falla, la búsqueda se crea
+  // igual sin esa señal de re-rank semántico — nunca bloquea POST /api/search.
+  const featuresEmbedding = await computeFeaturesEmbeddingLiteral(intent.features.join(', '));
+
   const { data: search, error: insertErr } = await tenantSupabase
     .from('active_searches')
     .insert({
@@ -87,6 +94,7 @@ async function processSingleSearchSegmentImpl(
       zone_ids: zoneIntent.zona_ids,
       zone_names: zoneIntent.zona_nombres,
       zone_text_original: zoneIntent.texto_ubicacion_original,
+      features_embedding: featuresEmbedding,
       // BE-03: trace_id de la traza Langfuse/OpenTelemetry de este request — null si tracing no
       // estaba configurado al momento del insert (ver src/services/tracing.ts).
       trace_id: traceId ?? null
@@ -96,10 +104,15 @@ async function processSingleSearchSegmentImpl(
 
   if (insertErr) throw insertErr;
 
+  // BE-24: reutiliza el `number[]` ya calculado arriba (parseado del mismo literal que se acaba
+  // de persistir) — no hace falta una segunda llamada a la API de embeddings para esta misma
+  // búsqueda, `fromPgVectorLiteral` es puro y gratis.
+  const requestFeaturesVector = featuresEmbedding ? fromPgVectorLiteral(featuresEmbedding) : null;
+
   // asType 'retriever': lookup de solo lectura contra la cartera cross-tenant, no cambia estado.
   // `intent` (no `search.criteria`, que tiene el shape legacy de persistencia) es lo que entiende
   // matcher.ts.
-  const matches = await withSpan('retrieve-cross-tenant-matches', { tenantId, searchId: search.id }, () => findCrossTenantMatches(tenantId, intent, zoneIntent), { asType: 'retriever' });
+  const matches = await withSpan('retrieve-cross-tenant-matches', { tenantId, searchId: search.id }, () => findCrossTenantMatches(tenantId, intent, zoneIntent, undefined, undefined, requestFeaturesVector), { asType: 'retriever' });
 
   const mappedMatches = matches.map(m => ({
     tenant_id: m.tenant_id,

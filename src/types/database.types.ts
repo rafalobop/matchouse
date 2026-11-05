@@ -19,6 +19,7 @@ export type Database = {
           created_at: string
           criteria: Json
           expires_at: string
+          features_embedding: string | null
           id: string
           raw_text: string
           reengagement_sent: boolean
@@ -34,6 +35,7 @@ export type Database = {
           created_at?: string
           criteria?: Json
           expires_at: string
+          features_embedding?: string | null
           id?: string
           raw_text: string
           reengagement_sent?: boolean
@@ -49,6 +51,7 @@ export type Database = {
           created_at?: string
           criteria?: Json
           expires_at?: string
+          features_embedding?: string | null
           id?: string
           raw_text?: string
           reengagement_sent?: boolean
@@ -458,6 +461,7 @@ export type Database = {
           created_at: string
           currency: string
           features: string | null
+          features_embedding: string | null
           floor: string | null
           id: string
           latitude: number | null
@@ -483,6 +487,7 @@ export type Database = {
           created_at?: string
           currency: string
           features?: string | null
+          features_embedding?: string | null
           floor?: string | null
           id?: string
           latitude?: number | null
@@ -508,6 +513,7 @@ export type Database = {
           created_at?: string
           currency?: string
           features?: string | null
+          features_embedding?: string | null
           floor?: string | null
           id?: string
           latitude?: number | null

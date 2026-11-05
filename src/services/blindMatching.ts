@@ -6,6 +6,7 @@ import { Property } from './excel';
 import { logger } from './logger';
 import { resolvePropertyZoneId, resolveMultipleNeighborhoodsByText } from './zonesService';
 import { withRetry } from '../utils/withRetry';
+import { fromPgVectorLiteral } from './embeddings';
 
 export interface CrossTenantMatch {
   tenant_id: string;
@@ -42,7 +43,11 @@ export function mapDbRowToProperty(row: any): Property {
     zone_display_name: row.sheet_name,
     sheet_name: row.sheet_name,
     latitude: row.latitude,
-    longitude: row.longitude
+    longitude: row.longitude,
+    // BE-24 (EP-07): parseado del literal de pgvector a `number[]` acá (no en el caller) para que
+    // todo consumidor de un `Property` rehidratado desde una fila real lo reciba ya listo para
+    // `cosineSimilarity`, sin que cada caller tenga que saber del formato de texto de pgvector.
+    features_embedding: row.features_embedding ? fromPgVectorLiteral(row.features_embedding) : null
   };
 }
 
@@ -55,12 +60,13 @@ export function mapDbRowToProperty(row: any): Property {
 export function matchRequestAgainstProperties(
   request: SearchIntent,
   candidates: TenantScopedProperty[],
-  zoneIntent?: ZoneIntentRequest
+  zoneIntent?: ZoneIntentRequest,
+  requestFeaturesEmbedding?: number[] | null
 ): CrossTenantMatch[] {
   const matches: CrossTenantMatch[] = [];
 
   for (const { tenant_id, property } of candidates) {
-    const result = checkMatch(request, property, zoneIntent);
+    const result = checkMatch(request, property, zoneIntent, requestFeaturesEmbedding);
     if (result.isMatch) {
       matches.push({ tenant_id, property, score: result.score, reasons: result.reasons });
     }
@@ -150,7 +156,12 @@ export async function findCrossTenantMatches(
   request: SearchIntent,
   zoneIntent?: ZoneIntentRequest,
   client: SupabaseClient = serviceRoleSupabase,
-  pagination?: CrossTenantMatchesPagination
+  pagination?: CrossTenantMatchesPagination,
+  // BE-24 (EP-07): al final de la firma (no junto a zoneIntent) a propósito — agregarlo ahí habría
+  // obligado a tocar cada call site posicional existente (tests incluidos) solo para correr
+  // `client`/`pagination` un lugar. Trailing param opcional: ningún caller existente necesita
+  // cambiar, solo los que quieran sumar la señal semántica.
+  requestFeaturesEmbedding?: number[] | null
 ): Promise<CrossTenantMatch[]> {
   const { limit, offset } = normalizePagination(pagination);
 
@@ -192,7 +203,7 @@ export async function findCrossTenantMatches(
   // KAN-133: paginación aplicada DESPUÉS del ranking (no en SQL) — el orden por score depende del
   // resultado de checkMatch, calculado en memoria, así que "página 2" siempre significa "los
   // siguientes N matches ya rankeados", no una porción arbitraria de la query cruda.
-  const rankedMatches = matchRequestAgainstProperties(request, candidates, zoneIntent);
+  const rankedMatches = matchRequestAgainstProperties(request, candidates, zoneIntent, requestFeaturesEmbedding);
   return rankedMatches.slice(offset, offset + limit);
 }
 
@@ -202,6 +213,11 @@ export interface ActiveSearchCandidate {
   raw_text: string;
   criteria: SearchIntent;
   zoneIntent: ZoneIntentRequest;
+  // BE-24 (EP-07): embedding de `features` de ESTA búsqueda, ya parseado (ver
+  // active_searches.features_embedding, calculado una sola vez al crear la búsqueda —
+  // searchSegmentProcessor.ts). `undefined`/`null` si la búsqueda no pidió features o no se pudo
+  // calcular en su momento (ver computeFeaturesEmbeddingLiteral, nunca lanza).
+  featuresEmbedding?: number[] | null;
 }
 
 export interface PropertyMatch {
@@ -225,8 +241,8 @@ export function matchActiveSearchesAgainstProperty(
 ): PropertyMatch[] {
   const matches: PropertyMatch[] = [];
 
-  for (const { tenant_id, search_id, raw_text, criteria, zoneIntent } of candidates) {
-    const result = checkMatch(criteria, property, zoneIntent);
+  for (const { tenant_id, search_id, raw_text, criteria, zoneIntent, featuresEmbedding } of candidates) {
+    const result = checkMatch(criteria, property, zoneIntent, featuresEmbedding);
     if (result.isMatch) {
       matches.push({ tenant_id, search_id, raw_text, score: result.score, reasons: result.reasons });
     }
@@ -308,7 +324,7 @@ export async function findMatchingActiveSearchesForProperty(
 
   let query = client
     .from('active_searches')
-    .select('id, tenant_id, raw_text, criteria, zone_status, zone_ids, zone_names, zone_text_original')
+    .select('id, tenant_id, raw_text, criteria, zone_status, zone_ids, zone_names, zone_text_original, features_embedding')
     .eq('status', 'active')
     .neq('tenant_id', tenantId);
 
@@ -384,7 +400,8 @@ export async function findMatchingActiveSearchesForProperty(
         zone_ids: effective.zona_ids,
         zone_names: effective.zona_nombres,
         zone_text_original: row.zone_text_original
-      })
+      }),
+      featuresEmbedding: row.features_embedding ? fromPgVectorLiteral(row.features_embedding) : null
     };
   });
 

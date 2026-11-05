@@ -229,3 +229,25 @@ BE-20) antes de dejar la mención sin resolver.
 - Reporte: `evals/reports/YYYY-MM-DD-zone-resolution.{md,json}`, con el desglose pass/total por tag
   (la forma más directa de ver, con evidencia, cuánta cobertura nueva le suma el fallback semántico
   sobre la base de 8/151 zonas con alias curados que KAN-337 ya había documentado).
+
+## `feature-matching.jsonl` + `pnpm eval:feature-matching` (BE-24/BE-25, EP-07, segunda tanda)
+
+Mismo espíritu que `zone-resolution.jsonl`, pero para el crédito semántico de características
+(`matcher.ts#FeaturesMatchingStrategy`) — no hay zona de por medio acá. A diferencia de
+`resolveMultipleNeighborhoodsByText` (un embedding por MENCIÓN de zona), el crédito semántico de
+features compara UN embedding del conjunto completo de `request.features` contra UN embedding del
+texto completo de `property.features` — una señal más gruesa, "esta propiedad en su conjunto
+describe algo parecido a lo pedido", no "esta característica puntual matchea".
+
+- `input`: `{ "requestFeatures": string[], "propertyFeatures": string }`.
+- `expected`: `{ "expectedSemanticCredit": boolean }` — si el resultado de
+  `FeaturesMatchingStrategy.evaluate()` debe mencionar la coincidencia semántica en su `reason`
+  (el crédito se activó, similitud ≥ `SEMANTIC_FEATURES_MIN_SIMILARITY`) o no.
+- Tags: `keyword` (ya matchea por substring, el crédito semántico ni se evalúa — regresión),
+  `semantic-colloquial` (paráfrasis real que SÍ cruza el umbral — ej. "espacio para guardar el
+  auto" vs. "cochera cubierta", similitud real 0.55), `limitacion-conocida` (paráfrasis real que
+  NO cruza el umbral — ej. "lugar para hacer asados" vs. "cuenta con parrilla", similitud real
+  0.35; documentado con evidencia, no escondido), `control-negativo` (par genuinamente no
+  relacionado, confirma que el crédito no se activa con cualquier cosa).
+- Corre con embeddings reales de OpenAI para ambos lados de cada caso (nunca mockeado).
+- Reporte: `evals/reports/YYYY-MM-DD-feature-matching.{md,json}`.
